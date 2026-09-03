@@ -1,0 +1,28 @@
+# Python & Environments
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+build/
+
+# Lightroom Temporary Files & Workspaces
+.tmp/
+*.tif
+*.tiff
+*.dng
+*.jpg
+*.jpeg
+*.png
+!tests/sample_*.png
+!tests/sample_*.tif
+
+# System & IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.log

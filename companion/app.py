@@ -1,0 +1,1088 @@
+"""
+app.py
+Efface Magique LR - Adobe Lightroom Classic AI Companion Application
+Adobe Firefly-grade Generative Fill & Fast GAN Dual Inpainting Interface
+
+Key Capabilities:
+- Dual Inpainting Engine:
+  * ✨ Generative Firefly (Diffusion-based, 3 candidate variations, optional prompt guidance)
+  * ⚡ Fast Mode (Simple-LaMa GAN for spots, wires, and quick fixes)
+- Variations Carousel Panel with real-time viewport updates & "More Variations" regeneration
+- Camera Sensor Grain & Noise Matching
+- Split-Screen & Hold-to-Compare (\\ and Space keys)
+- 16-bit Lossless Color (ProPhoto RGB / Adobe RGB / sRGB) & EXIF metadata preservation
+- Headless CLI pipeline for automated testing
+"""
+
+import os
+import sys
+import time
+import argparse
+import logging
+from typing import Optional, List
+from PIL import Image
+
+# Ensure project root is in sys.path when invoked directly as a script (e.g. from Lightroom)
+_CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+_PROJECT_ROOT = os.path.dirname(_CURRENT_DIR)
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSize, QTimer, qInstallMessageHandler, QtMsgType
+from PyQt6.QtGui import QIcon, QFont, QColor, QKeySequence, QAction, QShortcut, QPixmap
+from PyQt6.QtWidgets import (
+    QApplication,
+    QMainWindow,
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QToolBar,
+    QPushButton,
+    QSlider,
+    QLabel,
+    QFileDialog,
+    QMessageBox,
+    QProgressBar,
+    QStatusBar,
+    QFrame,
+    QButtonGroup,
+    QCheckBox,
+    QComboBox,
+    QLineEdit,
+)
+
+from companion.canvas import ImageCanvas, pil_to_qimage
+from companion.inpainting_engine import InpaintingEngine, get_optimal_device, EngineMode, get_device_telemetry
+
+# Configure logging to console and file
+_log_file = os.path.join(_PROJECT_ROOT, "companion.log")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler(_log_file, encoding="utf-8", mode="a"),
+    ],
+)
+logger = logging.getLogger("EffaceMagiqueCompanion")
+
+
+def global_exception_handler(exc_type, exc_value, exc_traceback):
+    """Log any unhandled exception to prevent silent qFatal crashes."""
+    logger.critical("Unhandled top-level exception:", exc_info=(exc_type, exc_value, exc_traceback))
+    sys.__excepthook__(exc_type, exc_value, exc_traceback)
+
+
+sys.excepthook = global_exception_handler
+
+
+def qt_message_handler(mode, context, message):
+    if mode == QtMsgType.QtFatalMsg:
+        logger.critical(f"Qt Fatal: {message} ({context.file}:{context.line})")
+    elif mode == QtMsgType.QtCriticalMsg:
+        logger.error(f"Qt Critical: {message} ({context.file}:{context.line})")
+    elif mode == QtMsgType.QtWarningMsg:
+        logger.warning(f"Qt Warning: {message} ({context.file}:{context.line})")
+
+
+qInstallMessageHandler(qt_message_handler)
+
+
+# -----------------------------------------------------------------------------
+# Background Worker Thread for Non-Blocking AI Inpainting
+# -----------------------------------------------------------------------------
+
+class InpaintingWorker(QThread):
+    progress = pyqtSignal(int, str)
+    variationsReady = pyqtSignal(list)
+    error = pyqtSignal(str)
+
+    def __init__(
+        self,
+        engine: InpaintingEngine,
+        image: Image.Image,
+        mask: Image.Image,
+        num_variations: int = 3,
+        prompt: Optional[str] = None,
+        seed: Optional[int] = None,
+        detect_subject: bool = True,
+        enable_grain: bool = False,
+    ):
+        super().__init__()
+        self.engine = engine
+        self.image = image
+        self.mask = mask
+        self.num_variations = num_variations
+        self.prompt = prompt
+        self.seed = seed
+        self.detect_subject = detect_subject
+        self.enable_grain = enable_grain
+
+    def run(self):
+        try:
+            variations = self.engine.generate_variations(
+                image=self.image,
+                mask=self.mask,
+                num_variations=self.num_variations,
+                prompt=self.prompt,
+                base_seed=self.seed,
+                margin_ratio=0.85,
+                feather_radius=20,
+                detect_subject=self.detect_subject,
+                enable_grain=self.enable_grain,
+                progress_callback=lambda pct, msg: self.progress.emit(pct, msg),
+            )
+            self.variationsReady.emit(variations)
+        except Exception as e:
+            logger.exception("Inpainting failed")
+            self.error.emit(str(e))
+
+
+# -----------------------------------------------------------------------------
+# Main Application Window
+# -----------------------------------------------------------------------------
+
+DARK_STYLE = """
+QMainWindow {
+    background-color: #1e1e1e;
+    color: #e0e0e0;
+}
+QWidget {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+QToolBar {
+    background-color: #252526;
+    border-bottom: 1px solid #333333;
+    padding: 6px 10px;
+    spacing: 8px;
+}
+QStatusBar {
+    background-color: #181818;
+    border-top: 1px solid #2d2d2d;
+    color: #999999;
+    font-size: 11px;
+}
+QPushButton {
+    background-color: #2d2d2d;
+    color: #ffffff;
+    border: 1px solid #3c3c3c;
+    border-radius: 4px;
+    padding: 6px 12px;
+    font-size: 12px;
+    font-weight: 500;
+}
+QPushButton:hover {
+    background-color: #383838;
+    border-color: #4a4a4a;
+}
+QPushButton:pressed {
+    background-color: #202020;
+}
+QPushButton:checked {
+    background-color: #0078d4;
+    border-color: #0086f0;
+    color: #ffffff;
+    font-weight: bold;
+}
+QPushButton:disabled {
+    background-color: #242424;
+    color: #555555;
+    border-color: #303030;
+}
+QPushButton#primaryAction {
+    background-color: #0078d4;
+    color: #ffffff;
+    font-weight: bold;
+    border: 1px solid #0086f0;
+    padding: 7px 18px;
+    border-radius: 4px;
+}
+QPushButton#primaryAction:hover {
+    background-color: #1084d8;
+}
+QPushButton#primaryAction:disabled {
+    background-color: #1b354b;
+    color: #6688aa;
+    border-color: #23425d;
+}
+QPushButton#saveAction {
+    background-color: #107c41;
+    color: #ffffff;
+    font-weight: bold;
+    border: 1px solid #169b52;
+    padding: 7px 18px;
+    border-radius: 4px;
+}
+QPushButton#saveAction:hover {
+    background-color: #148f4b;
+}
+QComboBox {
+    background-color: #2d2d2d;
+    color: #ffffff;
+    border: 1px solid #3c3c3c;
+    border-radius: 4px;
+    padding: 4px 10px;
+    font-size: 12px;
+    font-weight: 500;
+}
+QComboBox:hover {
+    border-color: #0078d4;
+}
+QComboBox QAbstractItemView {
+    background-color: #252526;
+    color: #ffffff;
+    selection-background-color: #0078d4;
+    selection-color: #ffffff;
+    border: 1px solid #3c3c3c;
+}
+QLineEdit {
+    background-color: #262626;
+    color: #ffffff;
+    border: 1px solid #444444;
+    border-radius: 4px;
+    padding: 4px 8px;
+    font-size: 12px;
+}
+QLineEdit:focus {
+    border: 1px solid #0078d4;
+}
+QSlider::groove:horizontal {
+    border: 1px solid #333333;
+    height: 4px;
+    background: #252526;
+    border-radius: 2px;
+}
+QSlider::sub-page:horizontal {
+    background: #0078d4;
+    border-radius: 2px;
+}
+QSlider::handle:horizontal {
+    background: #ffffff;
+    border: 1px solid #555555;
+    width: 14px;
+    margin-top: -5px;
+    margin-bottom: -5px;
+    border-radius: 7px;
+}
+QSlider::handle:horizontal:hover {
+    background: #0078d4;
+    border-color: #0086f0;
+}
+QProgressBar {
+    border: 1px solid #333333;
+    border-radius: 3px;
+    text-align: center;
+    color: #ffffff;
+    background-color: #1a1a1a;
+    height: 16px;
+    font-size: 10px;
+}
+QProgressBar::chunk {
+    background-color: #0078d4;
+    border-radius: 2px;
+}
+QCheckBox {
+    color: #cccccc;
+    font-size: 12px;
+    spacing: 6px;
+}
+QCheckBox::indicator {
+    width: 15px;
+    height: 15px;
+    border: 1px solid #444444;
+    border-radius: 3px;
+    background-color: #262626;
+}
+QCheckBox::indicator:hover {
+    border-color: #0078d4;
+}
+QCheckBox::indicator:checked {
+    background-color: #0078d4;
+    border-color: #0086f0;
+}
+QLabel {
+    color: #cccccc;
+    font-size: 12px;
+}
+"""
+
+
+class MainWindow(QMainWindow):
+    def __init__(self, input_path: Optional[str] = None, output_path: Optional[str] = None):
+        super().__init__()
+
+        self.input_path = input_path
+        self.output_path = output_path
+        if not self.output_path and self.input_path:
+            is_tmp_lr = os.path.abspath(self.input_path).startswith(os.path.abspath(os.path.join(_PROJECT_ROOT, ".tmp")))
+            if is_tmp_lr:
+                self.output_path = self.input_path
+            else:
+                base, ext = os.path.splitext(self.input_path)
+                self.output_path = f"{base}_ai_edit{ext}"
+        self.saved_successfully = False
+
+        # Metadata preservation
+        self.original_icc_profile = None
+        self.original_exif = None
+        self.original_dpi = None
+
+        # Variations state
+        self.current_variations: List[Image.Image] = []
+        self.active_variation_index: int = 0
+        self.last_used_mask: Optional[Image.Image] = None
+        self.last_base_image: Optional[Image.Image] = None
+        self.var_buttons: List[QPushButton] = []
+
+        self.setWindowTitle("Efface Magique LR - Adobe Firefly Generative Eraser")
+        self.resize(1400, 920)
+        self.setStyleSheet(DARK_STYLE)
+
+        # Inpainting Engine instance
+        device = get_optimal_device()
+        self.engine = InpaintingEngine(device=device, mode=EngineMode.FIREFLY)
+        self.worker: Optional[InpaintingWorker] = None
+
+        # Build UI
+        central_container = QWidget()
+        central_layout = QVBoxLayout(central_container)
+        central_layout.setContentsMargins(0, 0, 0, 0)
+        central_layout.setSpacing(0)
+
+        self.canvas = ImageCanvas(self)
+        self.top_bar = self._create_top_bar()
+        central_layout.addWidget(self.top_bar)
+        central_layout.addWidget(self.canvas, stretch=1)
+
+        # Variations Carousel Panel at the bottom
+        self.carousel_panel = self._create_carousel_panel()
+        self.carousel_panel.setVisible(False)
+        central_layout.addWidget(self.carousel_panel)
+
+        self.setCentralWidget(central_container)
+
+        self._create_statusbar()
+        self._connect_signals()
+
+        # Global hotkeys
+        QShortcut(QKeySequence("Ctrl+0"), self, self.canvas.fit_to_screen)
+        QShortcut(QKeySequence("Ctrl+1"), self, self.canvas.zoom_to_actual_size)
+        QShortcut(QKeySequence("F"), self, self.canvas.fit_to_screen)
+        QShortcut(QKeySequence("Ctrl+S"), self, self._on_save_and_exit)
+        QShortcut(QKeySequence("Y"), self, lambda: self.btn_split.setChecked(not self.btn_split.isChecked()))
+
+        # Load initial image if provided
+        if self.input_path and os.path.isfile(self.input_path):
+            self.load_image_file(self.input_path)
+        else:
+            self.statusBar().showMessage("Ready. Open an image or launch from Adobe Lightroom Classic.")
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        # Ensure image is fitted comfortably to the actual rendered window viewport
+        QTimer.singleShot(50, self.canvas.fit_to_screen)
+
+    def _create_carousel_panel(self) -> QFrame:
+        """Create the bottom carousel panel for Firefly candidate variations."""
+        panel = QFrame(self)
+        panel.setStyleSheet("""
+            QFrame {
+                background-color: #1a1a1a;
+                border-top: 1px solid #2d2d2d;
+                padding: 4px 10px;
+            }
+        """)
+        layout = QHBoxLayout(panel)
+        layout.setContentsMargins(12, 6, 12, 6)
+        layout.setSpacing(12)
+
+        lbl = QLabel("<b>✨ Firefly Variations:</b>")
+        lbl.setStyleSheet("color: #0078d4; font-size: 12px; font-weight: bold;")
+        layout.addWidget(lbl)
+
+        self.var_card_layout = QHBoxLayout()
+        self.var_card_layout.setSpacing(10)
+        layout.addLayout(self.var_card_layout)
+
+        layout.addStretch(1)
+
+        self.btn_more_variations = QPushButton("🔄 More Variations")
+        self.btn_more_variations.setToolTip("Generate 3 more candidate variations with new random seeds")
+        self.btn_more_variations.clicked.connect(self._on_generate_more_variations)
+        layout.addWidget(self.btn_more_variations)
+
+        self.btn_accept_variation = QPushButton("✔ Keep Selected")
+        self.btn_accept_variation.setToolTip("Accept active variation and hide carousel")
+        self.btn_accept_variation.clicked.connect(self._on_accept_variation)
+        layout.addWidget(self.btn_accept_variation)
+
+        return panel
+
+    def _render_loading_carousel(self):
+        """Display placeholder loading cards during candidate generation."""
+        while self.var_card_layout.count():
+            item = self.var_card_layout.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
+
+        self.var_buttons = []
+        for i in range(3):
+            card = QFrame()
+            card.setFixedSize(140, 72)
+            card.setStyleSheet("""
+                QFrame {
+                    background-color: #242424;
+                    border: 1px dashed #404040;
+                    border-radius: 6px;
+                }
+            """)
+            c_layout = QVBoxLayout(card)
+            c_layout.setContentsMargins(4, 4, 4, 4)
+            c_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            lbl = QLabel(f"⏳ Generating {i + 1}...")
+            lbl.setStyleSheet("color: #0078d4; font-size: 11px; font-weight: 500;")
+            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            c_layout.addWidget(lbl)
+            self.var_card_layout.addWidget(card)
+
+    def _create_top_bar(self) -> QFrame:
+        """Create the Lightroom-style top control bar."""
+        bar = QFrame(self)
+        bar.setObjectName("topBar")
+        bar.setStyleSheet("""
+            QFrame#topBar {
+                background-color: #242424;
+                border-bottom: 1px solid #333333;
+            }
+            QFrame#topBar QLabel {
+                color: #cccccc;
+                font-size: 11px;
+            }
+        """)
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(10, 5, 10, 5)
+        layout.setSpacing(6)
+
+        def add_vsep():
+            sep = QFrame()
+            sep.setFrameShape(QFrame.Shape.VLine)
+            sep.setFrameShadow(QFrame.Shadow.Sunken)
+            sep.setStyleSheet("color: #383838; max-width: 1px;")
+            layout.addWidget(sep)
+
+        # Open file button (for standalone mode)
+        self.btn_open = QPushButton("📂 Open")
+        self.btn_open.setToolTip("Open Photo from computer")
+        self.btn_open.clicked.connect(self._on_open_file)
+        layout.addWidget(self.btn_open)
+
+        add_vsep()
+
+        # Engine Mode Switcher
+        self.combo_engine = QComboBox()
+        self.combo_engine.addItem("✨ Firefly AI", EngineMode.FIREFLY)
+        self.combo_engine.addItem("⚡ Fast Spot", EngineMode.FAST)
+        self.combo_engine.currentIndexChanged.connect(self._on_engine_changed)
+        layout.addWidget(self.combo_engine)
+
+        # Detect Subject (Object-Aware) toggle
+        self.chk_detect_subject = QCheckBox("🎯 Subject")
+        self.chk_detect_subject.setChecked(False)
+        self.chk_detect_subject.setToolTip("Automatically isolate the subject inside your brush stroke so background does not change")
+        layout.addWidget(self.chk_detect_subject)
+
+        # Sensor Grain toggle
+        self.chk_grain = QCheckBox("Grain")
+        self.chk_grain.setChecked(False)
+        self.chk_grain.setToolTip("Add subtle monochromatic camera sensor noise")
+        layout.addWidget(self.chk_grain)
+
+        add_vsep()
+
+        # Brush Radius slider
+        layout.addWidget(QLabel("Size:"))
+        self.size_slider = QSlider(Qt.Orientation.Horizontal)
+        self.size_slider.setRange(5, 200)
+        self.size_slider.setValue(self.canvas.brush_radius)
+        self.size_slider.setFixedWidth(75)
+        self.size_slider.setToolTip("Brush Radius (Hotkeys: [ and ])")
+        layout.addWidget(self.size_slider)
+
+        self.size_label = QLabel(f"{self.canvas.brush_radius}px")
+        self.size_label.setFixedWidth(36)
+        layout.addWidget(self.size_label)
+
+        add_vsep()
+
+        # Fit to Screen button
+        self.btn_fit = QPushButton("🔍 Fit")
+        self.btn_fit.setToolTip("Fit entire image into screen (Ctrl+0 / F)")
+        self.btn_fit.clicked.connect(self.canvas.fit_to_screen)
+        layout.addWidget(self.btn_fit)
+
+        # 100% 1:1 Pixel View button
+        self.btn_actual_size = QPushButton("1:1")
+        self.btn_actual_size.setToolTip("View at 100% pixel scale (Ctrl+1)")
+        self.btn_actual_size.clicked.connect(self.canvas.zoom_to_actual_size)
+        layout.addWidget(self.btn_actual_size)
+
+        # Compare Before / After Toggle
+        self.btn_compare = QPushButton("👁 Compare")
+        self.btn_compare.setToolTip("Hold \\ or Spacebar for instant Before / After preview")
+        self.btn_compare.setCheckable(True)
+        self.btn_compare.toggled.connect(self.canvas.set_compare_mode)
+        layout.addWidget(self.btn_compare)
+
+        # Split-Screen Slider Comparison button
+        self.btn_split = QPushButton("◫ Split")
+        self.btn_split.setCheckable(True)
+        self.btn_split.setToolTip("Before & After interactive split-screen slider (Hotkey: Y)")
+        self.btn_split.toggled.connect(self.canvas.set_split_compare_mode)
+        layout.addWidget(self.btn_split)
+
+        add_vsep()
+
+        # Undo / Redo
+        self.btn_undo = QPushButton("↶ Undo")
+        self.btn_undo.setToolTip("Undo last action (Ctrl+Z)")
+        self.btn_undo.clicked.connect(self.canvas.undo)
+        layout.addWidget(self.btn_undo)
+
+        self.btn_redo = QPushButton("↷ Redo")
+        self.btn_redo.setToolTip("Redo last action (Ctrl+Y)")
+        self.btn_redo.clicked.connect(self.canvas.redo)
+        layout.addWidget(self.btn_redo)
+
+        # Reset All
+        self.btn_reset = QPushButton("Reset")
+        self.btn_reset.setToolTip("Reset canvas and variations to original unedited photo")
+        self.btn_reset.clicked.connect(self._on_reset_all)
+        layout.addWidget(self.btn_reset)
+
+        add_vsep()
+
+        # Open Output Folder
+        self.btn_open_folder = QPushButton("📁 Folder")
+        self.btn_open_folder.setToolTip("Open folder containing the edited photo in File Explorer")
+        self.btn_open_folder.clicked.connect(self._on_open_output_folder)
+        layout.addWidget(self.btn_open_folder)
+
+        # Lightroom setup help
+        self.btn_lr_help = QPushButton("💡 Help")
+        self.btn_lr_help.setToolTip("Lightroom Classic shortcut & setup guide")
+        self.btn_lr_help.clicked.connect(self._on_show_lr_help)
+        layout.addWidget(self.btn_lr_help)
+
+        # Spacer pushes action buttons smoothly to the right
+        layout.addStretch(1)
+
+        # Primary Inpainting Button
+        self.btn_erase = QPushButton("✨ Erase Object")
+        self.btn_erase.setObjectName("primaryAction")
+        self.btn_erase.setToolTip("Run AI inpainting on marked red areas (Enter)")
+        self.btn_erase.clicked.connect(self._on_run_inpainting)
+        layout.addWidget(self.btn_erase)
+
+        # Save and Return button
+        self.btn_save = QPushButton("✔ Save & Return")
+        self.btn_save.setObjectName("saveAction")
+        self.btn_save.setToolTip("Save result and complete Lightroom roundtrip (Ctrl+S)")
+        self.btn_save.clicked.connect(self._on_save_and_exit)
+        layout.addWidget(self.btn_save)
+
+        return bar
+
+    def _create_statusbar(self):
+        statusbar = QStatusBar(self)
+        self.setStatusBar(statusbar)
+
+        # Dimensions & Megapixels
+        self.dim_label = QLabel(" 0 × 0 px ")
+        self.dim_label.setStyleSheet("color: #888888; font-size: 11px; margin-right: 12px;")
+        statusbar.addPermanentWidget(self.dim_label)
+
+        # Progress bar
+        self.progress_bar = QProgressBar(self)
+        self.progress_bar.setFixedWidth(200)
+        self.progress_bar.setVisible(False)
+        statusbar.addPermanentWidget(self.progress_bar)
+
+        # Generation Elapsed Time Badge
+        self.timer_label = QLabel("")
+        self.timer_label.setStyleSheet("color: #00d26a; font-weight: bold; font-size: 11px; margin-right: 12px;")
+        statusbar.addPermanentWidget(self.timer_label)
+
+        # Device & Hardware Acceleration Indicator
+        self.dev_label = QLabel(f" {get_device_telemetry(self.engine.device)} ")
+        self.dev_label.setStyleSheet("color: #0078d4; font-weight: bold; font-size: 11px;")
+        statusbar.addPermanentWidget(self.dev_label)
+
+    def _connect_signals(self):
+        self.size_slider.valueChanged.connect(self.canvas.set_brush_radius)
+        self.canvas.brushSizeChanged.connect(self._on_brush_size_changed)
+        self.canvas.splitCompareChanged.connect(self.btn_split.setChecked)
+        self.canvas.strokeFinished.connect(self._on_stroke_finished)
+        self.canvas.statusMessage.connect(lambda msg: self.statusBar().showMessage(msg, 4000))
+
+        # Global window shortcuts for Undo / Redo / Save / Erase
+        self.shortcut_undo = QShortcut(QKeySequence("Ctrl+Z"), self)
+        self.shortcut_undo.activated.connect(self.canvas.undo)
+
+        self.shortcut_redo_y = QShortcut(QKeySequence("Ctrl+Y"), self)
+        self.shortcut_redo_y.activated.connect(self.canvas.redo)
+
+        self.shortcut_redo_shift_z = QShortcut(QKeySequence("Ctrl+Shift+Z"), self)
+        self.shortcut_redo_shift_z.activated.connect(self.canvas.redo)
+
+        self.shortcut_save = QShortcut(QKeySequence("Ctrl+S"), self)
+        self.shortcut_save.activated.connect(self._on_save_and_exit)
+
+        # Enter / Return shortcut to trigger Erase Object
+        self.shortcut_erase_ret = QShortcut(QKeySequence(Qt.Key.Key_Return), self)
+        self.shortcut_erase_ret.activated.connect(self._on_run_inpainting)
+        self.shortcut_erase_ent = QShortcut(QKeySequence(Qt.Key.Key_Enter), self)
+        self.shortcut_erase_ent.activated.connect(self._on_run_inpainting)
+
+    def _on_reset_all(self):
+        """Reset canvas to original unedited photo and clear all variations."""
+        self.canvas.reset_all()
+        self.current_variations = []
+        self.carousel_panel.setVisible(False)
+        self.last_base_image = None
+        self.last_used_mask = None
+        self.statusBar().showMessage("Reset canvas and variations to original unedited photo.", 4000)
+
+    def _on_open_output_folder(self):
+        """Open the directory of the active photo in Windows File Explorer."""
+        target = self.output_path or self.input_path
+        if not target:
+            QMessageBox.information(self, "No Photo Loaded", "Please open a photo first.")
+            return
+        folder = os.path.dirname(os.path.abspath(target))
+        if os.path.isdir(folder):
+            from PyQt6.QtGui import QDesktopServices
+            from PyQt6.QtCore import QUrl
+            QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
+            self.statusBar().showMessage(f"Opened folder: {folder}", 3000)
+        else:
+            QMessageBox.warning(self, "Folder Not Found", f"Directory does not exist:\n{folder}")
+
+    def _on_engine_changed(self, index: int):
+        mode = self.combo_engine.itemData(index)
+        self.engine.set_mode(mode)
+        if mode == EngineMode.FAST:
+            if hasattr(self, "chk_detect_subject"):
+                self.chk_detect_subject.setEnabled(False)
+                self.chk_detect_subject.setChecked(False)
+            if hasattr(self, "chk_grain"):
+                self.chk_grain.setEnabled(False)
+                self.chk_grain.setChecked(False)
+        else:
+            if hasattr(self, "chk_detect_subject"):
+                self.chk_detect_subject.setEnabled(True)
+            if hasattr(self, "chk_grain"):
+                self.chk_grain.setEnabled(True)
+        self.statusBar().showMessage(f"Switched engine to {mode.value.upper()}", 3000)
+
+    def _on_stroke_finished(self):
+        """Called when a brush stroke is completed."""
+        if self.canvas.has_mask() and self.worker is None:
+            self.statusBar().showMessage("Mask painted. Click '✨ Erase Object' (or press Enter) to run AI removal.", 4000)
+
+    def _on_show_lr_help(self):
+        QMessageBox.information(
+            self,
+            "Lightroom Classic Integration",
+            "<h3>Efface Magique - Lightroom Classic Setup</h3>"
+            "<p>You can access this AI Eraser directly inside Lightroom in 3 easy ways:</p>"
+            "<ol>"
+            "<li><b>Top Menu:</b> Select photo &gt; <b>File &gt; Plug-in Extras &gt; 🪄 AI Generative Eraser...</b></li>"
+            "<li><b>Right-Click:</b> Right-click any photo in Library Grid or Loupe view &gt; <b>Plug-in Extras &gt; 🪄 AI Generative Eraser...</b></li>"
+            "<li><b>Instant Shortcut (Ctrl+Alt+E):</b>"
+            "<ul>"
+            "<li>In Lightroom, go to <b>Edit &gt; Preferences &gt; External Editing</b>.</li>"
+            "<li>Under <i>Additional External Editor</i>, click <b>Choose...</b> and select <code>companion.bat</code> in the project directory.</li>"
+            "<li>Set File Format to <b>TIFF</b>, Color Space to <b>ProPhoto RGB</b>, Bit Depth to <b>16 bits/component</b>.</li>"
+            "<li>Save as preset named <b>Efface Magique</b>.</li>"
+            "<li>Press <b>Ctrl + Alt + E</b> on any photo to open it immediately!</li>"
+            "</ul>"
+            "</li>"
+            "</ol>"
+        )
+
+    def _on_brush_size_changed(self, size: int):
+        self.size_slider.blockSignals(True)
+        self.size_slider.setValue(size)
+        self.size_slider.blockSignals(False)
+        self.size_label.setText(f" {size}px ")
+
+    def load_image_file(self, file_path: str):
+        """Open and display an image file, preserving original ICC profile and EXIF metadata."""
+        try:
+            pil_img = Image.open(file_path)
+            # Cache color profile and metadata
+            self.original_icc_profile = pil_img.info.get("icc_profile")
+            try:
+                self.original_exif = pil_img.getexif()
+            except Exception:
+                self.original_exif = None
+            self.original_dpi = pil_img.info.get("dpi")
+
+            self.canvas.load_image(pil_img)
+            self.input_path = file_path
+            if not self.output_path:
+                is_tmp_lr = os.path.abspath(file_path).startswith(os.path.abspath(os.path.join(_PROJECT_ROOT, ".tmp")))
+                if is_tmp_lr:
+                    self.output_path = file_path
+                else:
+                    base, ext = os.path.splitext(file_path)
+                    self.output_path = f"{base}_ai_edit{ext}"
+
+            self.current_variations = []
+            self.carousel_panel.setVisible(False)
+
+            w, h = pil_img.size
+            mp = (w * h) / 1_000_000.0
+            if hasattr(self, "dim_label"):
+                self.dim_label.setText(f" {w} × {h} px ({mp:.1f} MP) ")
+
+            self.setWindowTitle(f"Efface Magique LR — {os.path.basename(file_path)} ({w}x{h})")
+            self.statusBar().showMessage(f"Loaded {file_path}", 5000)
+        except Exception as e:
+            logger.exception("Failed to open image")
+            QMessageBox.critical(self, "Error Opening Image", f"Could not load image:\n{e}")
+
+    def _on_open_file(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Photo to Edit",
+            "",
+            "Images (*.tif *.tiff *.png *.jpg *.jpeg *.dng *.psd);;All Files (*.*)"
+        )
+        if file_path:
+            self.load_image_file(file_path)
+
+    def _on_run_inpainting(self):
+        """Trigger AI inpainting in a background worker thread."""
+        current_img = self.canvas.get_current_image()
+        mask_img = self.canvas.get_mask_image()
+
+        if current_img is None:
+            QMessageBox.information(self, "No Image", "Please load an image first.")
+            return
+
+        if not self.canvas.has_mask():
+            QMessageBox.information(self, "No Mask", "Please paint over the object you want to erase using the red brush.")
+            return
+
+        self._start_inpainting_pipeline(current_img, mask_img)
+
+    def _start_inpainting_pipeline(self, current_img: Image.Image, mask_img: Image.Image, seed: Optional[int] = None):
+        """Launch worker thread for single-pass or multi-variation generation."""
+        self.btn_erase.setEnabled(False)
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setValue(0)
+        self._generation_start_time = time.time()
+        if hasattr(self, "timer_label"):
+            self.timer_label.setText("")
+
+        if self.engine.mode == EngineMode.FIREFLY:
+            self._render_loading_carousel()
+            self.carousel_panel.setVisible(True)
+
+        self.statusBar().showMessage("Initializing generative inpainting pipeline...")
+
+        self.last_base_image = current_img.copy()
+        self.last_used_mask = mask_img.copy()
+
+        prompt_text = None
+        num_vars = 3 if self.engine.mode == EngineMode.FIREFLY else 1
+
+        detect_subj = self.chk_detect_subject.isChecked() if (hasattr(self, "chk_detect_subject") and self.chk_detect_subject.isEnabled()) else False
+        enable_grain = self.chk_grain.isChecked() if (hasattr(self, "chk_grain") and self.chk_grain.isEnabled()) else False
+
+        self.worker = InpaintingWorker(
+            engine=self.engine,
+            image=current_img,
+            mask=mask_img,
+            num_variations=num_vars,
+            prompt=prompt_text,
+            seed=seed,
+            detect_subject=detect_subj,
+            enable_grain=enable_grain,
+        )
+        self.worker.progress.connect(self._on_inpainting_progress)
+        self.worker.variationsReady.connect(self._on_inpainting_finished)
+        self.worker.error.connect(self._on_inpainting_error)
+        self.worker.finished.connect(self._on_worker_thread_finished)
+        self.worker.start()
+
+    def _on_worker_thread_finished(self):
+        """Safely release worker reference after native thread has terminated."""
+        if self.worker is not None:
+            self.worker.deleteLater()
+            self.worker = None
+
+    def _on_inpainting_progress(self, percentage: int, message: str):
+        self.progress_bar.setValue(percentage)
+        self.statusBar().showMessage(message)
+
+    def _on_inpainting_finished(self, variations: List[Image.Image]):
+        self.progress_bar.setVisible(False)
+        self.btn_erase.setEnabled(True)
+
+        if not variations:
+            return
+
+        self.current_variations = variations
+        self.active_variation_index = 0
+
+        # Apply primary variation
+        self.canvas.apply_inpainted_image(variations[0])
+
+        # Compute elapsed time
+        elapsed = time.time() - getattr(self, "_generation_start_time", time.time())
+        if hasattr(self, "timer_label"):
+            self.timer_label.setText(f" ⚡ {elapsed:.2f}s ")
+
+        # Render carousel if multiple variations exist
+        if len(variations) > 1 and self.engine.mode == EngineMode.FIREFLY:
+            self._render_carousel_thumbnails()
+            self.carousel_panel.setVisible(True)
+        else:
+            self.carousel_panel.setVisible(False)
+
+        if hasattr(self, "dev_label"):
+            self.dev_label.setText(f" {get_device_telemetry(self.engine.device)} ")
+
+        self.statusBar().showMessage(f"Generated {len(variations)} variation(s) in {elapsed:.2f}s. Select below or Save to return.", 5000)
+
+    def _render_carousel_thumbnails(self):
+        """Populate the bottom carousel with thumbnails for each candidate variation."""
+        # Clear existing buttons
+        while self.var_card_layout.count():
+            item = self.var_card_layout.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
+
+        self.var_buttons = []
+        for idx, var_img in enumerate(self.current_variations):
+            thumb = var_img.copy()
+            thumb.thumbnail((120, 80), Image.Resampling.BILINEAR)
+            qimg = pil_to_qimage(thumb)
+            pix = QPixmap.fromImage(qimg)
+
+            btn = QPushButton()
+            btn.setCheckable(True)
+            btn.setChecked(idx == self.active_variation_index)
+            btn.setIcon(QIcon(pix))
+            btn.setIconSize(QSize(90, 60))
+            btn.setText(f" Variation {idx + 1}")
+            btn.setFixedHeight(72)
+            btn.setFixedWidth(160)
+            btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #242424;
+                    border: 2px solid #383838;
+                    border-radius: 6px;
+                    color: #ffffff;
+                    font-size: 11px;
+                    padding: 4px;
+                    text-align: center;
+                }
+                QPushButton:hover {
+                    border-color: #0078d4;
+                    background-color: #2c2c2c;
+                }
+                QPushButton:checked {
+                    border: 2px solid #0078d4;
+                    background-color: #12283e;
+                    color: #ffffff;
+                    font-weight: bold;
+                }
+            """)
+            btn.clicked.connect(lambda checked, i=idx: self._on_select_variation(i))
+            self.var_card_layout.addWidget(btn)
+            self.var_buttons.append(btn)
+
+    def _on_select_variation(self, index: int):
+        """User clicked a candidate variation thumbnail card."""
+        if 0 <= index < len(self.current_variations):
+            self.active_variation_index = index
+            for idx, btn in enumerate(self.var_buttons):
+                btn.setChecked(idx == index)
+            self.canvas.set_preview_image(self.current_variations[index])
+            self.statusBar().showMessage(f"Displaying Variation {index + 1} of {len(self.current_variations)}", 3000)
+
+    def _on_accept_variation(self):
+        """Lock in selected variation and hide carousel."""
+        self.carousel_panel.setVisible(False)
+        self.statusBar().showMessage(f"Accepted Variation {self.active_variation_index + 1}.", 3000)
+
+    def _on_generate_more_variations(self):
+        """Generate 3 more candidate variations with a fresh seed."""
+        if self.last_base_image and self.last_used_mask:
+            import random
+            fresh_seed = random.randint(1000, 999999)
+            self._start_inpainting_pipeline(self.last_base_image, self.last_used_mask, seed=fresh_seed)
+        else:
+            self._on_run_inpainting()
+
+    def _on_inpainting_error(self, err_msg: str):
+        self.progress_bar.setVisible(False)
+        self.btn_erase.setEnabled(True)
+        QMessageBox.critical(self, "AI Inpainting Error", f"An error occurred during inpainting:\n\n{err_msg}")
+        self.statusBar().showMessage("Inpainting failed.", 4000)
+
+    def _on_save_and_exit(self):
+        """Save the active image and close companion to trigger Lightroom reimport."""
+        current_img = self.canvas.get_current_image()
+        if current_img is None:
+            QMessageBox.information(self, "No Image", "There is no image to save.")
+            return
+
+        # Use actively selected variation if available
+        if self.current_variations and 0 <= self.active_variation_index < len(self.current_variations):
+            save_img = self.current_variations[self.active_variation_index]
+        else:
+            save_img = current_img
+
+        if not self.output_path:
+            file_path, _ = QFileDialog.getSaveFileName(
+                self,
+                "Save Edited Photo",
+                "",
+                "TIFF (*.tif *.tiff);;PNG (*.png);;JPEG (*.jpg *.jpeg)"
+            )
+            if not file_path:
+                return
+            self.output_path = file_path
+
+        # Non-destructive protection: ensure we never overwrite original image when loaded directly
+        is_tmp_lr = os.path.abspath(self.output_path).startswith(os.path.abspath(os.path.join(_PROJECT_ROOT, ".tmp")))
+        if not is_tmp_lr and self.input_path and os.path.abspath(self.output_path) == os.path.abspath(self.input_path):
+            base, ext = os.path.splitext(self.input_path)
+            self.output_path = f"{base}_ai_edit{ext}"
+            logger.info(f"Non-destructive save: diverted output to {self.output_path} to preserve original.")
+
+        try:
+            # Preserve color profile, resolution tags, and compression
+            save_kwargs = {}
+            if self.output_path.lower().endswith((".tif", ".tiff")):
+                save_kwargs["compression"] = "tiff_deflate"
+                if self.original_icc_profile:
+                    save_kwargs["icc_profile"] = self.original_icc_profile
+                if self.original_dpi:
+                    save_kwargs["dpi"] = self.original_dpi
+                # Note: DO NOT pass raw dictionary `exif=self.original_exif` for TIFF files.
+                # Lightroom exports multi-entry tags (such as IPTC tag 33723) that cause
+                # LibTIFF/Pillow to crash with RuntimeError: "Error setting from dictionary".
+            elif self.output_path.lower().endswith((".jpg", ".jpeg")):
+                save_kwargs["quality"] = 95
+                if self.original_icc_profile:
+                    save_kwargs["icc_profile"] = self.original_icc_profile
+                if self.original_dpi:
+                    save_kwargs["dpi"] = self.original_dpi
+            elif self.output_path.lower().endswith(".png"):
+                if self.original_icc_profile:
+                    save_kwargs["icc_profile"] = self.original_icc_profile
+                if self.original_dpi:
+                    save_kwargs["dpi"] = self.original_dpi
+
+            os.makedirs(os.path.dirname(os.path.abspath(self.output_path)), exist_ok=True)
+            try:
+                save_img.save(self.output_path, **save_kwargs)
+            except Exception as enc_err:
+                logger.warning(f"Initial save raised {enc_err}. Retrying with safe fallback parameters...")
+                safe_kwargs = {}
+                if self.output_path.lower().endswith((".tif", ".tiff")):
+                    safe_kwargs["compression"] = "tiff_deflate"
+                elif self.output_path.lower().endswith((".jpg", ".jpeg")):
+                    safe_kwargs["quality"] = 95
+                if self.original_icc_profile:
+                    safe_kwargs["icc_profile"] = self.original_icc_profile
+                save_img.save(self.output_path, **safe_kwargs)
+
+            logger.info(f"Saved image to {self.output_path} (ICC Profile preserved: {bool(self.original_icc_profile)})")
+            self.saved_successfully = True
+
+            print(f"[Efface Magique] Edited photo successfully saved to: {self.output_path}")
+            self.statusBar().showMessage(f"Saved: {self.output_path}", 5000)
+            self.close()
+        except Exception as e:
+            logger.exception("Failed to save image")
+            QMessageBox.critical(self, "Error Saving Image", f"Could not save file:\n{e}")
+
+
+# -----------------------------------------------------------------------------
+# CLI Entry Point
+# -----------------------------------------------------------------------------
+
+def main():
+    parser = argparse.ArgumentParser(description="Efface Magique LR - AI Generative Eraser Companion")
+    parser.add_argument("--input", "-i", type=str, default=None, help="Path to input photo exported from Lightroom")
+    parser.add_argument("--image", type=str, default=None, help="Alias for --input")
+    parser.add_argument("--output", "-o", type=str, default=None, help="Path to write output photo")
+    parser.add_argument("--prompt", "-p", type=str, default=None, help="Optional text prompt for Firefly generative fill")
+    parser.add_argument("--headless", action="store_true", help="Run without GUI in automated test mode")
+    parser.add_argument("--test-mask-rect", type=str, default=None, help="Apply rectangular test mask X,Y,W,H in headless mode")
+    args = parser.parse_args()
+
+    input_file = args.input or args.image
+    output_file = args.output or input_file
+
+    if args.headless:
+        logger.info("Executing in headless automated test mode...")
+        if not input_file or not os.path.isfile(input_file):
+            logger.error(f"Headless mode requires an existing input image (--input or --image): {input_file}")
+            sys.exit(1)
+
+        try:
+            pil_img = Image.open(input_file)
+            w, h = pil_img.size
+            mask_pil = Image.new("L", (w, h), 0)
+
+            if args.test_mask_rect:
+                from PIL import ImageDraw
+                rx, ry, rw, rh = [int(v.strip()) for v in args.test_mask_rect.split(",")]
+                draw = ImageDraw.Draw(mask_pil)
+                draw.rectangle([rx, ry, rx + rw, ry + rh], fill=255)
+                logger.info(f"Generated test mask rect: [{rx}, {ry}, {rx+rw}, {ry+rh}]")
+
+            engine = InpaintingEngine()
+            result_img = engine.inpaint_full_resolution(pil_img, mask_pil, prompt=args.prompt)
+
+            if not output_file:
+                output_file = input_file
+
+            os.makedirs(os.path.dirname(os.path.abspath(output_file)), exist_ok=True)
+            if output_file.lower().endswith((".tif", ".tiff")):
+                result_img.save(output_file, compression="tiff_deflate")
+            else:
+                result_img.save(output_file)
+
+            logger.info(f"Saved headless output to {output_file}")
+            sys.exit(0)
+        except Exception as e:
+            logger.exception(f"Headless pipeline error: {e}")
+            sys.exit(1)
+
+    app = QApplication(sys.argv)
+    app.setApplicationName("Efface Magique LR")
+
+    window = MainWindow(input_path=input_file, output_path=output_file)
+    window.show()
+
+    ret = app.exec()
+    if ret == 0:
+        if input_file and not window.saved_successfully:
+            # User closed window without saving edits -> exit code 130 indicates user cancelled
+            sys.exit(130)
+        sys.exit(0)
+    sys.exit(ret)
+
+
+if __name__ == "__main__":
+    main()

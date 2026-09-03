@@ -1,0 +1,8 @@
+# Efface Magique LR - Development & Testing Dependencies
+pytest>=8.0.0
+pytest-qt>=4.4.0
+pytest-cov>=5.0.0
+numpy>=1.24.0
+Pillow>=9.5.0
+luaparser>=4.0.0
+
