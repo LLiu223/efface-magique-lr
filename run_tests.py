@@ -29,7 +29,7 @@ def main():
         "suite",
         nargs="?",
         default="all",
-        choices=["all", "engine", "gui", "plugin", "e2e", "firefly", "subject"],
+        choices=["all", "engine", "gui", "plugin", "e2e", "firefly", "subject", "live"],
         help="Test suite to run (default: all)",
     )
     parser.add_argument(
@@ -54,6 +54,7 @@ def main():
             "tests/test_e2e.py",
             "tests/test_firefly_pipeline.py",
             "tests/test_subject_detector.py",
+            "tests/test_live_bridge.py",
         ],
         "engine": ["tests/test_engine.py"],
         "gui": ["tests/test_gui.py"],
@@ -61,6 +62,7 @@ def main():
         "e2e": ["tests/test_e2e.py"],
         "firefly": ["tests/test_firefly_pipeline.py"],
         "subject": ["tests/test_subject_detector.py"],
+        "live": ["tests/test_live_bridge.py"],
     }
 
     test_targets = suite_map[args.suite]

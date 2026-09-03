@@ -95,8 +95,9 @@ efface-magique-lr/
 ├── plugin/
 │   └── ai_eraser.lrplugin/              # Adobe Lightroom Classic Plugin Bundle
 │       ├── Info.lua                     # Plugin manifest, IDs, SDK version & multi-module menu hooks
-│       ├── GenerativeEraser.lua         # Export -> Launch Companion -> Await -> Re-import & Stack
-│       └── PluginUtils.lua              # Cross-platform path resolver & Python launcher helper
+│       ├── GenerativeEraser.lua         # Single Photo: Export -> Launch Companion -> Await -> Re-import
+│       ├── LiveBridge.lua               # Live Window: Persistent selection observer & seamless IPC sync
+│       └── PluginUtils.lua              # Cross-platform path resolver & background process launcher
 │
 ├── companion/                           # Python AI Companion Application
 │   ├── __init__.py                      # Package descriptor
@@ -104,16 +105,20 @@ efface-magique-lr/
 │   ├── app.py                           # PyQt6 Main Window, toolbars, prompt bar, carousel, headless CLI
 │   ├── canvas.py                        # Interactive high-res canvas, brush, auto-fit, hold-to-compare (\)
 │   ├── inpainting_engine.py             # Dual Engine (EngineMode.FIREFLY & FAST) + multi-seed variations
+│   ├── live_bridge.py                   # High-performance local HTTP IPC bridge (port discovery, REST endpoints)
 │   └── utils/
 │       ├── __init__.py                  # Utils package marker
-│       └── blending.py                  # High-fidelity photographic pipeline (crop, noise, grain, sigmoid)
+│       ├── blending.py                  # High-fidelity photographic pipeline (crop, noise, grain, sigmoid)
+│       └── subject_detector.py          # Subject / object awareness and segmentation
 │
-└── tests/                               # Comprehensive Automated Test Suite (38 Tests)
+└── tests/                               # Comprehensive Automated Test Suite (72 Tests)
     ├── test_engine.py                   # Inpainting benchmarks, bounds, 24MP & 16-bit TIFF tests (10 tests)
-    ├── test_gui.py                      # Headless PyQt6 canvas, tools, zoom, and signals (7 tests)
-    ├── test_plugin.py                   # Lua static AST analysis & Lightroom SDK mock runner (11 tests)
+    ├── test_gui.py                      # Headless PyQt6 canvas, tools, zoom, and signals (17 tests)
+    ├── test_plugin.py                   # Lua static AST analysis & Lightroom SDK mock runner (13 tests)
     ├── test_e2e.py                      # End-to-end CLI headless pipeline verification (3 tests)
-    └── test_firefly_pipeline.py         # Firefly 3 variations, prompt, sensor grain, 24MP, metadata (7 tests)
+    ├── test_firefly_pipeline.py         # Firefly 3 variations, prompt, sensor grain, 24MP, metadata (14 tests)
+    ├── test_subject_detector.py         # Subject boundary and object awareness (4 tests)
+    └── test_live_bridge.py              # Live Bridge REST API, signals, always-on-top, and sync (11 tests)
 ```
 
 ---

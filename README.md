@@ -7,19 +7,17 @@
 
 ## ✨ Features
 
-- ⚡ **Native Lightroom Classic Integration**: Launch directly from Lightroom via `File > Plug-in Extras > AI Generative Eraser` or Library context menu.
-- 🔄 **Automatic Stacking & Reimport**: Exports a full 16-bit lossless TIFF preserving color profiles (ProPhoto RGB / Adobe RGB), launches the companion app, and stacks the edited version adjacent to your original photo.
-- 🧠 **Simple-LaMa AI Inpainting**: State-of-the-art fast Fourier convolution inpainting running 100% locally on your machine (NVIDIA CUDA / Apple Silicon MPS / multi-threaded CPU).
-- 🎯 **High-Res Crop & Feather Blend**:
-  - Automatically calculates the minimum bounding box with a 25% safety margin.
-  - Feathers the edited patch back onto the full-resolution original with a Gaussian alpha mask.
-  - Guarantees **zero blur or artifact degradation** on untouched image areas.
-- 🎨 **Modern Lightroom-Style Companion GUI**:
-  - High-performance canvas supporting 24MP–60MP RAW/TIFF exports.
-  - Interactive red mask brush with adjustable size, opacity, and eraser mode.
-  - Smooth pan (middle click / spacebar drag) and zoom (mouse wheel).
-  - Full Undo (`Ctrl+Z`) and Redo (`Ctrl+Y`) action history.
-  - Non-destructive Before/After comparison (Hold `Spacebar` or toggle button).
+- ⚡ **Seamless Live Window Sync**: Launch once via `File > Plug-in Extras > ⚡ AI Generative Eraser (Live Window)...`. The companion window stays open on a second monitor or side-by-side and automatically updates whenever you navigate or select photos in Lightroom!
+- 🔄 **Non-Blocking Auto-Stacking**: Click **⚡ Save & Sync to Lightroom** (`Ctrl+S`) to losslessly save 16-bit TIFFs and stack them directly into your Lightroom catalog without closing or relaunching the companion app!
+- 📌 **Always-on-Top Floating Mode**: Pin the companion window (`Ctrl+T`) to keep it floating smoothly above Lightroom.
+- 🧠 **Dual Inpainting Engine**:
+  - ✨ **Firefly Generative Mode**: Multi-seed diffusion generating 3 distinct candidate variations with prompt guidance.
+  - ⚡ **Fast Spot Mode**: Simple-LaMa GAN for instantaneous blemish, dust, and wire removal.
+- 🎯 **Photographic Quality & Fidelity**:
+  - Context-aware crop with >= 35% margin (default 85%).
+  - Camera sensor noise estimation & ISO grain matching.
+  - Smooth sigmoid alpha transition with **zero pixel bleed or blur** on untouched regions.
+  - 16-bit ProPhoto RGB, Adobe RGB, and EXIF metadata preservation.
 
 ---
 
@@ -57,13 +55,17 @@ chmod +x install.sh
 
 ### 3. Usage Workflow
 
-1. In Lightroom Classic's **Library** or **Develop** module, select any photo.
-2. Click **File > Plug-in Extras > AI Generative Eraser...** (or right-click the photo > *Plug-in Extras*).
-3. The companion app opens with your full-resolution photo.
-4. Paint over the object(s) you want to remove using the red brush.
-5. Click **✨ Erase Object**.
-6. Once satisfied, click **✔ Save & Return to Lightroom**.
-7. The edited image is automatically imported into your Lightroom catalog and stacked right next to your original!
+#### ⚡ Option A: Seamless Live Window Sync (Recommended)
+1. In Lightroom Classic, select **File > Plug-in Extras > ⚡ AI Generative Eraser (Live Window)...**
+2. The companion window opens and displays your selected photo.
+3. Switch photos in Lightroom (using arrow keys or clicking in the Filmstrip) — the companion window **updates dynamically and seamlessly**!
+4. Paint over unwanted objects with the red brush and click **✨ Erase Object**.
+5. Pick your favorite of 3 Firefly candidate variations.
+6. Click **⚡ Save & Sync to Lightroom** (`Ctrl+S`) — the photo is losslessly saved and automatically stacked in your Lightroom catalog, and the companion window stays open ready for your next photo!
+
+#### 🪄 Option B: Single Photo Mode
+1. In Lightroom, select photo > **File > Plug-in Extras > 🪄 AI Generative Eraser (Single Photo)...**
+2. Edit in companion, click **⚡ Save & Sync to Lightroom** (`Ctrl+S`), and close the window when finished.
 
 ---
 
@@ -71,10 +73,15 @@ chmod +x install.sh
 
 | Shortcut | Action |
 | :--- | :--- |
+| `Ctrl + S` / `Ctrl + Shift + S` | **Save & Sync to Lightroom** (Auto-stacks into catalog and stays open) |
+| `Ctrl + T` | **Toggle Always on Top (Pin)** |
 | `[` / `]` | Decrease / Increase Brush Radius |
 | `Ctrl + Z` | Undo (Brush stroke or inpainting step) |
 | `Ctrl + Y` / `Ctrl + Shift + Z` | Redo |
-| `Spacebar` (Hold) | Compare Before (Original) vs After (Edited) / Pan View |
+| `Spacebar` (Hold) / `\` | Compare Before (Original) vs After (Active Variation) |
+| `Y` | Interactive Before/After Split-Screen Slider |
+| `Ctrl + 0` / `F` | Fit Image to Screen Viewport |
+| `Ctrl + 1` | 100% 1:1 Pixel Scale View |
 | `Middle Mouse Drag` | Pan Image Canvas |
 | `Mouse Wheel` | Smooth Zoom (Centered under cursor) |
 

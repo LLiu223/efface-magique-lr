@@ -53,6 +53,7 @@ from PyQt6.QtWidgets import (
 
 from companion.canvas import ImageCanvas, pil_to_qimage
 from companion.inpainting_engine import InpaintingEngine, get_optimal_device, EngineMode, get_device_telemetry
+from companion.live_bridge import LiveBridgeServer
 
 # Configure logging to console and file
 _log_file = os.path.join(_PROJECT_ROOT, "companion.log")
@@ -205,7 +206,7 @@ QPushButton#primaryAction:disabled {
     color: #6688aa;
     border-color: #23425d;
 }
-QPushButton#saveAction {
+QPushButton#saveAction, QPushButton#syncAction {
     background-color: #107c41;
     color: #ffffff;
     font-weight: bold;
@@ -213,7 +214,7 @@ QPushButton#saveAction {
     padding: 7px 18px;
     border-radius: 4px;
 }
-QPushButton#saveAction:hover {
+QPushButton#saveAction:hover, QPushButton#syncAction:hover {
     background-color: #148f4b;
 }
 QComboBox {
@@ -308,11 +309,21 @@ QLabel {
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, input_path: Optional[str] = None, output_path: Optional[str] = None):
+    def __init__(
+        self,
+        input_path: Optional[str] = None,
+        output_path: Optional[str] = None,
+        live_mode: bool = False,
+        bridge_port: int = 51739,
+    ):
         super().__init__()
 
         self.input_path = input_path
         self.output_path = output_path
+        self.is_live_mode = live_mode
+        self.current_photo_id: Optional[str] = None
+        self.current_original_path: Optional[str] = None
+
         if not self.output_path and self.input_path:
             is_tmp_lr = os.path.abspath(self.input_path).startswith(os.path.abspath(os.path.join(_PROJECT_ROOT, ".tmp")))
             if is_tmp_lr:
@@ -343,6 +354,14 @@ class MainWindow(QMainWindow):
         self.engine = InpaintingEngine(device=device, mode=EngineMode.FIREFLY)
         self.worker: Optional[InpaintingWorker] = None
 
+        # Start high-performance local Live IPC Bridge
+        self.live_bridge = LiveBridgeServer(preferred_port=bridge_port, parent=self)
+        self.live_bridge_port = self.live_bridge.start()
+        self.live_bridge.photo_selected.connect(self._on_live_photo_selected)
+        self.live_bridge.focus_requested.connect(self._on_live_focus_requested)
+        self.live_bridge.import_completed.connect(self._on_live_import_completed)
+        self.live_bridge.close_requested.connect(self.close)
+
         # Build UI
         central_container = QWidget()
         central_layout = QVBoxLayout(central_container)
@@ -368,14 +387,14 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("Ctrl+0"), self, self.canvas.fit_to_screen)
         QShortcut(QKeySequence("Ctrl+1"), self, self.canvas.zoom_to_actual_size)
         QShortcut(QKeySequence("F"), self, self.canvas.fit_to_screen)
-        QShortcut(QKeySequence("Ctrl+S"), self, self._on_save_and_exit)
+        QShortcut(QKeySequence("Ctrl+T"), self, lambda: self.btn_pin.setChecked(not self.btn_pin.isChecked()))
         QShortcut(QKeySequence("Y"), self, lambda: self.btn_split.setChecked(not self.btn_split.isChecked()))
 
         # Load initial image if provided
         if self.input_path and os.path.isfile(self.input_path):
             self.load_image_file(self.input_path)
         else:
-            self.statusBar().showMessage("Ready. Open an image or launch from Adobe Lightroom Classic.")
+            self.statusBar().showMessage("Ready. Select any photo in Lightroom Classic or open an image.")
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -568,6 +587,29 @@ class MainWindow(QMainWindow):
         self.btn_open_folder.clicked.connect(self._on_open_output_folder)
         layout.addWidget(self.btn_open_folder)
 
+        # Always on Top Pin
+        self.btn_pin = QPushButton("📌 Pin")
+        self.btn_pin.setCheckable(True)
+        self.btn_pin.setToolTip("Keep window always on top of Lightroom (Ctrl+T)")
+        self.btn_pin.toggled.connect(self._toggle_always_on_top)
+        layout.addWidget(self.btn_pin)
+
+        # Live Status Badge
+        self.live_badge = QLabel(" 🟢 Live Synced " if self.is_live_mode else " ⚡ Live Ready ")
+        self.live_badge.setStyleSheet("""
+            QLabel {
+                background-color: #103820;
+                color: #4ade80;
+                border: 1px solid #166534;
+                border-radius: 4px;
+                font-weight: bold;
+                font-size: 11px;
+                padding: 2px 6px;
+            }
+        """)
+        self.live_badge.setToolTip("Lightroom Classic Live IPC Bridge status")
+        layout.addWidget(self.live_badge)
+
         # Lightroom setup help
         self.btn_lr_help = QPushButton("💡 Help")
         self.btn_lr_help.setToolTip("Lightroom Classic shortcut & setup guide")
@@ -584,12 +626,15 @@ class MainWindow(QMainWindow):
         self.btn_erase.clicked.connect(self._on_run_inpainting)
         layout.addWidget(self.btn_erase)
 
-        # Save and Return button
-        self.btn_save = QPushButton("✔ Save & Return")
-        self.btn_save.setObjectName("saveAction")
-        self.btn_save.setToolTip("Save result and complete Lightroom roundtrip (Ctrl+S)")
-        self.btn_save.clicked.connect(self._on_save_and_exit)
-        layout.addWidget(self.btn_save)
+        # Save & Sync to Lightroom Button (auto-stacks in catalog and keeps window open)
+        self.btn_sync = QPushButton("⚡ Save & Sync to Lightroom")
+        self.btn_sync.setObjectName("syncAction")
+        self.btn_sync.setToolTip("Save & sync photo into Lightroom without closing window (Ctrl+S)")
+        self.btn_sync.clicked.connect(self._on_sync_to_lightroom)
+        layout.addWidget(self.btn_sync)
+
+        # Alias for backwards compatibility
+        self.btn_save = self.btn_sync
 
         return bar
 
@@ -635,8 +680,12 @@ class MainWindow(QMainWindow):
         self.shortcut_redo_shift_z = QShortcut(QKeySequence("Ctrl+Shift+Z"), self)
         self.shortcut_redo_shift_z.activated.connect(self.canvas.redo)
 
-        self.shortcut_save = QShortcut(QKeySequence("Ctrl+S"), self)
-        self.shortcut_save.activated.connect(self._on_save_and_exit)
+        # Shortcuts for Save / Sync
+        self.shortcut_sync = QShortcut(QKeySequence("Ctrl+S"), self)
+        self.shortcut_sync.activated.connect(self._on_sync_to_lightroom)
+
+        self.shortcut_save_exit = QShortcut(QKeySequence("Ctrl+Shift+S"), self)
+        self.shortcut_save_exit.activated.connect(self._on_sync_to_lightroom)
 
         # Enter / Return shortcut to trigger Erase Object
         self.shortcut_erase_ret = QShortcut(QKeySequence(Qt.Key.Key_Return), self)
@@ -936,12 +985,55 @@ class MainWindow(QMainWindow):
         QMessageBox.critical(self, "AI Inpainting Error", f"An error occurred during inpainting:\n\n{err_msg}")
         self.statusBar().showMessage("Inpainting failed.", 4000)
 
-    def _on_save_and_exit(self):
-        """Save the active image and close companion to trigger Lightroom reimport."""
+    def _toggle_always_on_top(self, pinned: bool):
+        """Toggle WindowStaysOnTopHint dynamically without losing window position."""
+        pos = self.pos()
+        size = self.size()
+        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, pinned)
+        self.show()
+        self.move(pos)
+        self.resize(size)
+        self.statusBar().showMessage("Window pinned: Always on top" if pinned else "Window unpinned", 2500)
+
+    def _on_live_photo_selected(self, payload: dict):
+        """Called when Lightroom user selects another photo in Library or Develop module."""
+        new_path = payload.get("path")
+        if not new_path or not os.path.isfile(new_path):
+            logger.warning(f"Live selection path missing or invalid: {new_path}")
+            return
+
+        if self.worker is not None:
+            logger.info(f"Inpainting active; delaying switch to {new_path}")
+            self.statusBar().showMessage("Lightroom selection changed, but inpainting is currently in progress...", 4000)
+            return
+
+        self.current_photo_id = payload.get("photo_id")
+        self.current_original_path = payload.get("original_path")
+
+        # Load the newly selected photo seamlessly
+        self.load_image_file(new_path)
+        self.canvas.fit_to_screen()
+        if hasattr(self, "live_badge"):
+            self.live_badge.setText(" 🟢 Live Synced ")
+        self.statusBar().showMessage(f"⚡ Live Synced photo: {os.path.basename(new_path)}", 4000)
+
+    def _on_live_focus_requested(self):
+        """Bring window to foreground when requested by Lightroom."""
+        self.raise_()
+        self.activateWindow()
+
+    def _on_live_import_completed(self, payload: dict):
+        """Lightroom finished importing and stacking the edited photo."""
+        imported_path = payload.get("path", "")
+        base = os.path.basename(imported_path) if imported_path else "photo"
+        self.statusBar().showMessage(f"✓ Stacked adjacent to original in Lightroom: {base}", 5000)
+
+    def save_image_to_disk(self) -> Optional[str]:
+        """Save the active variation to disk with full 16-bit color profile and metadata preservation."""
         current_img = self.canvas.get_current_image()
         if current_img is None:
             QMessageBox.information(self, "No Image", "There is no image to save.")
-            return
+            return None
 
         # Use actively selected variation if available
         if self.current_variations and 0 <= self.active_variation_index < len(self.current_variations):
@@ -957,7 +1049,7 @@ class MainWindow(QMainWindow):
                 "TIFF (*.tif *.tiff);;PNG (*.png);;JPEG (*.jpg *.jpeg)"
             )
             if not file_path:
-                return
+                return None
             self.output_path = file_path
 
         # Non-destructive protection: ensure we never overwrite original image when loaded directly
@@ -976,9 +1068,6 @@ class MainWindow(QMainWindow):
                     save_kwargs["icc_profile"] = self.original_icc_profile
                 if self.original_dpi:
                     save_kwargs["dpi"] = self.original_dpi
-                # Note: DO NOT pass raw dictionary `exif=self.original_exif` for TIFF files.
-                # Lightroom exports multi-entry tags (such as IPTC tag 33723) that cause
-                # LibTIFF/Pillow to crash with RuntimeError: "Error setting from dictionary".
             elif self.output_path.lower().endswith((".jpg", ".jpeg")):
                 save_kwargs["quality"] = 95
                 if self.original_icc_profile:
@@ -1006,14 +1095,50 @@ class MainWindow(QMainWindow):
                 save_img.save(self.output_path, **safe_kwargs)
 
             logger.info(f"Saved image to {self.output_path} (ICC Profile preserved: {bool(self.original_icc_profile)})")
-            self.saved_successfully = True
-
-            print(f"[Efface Magique] Edited photo successfully saved to: {self.output_path}")
-            self.statusBar().showMessage(f"Saved: {self.output_path}", 5000)
-            self.close()
+            return self.output_path
         except Exception as e:
             logger.exception("Failed to save image")
             QMessageBox.critical(self, "Error Saving Image", f"Could not save file:\n{e}")
+            return None
+
+    def _on_sync_to_lightroom(self):
+        """Save image and queue for Lightroom auto-import while keeping window open."""
+        saved_path = self.save_image_to_disk()
+        if saved_path:
+            self.saved_successfully = True
+            self.live_bridge.queue_import(
+                export_path=saved_path,
+                original_path=self.current_original_path,
+                photo_id=self.current_photo_id,
+            )
+            self.statusBar().showMessage(f"✓ Saved & Synced to Lightroom: {os.path.basename(saved_path)}", 5000)
+            if hasattr(self, "live_badge"):
+                self.live_badge.setText(" ✓ Synced ")
+                reset_text = " 🟢 Live Synced " if self.is_live_mode else " ⚡ Live Ready "
+                QTimer.singleShot(3000, lambda: self.live_badge.setText(reset_text))
+
+    def _on_save_and_exit(self):
+        """Save the active image, queue import for Lightroom, and close companion."""
+        saved_path = self.save_image_to_disk()
+        if saved_path:
+            self.saved_successfully = True
+            self.live_bridge.queue_import(
+                export_path=saved_path,
+                original_path=self.current_original_path,
+                photo_id=self.current_photo_id,
+            )
+            print(f"[Efface Magique] Edited photo successfully saved to: {saved_path}")
+            self.close()
+
+    def closeEvent(self, event):
+        """Ensure background HTTP server is cleanly terminated and app exits on window close."""
+        if hasattr(self, "live_bridge") and self.live_bridge:
+            self.live_bridge.stop()
+        event.accept()
+        super().closeEvent(event)
+        app = QApplication.instance()
+        if app:
+            app.quit()
 
 
 # -----------------------------------------------------------------------------
@@ -1027,6 +1152,7 @@ def main():
     parser.add_argument("--output", "-o", type=str, default=None, help="Path to write output photo")
     parser.add_argument("--prompt", "-p", type=str, default=None, help="Optional text prompt for Firefly generative fill")
     parser.add_argument("--headless", action="store_true", help="Run without GUI in automated test mode")
+    parser.add_argument("--live", action="store_true", help="Start companion in persistent Live Bridge mode")
     parser.add_argument("--test-mask-rect", type=str, default=None, help="Apply rectangular test mask X,Y,W,H in headless mode")
     args = parser.parse_args()
 
@@ -1072,7 +1198,7 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName("Efface Magique LR")
 
-    window = MainWindow(input_path=input_file, output_path=output_file)
+    window = MainWindow(input_path=input_file, output_path=output_file, live_mode=args.live)
     window.show()
 
     ret = app.exec()

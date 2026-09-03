@@ -14,7 +14,11 @@ return {
     -- File > Plug-in Extras (available across Library, Develop, and all modules)
     LrExportMenuItems = {
         {
-            title = "🪄 AI Generative Eraser...",
+            title = "⚡ AI Generative Eraser (Live Window)...",
+            file = "LiveBridge.lua",
+        },
+        {
+            title = "🪄 AI Generative Eraser (Single Photo)...",
             file = "GenerativeEraser.lua",
         },
     },
@@ -22,7 +26,11 @@ return {
     -- Library module top menu & right-click photo context menu
     LrLibraryMenuItems = {
         {
-            title = "🪄 AI Generative Eraser...",
+            title = "⚡ AI Generative Eraser (Live Window)...",
+            file = "LiveBridge.lua",
+        },
+        {
+            title = "🪄 AI Generative Eraser (Single Photo)...",
             file = "GenerativeEraser.lua",
         },
     },

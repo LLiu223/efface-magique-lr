@@ -7,6 +7,7 @@ Path discovery, environment resolution, and cross-platform command execution
 local LrPathUtils = import 'LrPathUtils'
 local LrFileUtils = import 'LrFileUtils'
 local LrShell = import 'LrShell'
+local LrTasks = import 'LrTasks'
 
 local PluginUtils = {}
 
@@ -67,6 +68,33 @@ function PluginUtils.quoteArg(arg)
         return '"' .. tostring(arg):gsub('"', '\\"') .. '"'
     else
         return "'" .. tostring(arg):gsub("'", "'\\''") .. "'"
+    end
+end
+
+--- Get live bridge port from .tmp/live_bridge.json or default 51739
+function PluginUtils.getLiveBridgePort()
+    local root = PluginUtils.getProjectRoot()
+    local infoPath = LrPathUtils.child(root, ".tmp" .. (WIN_ENV and "\\live_bridge.json" or "/live_bridge.json"))
+    if LrFileUtils.exists(infoPath) == "file" then
+        local content = LrFileUtils.readFile(infoPath)
+        if content then
+            local port = content:match('"port"%s*:%s*(%d+)')
+            if port then
+                return tonumber(port)
+            end
+        end
+    end
+    return 51739
+end
+
+--- Launch a detached background process so Lightroom UI is never blocked
+function PluginUtils.launchBackgroundProcess(command)
+    if WIN_ENV then
+        local winCmd = string.format('cmd.exe /c start "" %s', command)
+        LrTasks.execute(winCmd)
+    else
+        local posixCmd = string.format('nohup %s >/dev/null 2>&1 &', command)
+        LrTasks.execute(posixCmd)
     end
 end
 

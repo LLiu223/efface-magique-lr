@@ -46,7 +46,10 @@ except Exception:
 
 def pil_to_qimage(pil_img: Image.Image) -> QImage:
     """Convert PIL RGB Image to PyQt6 QImage (Format_RGB888)."""
-    rgb_img = pil_img.convert("RGB")
+    if pil_img.mode == "RGB":
+        rgb_img = pil_img
+    else:
+        rgb_img = pil_img.convert("RGB")
     width, height = rgb_img.size
     bytes_per_line = 3 * width
     raw_bytes = rgb_img.tobytes("raw", "RGB")
@@ -247,12 +250,17 @@ class ImageCanvas(QGraphicsView):
         self._brush_inner_ring_item.setVisible(False)
 
     def load_image(self, pil_img: Image.Image):
-        """Set a new base image and initialize scene and masks."""
-        self._orig_pil = pil_img.copy().convert("RGB")
-        self._current_pil = pil_img.copy().convert("RGB")
+        """Set a new base image and initialize scene and masks with minimal memory overhead."""
+        if pil_img.mode == "RGB":
+            rgb_img = pil_img.copy()
+        else:
+            rgb_img = pil_img.convert("RGB")
+
+        self._orig_pil = rgb_img
+        self._current_pil = rgb_img.copy()
 
         # Clear histories
-        self._image_history = [self._current_pil.copy()]
+        self._image_history = [self._current_pil]
         self._image_redo_stack.clear()
         self._mask_history.clear()
         self._mask_redo_stack.clear()
