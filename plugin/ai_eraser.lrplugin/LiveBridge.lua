@@ -71,6 +71,7 @@ local function runLiveBridge()
     end
 
     local port = PluginUtils.getLiveBridgePort()
+    local bridgeInfoFile = LrPathUtils.child(tempDir, "live_bridge.json")
     local pingUrl = string.format("http://127.0.0.1:%d/api/ping", port)
     local isConnected = false
 
@@ -150,6 +151,11 @@ local function runLiveBridge()
 
     while not progressScope:isCanceled() do
         LrTasks.sleep(0.03) -- 30ms high-frequency polling
+
+        -- Fast close detection: if the info file was deleted by the companion on close, exit immediately
+        if LrFileUtils.exists(bridgeInfoFile) ~= "file" then
+            break
+        end
 
         port = PluginUtils.getLiveBridgePort()
         local targetPhoto = catalog:getTargetPhoto()
@@ -299,6 +305,24 @@ local function runLiveBridge()
     if progressScope:isCanceled() then
         local closeUrl = string.format("http://127.0.0.1:%d/api/close", port)
         LrHttp.post(closeUrl, "{}", headers)
+    end
+
+    -- Clean up temporary exported live TIFFs
+    if LrFileUtils.exists(tempDir) == "directory" then
+        local entries = LrFileUtils.directoryEntries(tempDir)
+        if type(entries) == "function" then
+            for entry in entries do
+                if string.find(entry, "live_") and (string.find(entry, "%.tif") or string.find(entry, "%.tiff")) then
+                    LrFileUtils.delete(entry)
+                end
+            end
+        elseif type(entries) == "table" then
+            for _, entry in ipairs(entries) do
+                if string.find(entry, "live_") and (string.find(entry, "%.tif") or string.find(entry, "%.tiff")) then
+                    LrFileUtils.delete(entry)
+                end
+            end
+        end
     end
 
     progressScope:done()

@@ -156,6 +156,12 @@ class LiveBridgeRequestHandler(BaseHTTPRequestHandler):
                 pass
             return
 
+        elif self.path == "/api/companion_closed":
+            # Companion is shutting down — acknowledge (Lightroom will see the HTTP 200
+            # and LiveBridge.lua can be updated to break out of loop on this response).
+            self._send_json_response(200, {"status": "companion_closed"})
+            return
+
         self._send_json_response(404, {"error": "Endpoint not found"})
 
 
@@ -210,6 +216,28 @@ class LiveBridgeServer(QObject):
         self._write_info_file()
         logger.info(f"Live Bridge Server running on http://127.0.0.1:{self.port} (PID: {os.getpid()})")
         return self.port
+
+    def notify_lightroom_closing(self):
+        """
+        Proactively notify Lightroom that the companion is closing.
+        This signals LiveBridge.lua to break out of its polling loop immediately,
+        so the Lightroom activity bar clears without waiting for a ping timeout.
+        """
+        if not self.port:
+            return
+        try:
+            import urllib.request
+            url = f"http://127.0.0.1:{self.port}/api/companion_closed"
+            req = urllib.request.Request(
+                url,
+                data=b"{}",
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            # Very short timeout — fire-and-forget; Lightroom may not respond
+            urllib.request.urlopen(req, timeout=0.5)
+        except Exception:
+            pass  # Expected if Lightroom isn't listening
 
     def stop(self):
         """Cleanly terminate the server and remove info file."""

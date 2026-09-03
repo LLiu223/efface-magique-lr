@@ -96,7 +96,6 @@ Work through your entire photoshoot without ever relaunching or closing the edit
    - Lightroom automatically imports and stacks the edited version with the original photo.
    - The companion window **stays open**, ready for your next photo!
 9. **Stay Floating:** Click **📌 Pin** (or press `Ctrl + T`) to keep the editor floating smoothly above Lightroom.
-10. **Reveal in Explorer:** Click **📁 Show in Folder** (or press `Ctrl + E`) to highlight the file in Windows File Explorer.
 
 ---
 
@@ -125,7 +124,6 @@ You can also use Efface Magique as a standalone desktop photo eraser:
 | **`Ctrl + S`** / **`Ctrl + Shift + S`** | **⚡ Save & Sync to Lightroom** | Saves 16-bit TIFF, auto-stacks into Lightroom catalog, and stays open |
 | **`Enter`** / **`Return`** | **✨ Erase Object** | Runs local AI inpainting on painted mask |
 | **`Ctrl + T`** | **📌 Toggle Pin** | Keeps window floating always on top of Lightroom Classic |
-| **`Ctrl + E`** | **📁 Show in Folder** | Reveals and highlights active photo in Windows File Explorer |
 | **`[` / `]`** | **Brush Size** | Decrease / Increase brush radius |
 | **`Ctrl + Z`** | **↶ Undo** | Undo stroke or inpainting action |
 | **`Ctrl + Y`** / **`Ctrl + Shift + Z`** | **↷ Redo** | Redo stroke or inpainting action |

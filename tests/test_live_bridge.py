@@ -369,31 +369,39 @@ class TestMainWindowLiveIntegration:
 
         window.close()
 
-    def test_folder_button_label_shortcut_and_revealing(self, qtbot, temp_image, monkeypatch):
-        """Folder button is renamed to '📁 Show in Folder', has Ctrl+E shortcut, and calls explorer /select."""
-        window = MainWindow(input_path=temp_image, live_mode=False)
+    def test_removed_buttons_and_process_cleanup_on_close(self, qtbot, temp_image):
+        """1:1 button and Show in Folder button are removed from toolbar, and closeEvent cleans up processes & temp files."""
+        window = MainWindow(input_path=temp_image, live_mode=True)
         qtbot.addWidget(window)
         window.show()
 
-        assert window.btn_open_folder.text() == "📁 Show in Folder"
-        assert hasattr(window, "shortcut_folder")
-        assert window.shortcut_folder.key().toString() == "Ctrl+E"
+        # 1. Verify 1:1 button is removed from top bar
+        top_bar = window.findChild(QFrame, "topBar")
+        buttons = [b.text() for b in top_bar.findChildren(QPushButton)]
+        assert "1:1" not in buttons, f"Found unexpected 1:1 button: {buttons}"
 
-        # Mock subprocess.Popen to verify explorer /select invocation
-        popen_called = []
-        def mock_popen(cmd):
-            popen_called.append(cmd)
-            return None
+        # 2. Verify Show in Folder button is removed from top bar
+        assert not hasattr(window, "btn_open_folder")
+        for text in buttons:
+            assert "Show in Folder" not in text and text != "📁 Folder", f"Found unexpected Folder button: {text}"
 
-        monkeypatch.setattr("subprocess.Popen", mock_popen)
-        window._on_open_output_folder()
+        # 3. Verify temporary file cleanup
+        tmp_dir = os.path.join(_PROJECT_ROOT, ".tmp")
+        os.makedirs(tmp_dir, exist_ok=True)
+        dummy_temp = os.path.join(tmp_dir, "test_temp_cleanup.tif")
+        with open(dummy_temp, "w") as f:
+            f.write("temporary data")
+        assert os.path.isfile(dummy_temp)
 
-        if sys.platform == "win32":
-            assert len(popen_called) == 1
-            assert 'explorer /select,' in popen_called[0]
-            assert os.path.basename(temp_image) in popen_called[0]
+        # 4. Verify closeEvent stops live server, cleans temp files, and shuts down processes
+        server = window.live_bridge
+        assert server is not None
+        assert server.is_running is True
 
         window.close()
+        assert not os.path.isfile(dummy_temp)
+        assert server.is_running is False
+        assert window.live_bridge.is_running is False
 
     def test_help_guide_dialog_tabs_and_actions(self, qtbot):
         """Help button is '💡 Help & Guide' with F1 shortcut, and opens dialog with 4 detailed tabs."""

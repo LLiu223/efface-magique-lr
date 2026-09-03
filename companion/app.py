@@ -17,6 +17,7 @@ Key Capabilities:
 import os
 import sys
 import time
+import shutil
 import argparse
 import logging
 from typing import Optional, List
@@ -437,9 +438,6 @@ class HelpGuideDialog(QDialog):
 
             <h3 style="color: #60a5fa;">🪄 Option B: Single Photo Mode</h3>
             <p>Select any photo in Lightroom and click: <b>File &gt; Plug-in Extras &gt; 🪄 AI Generative Eraser (Single Photo)...</b></p>
-            
-            <h3 style="color: #60a5fa;">📁 Revealing Files in File Explorer</h3>
-            <p>Click <b>📁 Show in Folder</b> (or press <code>Ctrl + E</code>) to reveal and highlight the edited photo in Windows File Explorer.</p>
         """)
         self.tabs.addTab(tab_usage, "✨ How to Use")
 
@@ -464,10 +462,6 @@ class HelpGuideDialog(QDialog):
                 <tr style="border-bottom: 1px solid #333333;">
                     <td style="padding: 6px 10px;"><code>Ctrl + T</code></td>
                     <td><b>📌 Toggle Pin (Always on Top)</b> floating above Lightroom</td>
-                </tr>
-                <tr style="border-bottom: 1px solid #333333;">
-                    <td style="padding: 6px 10px;"><code>Ctrl + E</code></td>
-                    <td><b>📁 Show in Folder</b> (Reveal in Windows File Explorer)</td>
                 </tr>
                 <tr style="border-bottom: 1px solid #333333;">
                     <td style="padding: 6px 10px;"><code>[</code> / <code>]</code></td>
@@ -828,12 +822,6 @@ class MainWindow(QMainWindow):
         self.btn_fit.clicked.connect(self.canvas.fit_to_screen)
         layout.addWidget(self.btn_fit)
 
-        # 100% 1:1 Pixel View button
-        self.btn_actual_size = QPushButton("1:1")
-        self.btn_actual_size.setToolTip("View at 100% pixel scale (Ctrl+1)")
-        self.btn_actual_size.clicked.connect(self.canvas.zoom_to_actual_size)
-        layout.addWidget(self.btn_actual_size)
-
         # Compare Before / After Toggle
         self.btn_compare = QPushButton("👁 Compare")
         self.btn_compare.setToolTip("Hold \\ or Spacebar for instant Before / After preview")
@@ -868,12 +856,6 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.btn_reset)
 
         add_vsep()
-
-        # Open Output Folder
-        self.btn_open_folder = QPushButton("📁 Show in Folder")
-        self.btn_open_folder.setToolTip("Reveal active photo in Windows File Explorer (Ctrl+E)")
-        self.btn_open_folder.clicked.connect(self._on_open_output_folder)
-        layout.addWidget(self.btn_open_folder)
 
         # Always on Top Pin
         self.btn_pin = QPushButton("📌 Pin")
@@ -981,10 +963,7 @@ class MainWindow(QMainWindow):
         self.shortcut_erase_ent = QShortcut(QKeySequence(Qt.Key.Key_Enter), self)
         self.shortcut_erase_ent.activated.connect(self._on_run_inpainting)
 
-        # Shortcuts for Folder & Help
-        self.shortcut_folder = QShortcut(QKeySequence("Ctrl+E"), self)
-        self.shortcut_folder.activated.connect(self._on_open_output_folder)
-
+        # Shortcut for Help
         self.shortcut_help = QShortcut(QKeySequence(Qt.Key.Key_F1), self)
         self.shortcut_help.activated.connect(self._on_show_lr_help)
 
@@ -1068,6 +1047,25 @@ class MainWindow(QMainWindow):
         self.size_slider.setValue(size)
         self.size_slider.blockSignals(False)
         self.size_label.setText(f" {size}px ")
+
+    def _cleanup_temp_files(self):
+        """Remove temporary files from .tmp directory."""
+        tmp_dir = os.path.join(_PROJECT_ROOT, ".tmp")
+        if not os.path.isdir(tmp_dir):
+            return
+        try:
+            for fname in os.listdir(tmp_dir):
+                fpath = os.path.join(tmp_dir, fname)
+                try:
+                    if os.path.isfile(fpath):
+                        os.remove(fpath)
+                    elif os.path.isdir(fpath):
+                        shutil.rmtree(fpath, ignore_errors=True)
+                except Exception as e:
+                    logger.debug(f"Could not remove temp item {fpath}: {e}")
+            logger.info("Cleaned up temporary files in .tmp.")
+        except Exception as e:
+            logger.warning(f"Error cleaning temporary files: {e}")
 
     def load_image_file(self, file_path: str):
         """Open and display an image file, preserving original ICC profile and EXIF metadata."""
@@ -1434,9 +1432,32 @@ class MainWindow(QMainWindow):
             self.close()
 
     def closeEvent(self, event):
-        """Ensure background HTTP server is cleanly terminated and app exits on window close."""
-        if hasattr(self, "live_bridge") and self.live_bridge:
-            self.live_bridge.stop()
+        """Ensure all threads, live servers, and background processes terminate when window is closed."""
+        logger.info("MainWindow closeEvent: shutting down background processes and cleaning temp files...")
+        try:
+            # 1. Terminate active worker thread if running
+            if hasattr(self, "worker") and self.worker is not None:
+                try:
+                    self.worker.terminate()
+                    self.worker.wait(300)
+                except Exception:
+                    pass
+                self.worker = None
+
+            # 2. Stop Live Bridge server and remove live_bridge.json
+            if hasattr(self, "live_bridge") and self.live_bridge is not None:
+                try:
+                    # Signal Lightroom to stop its Live Sync activity immediately
+                    self.live_bridge.notify_lightroom_closing()
+                    self.live_bridge.stop()
+                except Exception as e:
+                    logger.warning(f"Error stopping live bridge on close: {e}")
+
+            # 3. Clean up temporary files in .tmp
+            self._cleanup_temp_files()
+        except Exception as e:
+            logger.exception(f"Error during closeEvent cleanup: {e}")
+
         event.accept()
         super().closeEvent(event)
         app = QApplication.instance()
@@ -1516,12 +1537,19 @@ def main():
     window.show()
 
     ret = app.exec()
+    try:
+        if window:
+            window._cleanup_temp_files()
+    except Exception:
+        pass
+
+    # Terminate all processes, worker threads, and child resources immediately on close
     if ret == 0:
         if input_file and not window.saved_successfully:
             # User closed window without saving edits -> exit code 130 indicates user cancelled
-            sys.exit(130)
-        sys.exit(0)
-    sys.exit(ret)
+            os._exit(130)
+        os._exit(0)
+    os._exit(ret)
 
 
 if __name__ == "__main__":

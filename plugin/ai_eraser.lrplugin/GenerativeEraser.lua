@@ -83,11 +83,21 @@ local function runGenerativeEraser()
         -- Check if it was exported with a slightly different extension/name
         local files = LrFileUtils.directoryEntries(tempDir)
         local found = false
-        for _, file in ipairs(files) do
-            if string.find(file, baseName .. "_ai_edit_" .. timestamp) then
-                exportedFilePath = file
-                found = true
-                break
+        if type(files) == "function" then
+            for file in files do
+                if string.find(file, baseName .. "_ai_edit_" .. timestamp) then
+                    exportedFilePath = file
+                    found = true
+                    break
+                end
+            end
+        elseif type(files) == "table" then
+            for _, file in ipairs(files) do
+                if string.find(file, baseName .. "_ai_edit_" .. timestamp) then
+                    exportedFilePath = file
+                    found = true
+                    break
+                end
             end
         end
 
@@ -184,6 +194,10 @@ local function runGenerativeEraser()
         end
     else
         progressScope:done()
+        -- Clean up temporary export file
+        if LrFileUtils.exists(exportedFilePath) == "file" then
+            LrFileUtils.delete(exportedFilePath)
+        end
         if exitCode ~= -1 and exitCode ~= 130 then -- user didn't simply cancel
             LrDialogs.message(
                 "AI Generative Eraser",
