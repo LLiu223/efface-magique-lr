@@ -6,41 +6,56 @@ echo           Efface Magique LR - Automated Setup Script (Windows)
 echo ======================================================================
 echo.
 
-:: Check for uv or python
+:: Prefer standard Python to create a digitally signed virtual environment (prevents Windows Smart App Control blocks)
+where python >nul 2>nul
+if %errorlevel% equ 0 (
+    echo [*] Found system Python. Creating digitally signed virtual environment...
+    python -m venv .venv
+    goto :INSTALL_PACKAGES
+)
+
 where uv >nul 2>nul
 if %errorlevel% equ 0 (
-    echo [*] Found 'uv' package manager. Setting up fast virtual environment...
+    echo [*] Found 'uv' package manager. Setting up virtual environment...
     uv venv .venv --python 3.11
-    if %errorlevel% neq 0 (
+    if !errorlevel! neq 0 (
         echo [*] Falling back to default uv python...
         uv venv .venv
     )
-    echo [*] Installing dependencies with uv pip...
-    uv pip install -r requirements.txt --python .venv\Scripts\python.exe
-    goto :INSTALL_COMPLETE
+    goto :INSTALL_PACKAGES
 )
 
-where python >nul 2>nul
-if %errorlevel% equ 0 (
-    echo [*] Setting up standard virtual environment with Python...
-    python -m venv .venv
-    call .venv\Scripts\activate.bat
-    python -m pip install --upgrade pip
-    pip install -r requirements.txt
+echo [!] Error: Neither 'python' nor 'uv' was found in your system PATH.
+echo Please install Python 3.10+ (python.org) or Astral uv: https://astral.sh/uv
+pause
+exit /b 1
 
-    :: Detect NVIDIA GPU and upgrade to CUDA 12.4 hardware accelerated PyTorch
+:INSTALL_PACKAGES
+:: Check if uv is available for ultra-fast pip installation
+where uv >nul 2>nul
+if %errorlevel% equ 0 (
+    echo [*] Installing dependencies with fast uv pip...
+    uv pip install -r requirements.txt --python .venv\Scripts\python.exe
+
     where nvidia-smi >nul 2>nul
     if !errorlevel! equ 0 (
-        echo [*] NVIDIA GPU detected! Upgrading PyTorch with CUDA 12.4 hardware acceleration...
-        pip install --force-reinstall --no-deps torch torchvision --index-url https://download.pytorch.org/whl/cu124
+        echo [*] NVIDIA GPU detected! Installing PyTorch with CUDA 12.4 hardware acceleration...
+        uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124 --python .venv\Scripts\python.exe
     )
     goto :INSTALL_COMPLETE
 )
 
-echo [!] Error: Neither 'uv' nor 'python' was found in your system PATH.
-echo Please install Python 3.10+ or Astral uv: https://astral.sh/uv
-pause
-exit /b 1
+echo [*] Installing dependencies with standard pip...
+call .venv\Scripts\activate.bat
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+
+where nvidia-smi >nul 2>nul
+if !errorlevel! equ 0 (
+    echo [*] NVIDIA GPU detected! Upgrading PyTorch with CUDA 12.4 hardware acceleration...
+    pip install --force-reinstall --no-deps torch torchvision --index-url https://download.pytorch.org/whl/cu124
+)
+goto :INSTALL_COMPLETE
 
 :INSTALL_COMPLETE
 echo.
