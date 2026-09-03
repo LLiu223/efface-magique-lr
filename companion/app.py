@@ -28,8 +28,8 @@ _PROJECT_ROOT = os.path.dirname(_CURRENT_DIR)
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSize, QTimer, qInstallMessageHandler, QtMsgType
-from PyQt6.QtGui import QIcon, QFont, QColor, QKeySequence, QAction, QShortcut, QPixmap
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSize, QTimer, qInstallMessageHandler, QtMsgType, QUrl
+from PyQt6.QtGui import QIcon, QFont, QColor, QKeySequence, QAction, QShortcut, QPixmap, QDesktopServices
 from PyQt6.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -49,7 +49,16 @@ from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QLineEdit,
+    QDialog,
+    QTabWidget,
+    QTextBrowser,
 )
+
+# Application Brand Assets
+_ASSETS_DIR = os.path.join(_CURRENT_DIR, "assets")
+_CHECKMARK_PATH = os.path.join(_ASSETS_DIR, "checkmark.png").replace("\\", "/")
+_LOGO_PATH = os.path.join(_ASSETS_DIR, "logo.png").replace("\\", "/")
+_LOGO_ICO_PATH = os.path.join(_ASSETS_DIR, "logo.ico").replace("\\", "/")
 
 from companion.canvas import ImageCanvas, pil_to_qimage
 from companion.inpainting_engine import InpaintingEngine, get_optimal_device, EngineMode, get_device_telemetry
@@ -288,24 +297,292 @@ QCheckBox {
     spacing: 6px;
 }
 QCheckBox::indicator {
-    width: 15px;
-    height: 15px;
+    width: 16px;
+    height: 16px;
     border: 1px solid #444444;
     border-radius: 3px;
     background-color: #262626;
 }
 QCheckBox::indicator:hover {
     border-color: #0078d4;
+    background-color: #2f2f2f;
 }
 QCheckBox::indicator:checked {
     background-color: #0078d4;
     border-color: #0086f0;
+    image: url("__CHECKMARK_URL__");
+}
+QCheckBox::indicator:checked:hover {
+    background-color: #1084d8;
+    border-color: #1a94e8;
+    image: url("__CHECKMARK_URL__");
+}
+QCheckBox::indicator:disabled {
+    border-color: #383838;
+    background-color: #1a1a1a;
 }
 QLabel {
     color: #cccccc;
     font-size: 12px;
 }
-"""
+""".replace("__CHECKMARK_URL__", _CHECKMARK_PATH)
+
+
+class HelpGuideDialog(QDialog):
+    """Rich interactive User Guide, Installation, Shortcuts, and Distribution packaging dialog."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Efface Magique LR - User Guide & Setup")
+        self.resize(780, 600)
+        if os.path.isfile(_LOGO_PATH):
+            self.setWindowIcon(QIcon(_LOGO_PATH))
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(14)
+
+        # Header banner
+        header = QHBoxLayout()
+        if os.path.isfile(_LOGO_PATH):
+            logo_lbl = QLabel()
+            pix = QPixmap(_LOGO_PATH).scaled(56, 56, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            logo_lbl.setPixmap(pix)
+            logo_lbl.setStyleSheet("margin-right: 8px;")
+            header.addWidget(logo_lbl)
+
+        header_text = QVBoxLayout()
+        title = QLabel("Efface Magique LR (AI Generative Eraser)")
+        title.setStyleSheet("font-size: 18px; font-weight: bold; color: #ffffff;")
+        subtitle = QLabel("Local, private AI inpainting companion for Adobe Lightroom Classic")
+        subtitle.setStyleSheet("font-size: 12px; color: #0078d4; font-weight: 500;")
+        header_text.addWidget(title)
+        header_text.addWidget(subtitle)
+        header.addLayout(header_text)
+        header.addStretch(1)
+        layout.addLayout(header)
+
+        # Tabs
+        self.tabs = QTabWidget(self)
+        self.tabs.setStyleSheet("""
+            QTabWidget::pane {
+                border: 1px solid #3c3c3c;
+                background-color: #242424;
+                border-radius: 4px;
+            }
+            QTabBar::tab {
+                background-color: #1e1e1e;
+                color: #aaaaaa;
+                padding: 8px 18px;
+                border-top-left-radius: 4px;
+                border-top-right-radius: 4px;
+                font-weight: 500;
+                font-size: 12px;
+            }
+            QTabBar::tab:selected {
+                background-color: #2d2d2d;
+                color: #ffffff;
+                border-bottom: 2px solid #0078d4;
+            }
+            QTabBar::tab:hover {
+                color: #ffffff;
+            }
+        """)
+
+        # Tab 1: Installation
+        tab_install = QTextBrowser()
+        tab_install.setOpenExternalLinks(True)
+        tab_install.setStyleSheet("background-color: #242424; color: #dddddd; border: none; padding: 12px; font-size: 12px;")
+        tab_install.setHtml("""
+            <h2 style="color: #4ade80; margin-top: 0;">🚀 Installation &amp; Setup Guide</h2>
+            <p>Efface Magique LR runs 100% locally and privately on your machine, integrating natively with Adobe Lightroom Classic.</p>
+            
+            <h3 style="color: #60a5fa;">Step 1: Install Dependencies (1-Click)</h3>
+            <ul>
+                <li><b>Windows:</b> Double-click <code>install.bat</code> in the app directory, or run it in Command Prompt / PowerShell.</li>
+                <li><b>macOS / Linux:</b> Open Terminal in the app folder and run <code>chmod +x install.sh && ./install.sh</code>.</li>
+            </ul>
+            <p style="color: #888888;"><i>The installer automatically configures a local Python virtual environment (<code>.venv</code>) with all AI PyTorch and Simple-LaMa dependencies.</i></p>
+
+            <h3 style="color: #60a5fa;">Step 2: Add the Plugin to Adobe Lightroom Classic</h3>
+            <ol>
+                <li>Open <b>Adobe Lightroom Classic</b>.</li>
+                <li>Open the Plug-in Manager by going to: <b>File &gt; Plug-in Manager...</b> (or press <code>Ctrl + Alt + Shift + ,</code> on Windows / <code>Cmd + Opt + Shift + ,</code> on Mac).</li>
+                <li>Click the <b>Add</b> button at the bottom-left corner of the dialog.</li>
+                <li>Select the plugin folder: <br/><code style="background-color: #181818; padding: 2px 6px; color: #f59e0b;">plugin/ai_eraser.lrplugin</code></li>
+                <li>Verify that the status dot is <b style="color: #4ade80;">🟢 Installed and running</b>.</li>
+                <li>Click <b>Done</b>. The plugin is now active!</li>
+            </ol>
+        """)
+        self.tabs.addTab(tab_install, "🚀 Installation")
+
+        # Tab 2: How to Use
+        tab_usage = QTextBrowser()
+        tab_usage.setOpenExternalLinks(True)
+        tab_usage.setStyleSheet("background-color: #242424; color: #dddddd; border: none; padding: 12px; font-size: 12px;")
+        tab_usage.setHtml("""
+            <h2 style="color: #4ade80; margin-top: 0;">✨ How to Use Efface Magique LR</h2>
+
+            <h3 style="color: #60a5fa;">⚡ Option A: Seamless Live Window Sync (Recommended)</h3>
+            <ol>
+                <li>In Lightroom Classic, select: <b>File &gt; Plug-in Extras &gt; ⚡ AI Generative Eraser (Live Window)...</b></li>
+                <li>The companion window appears displaying your active photo.</li>
+                <li><b>Switching photos in Lightroom</b> (arrow keys or clicking the filmstrip) instantly syncs the new photo into this window with zero lag!</li>
+                <li>Paint over tourists, wires, power poles, or blemishes using the red brush (use <code>[</code> and <code>]</code> to adjust size).</li>
+                <li>Toggle <b>🎯 Subject</b> to automatically lock contours to object boundaries.</li>
+                <li>Click <b>✨ Erase Object</b> (or press <b>Enter</b>) to generate inpainting.</li>
+                <li>Review the 3 generated Firefly candidate cards and pick your favorite result.</li>
+                <li>Click <b>⚡ Save &amp; Sync to Lightroom</b> (<code>Ctrl + S</code>) — the image is losslessly saved as a 16-bit TIFF and auto-stacked into your Lightroom catalog!</li>
+                <li>Click <b>📌 Pin</b> (<code>Ctrl + T</code>) to keep the companion floating on top of Lightroom while you work.</li>
+            </ol>
+
+            <h3 style="color: #60a5fa;">🪄 Option B: Single Photo Mode</h3>
+            <p>Select any photo in Lightroom and click: <b>File &gt; Plug-in Extras &gt; 🪄 AI Generative Eraser (Single Photo)...</b></p>
+            
+            <h3 style="color: #60a5fa;">📁 Revealing Files in File Explorer</h3>
+            <p>Click <b>📁 Show in Folder</b> (or press <code>Ctrl + E</code>) to reveal and highlight the edited photo in Windows File Explorer.</p>
+        """)
+        self.tabs.addTab(tab_usage, "✨ How to Use")
+
+        # Tab 3: Shortcuts
+        tab_shortcuts = QTextBrowser()
+        tab_shortcuts.setStyleSheet("background-color: #242424; color: #dddddd; border: none; padding: 12px; font-size: 12px;")
+        tab_shortcuts.setHtml("""
+            <h2 style="color: #4ade80; margin-top: 0;">⌨ Keyboard Shortcuts Reference</h2>
+            <table width="100%" cellpadding="6" cellspacing="0" style="border-collapse: collapse; border: 1px solid #3c3c3c;">
+                <tr style="background-color: #1a1a1a; color: #ffffff; border-bottom: 2px solid #0078d4;">
+                    <th align="left" style="padding: 6px 10px;">Shortcut</th>
+                    <th align="left" style="padding: 6px 10px;">Action</th>
+                </tr>
+                <tr style="border-bottom: 1px solid #333333;">
+                    <td style="padding: 6px 10px;"><code>Ctrl + S</code> / <code>Ctrl + Shift + S</code></td>
+                    <td><b>⚡ Save &amp; Sync to Lightroom</b> (Auto-stacks into catalog &amp; stays open)</td>
+                </tr>
+                <tr style="border-bottom: 1px solid #333333;">
+                    <td style="padding: 6px 10px;"><code>Enter</code> / <code>Return</code></td>
+                    <td><b>✨ Erase Object</b> (Run AI inpainting on marked areas)</td>
+                </tr>
+                <tr style="border-bottom: 1px solid #333333;">
+                    <td style="padding: 6px 10px;"><code>Ctrl + T</code></td>
+                    <td><b>📌 Toggle Pin (Always on Top)</b> floating above Lightroom</td>
+                </tr>
+                <tr style="border-bottom: 1px solid #333333;">
+                    <td style="padding: 6px 10px;"><code>Ctrl + E</code></td>
+                    <td><b>📁 Show in Folder</b> (Reveal in Windows File Explorer)</td>
+                </tr>
+                <tr style="border-bottom: 1px solid #333333;">
+                    <td style="padding: 6px 10px;"><code>[</code> / <code>]</code></td>
+                    <td>Decrease / Increase Brush Radius</td>
+                </tr>
+                <tr style="border-bottom: 1px solid #333333;">
+                    <td style="padding: 6px 10px;"><code>Ctrl + Z</code></td>
+                    <td>↶ Undo stroke or inpainting step</td>
+                </tr>
+                <tr style="border-bottom: 1px solid #333333;">
+                    <td style="padding: 6px 10px;"><code>Ctrl + Y</code> / <code>Ctrl + Shift + Z</code></td>
+                    <td>↷ Redo stroke or inpainting step</td>
+                </tr>
+                <tr style="border-bottom: 1px solid #333333;">
+                    <td style="padding: 6px 10px;"><code>Spacebar</code> (Hold) / <code>\\</code></td>
+                    <td>👁 Instant Before / After Comparison</td>
+                </tr>
+                <tr style="border-bottom: 1px solid #333333;">
+                    <td style="padding: 6px 10px;"><code>Y</code></td>
+                    <td>◫ Interactive Split-Screen Comparison Slider</td>
+                </tr>
+                <tr style="border-bottom: 1px solid #333333;">
+                    <td style="padding: 6px 10px;"><code>Ctrl + 0</code> / <code>F</code></td>
+                    <td>🔍 Fit photo to screen view</td>
+                </tr>
+                <tr style="border-bottom: 1px solid #333333;">
+                    <td style="padding: 6px 10px;"><code>Ctrl + 1</code></td>
+                    <td>1:1 View at 100% pixel scale</td>
+                </tr>
+                <tr style="border-bottom: 1px solid #333333;">
+                    <td style="padding: 6px 10px;"><code>F1</code></td>
+                    <td>💡 Open this User Guide &amp; Setup Dialog</td>
+                </tr>
+            </table>
+        """)
+        self.tabs.addTab(tab_shortcuts, "⌨ Shortcuts")
+
+        # Tab 4: Download & Share
+        tab_share_widget = QWidget()
+        share_vbox = QVBoxLayout(tab_share_widget)
+        share_vbox.setContentsMargins(14, 14, 14, 14)
+        share_vbox.setSpacing(14)
+
+        share_text = QTextBrowser()
+        share_text.setOpenExternalLinks(True)
+        share_text.setStyleSheet("background-color: transparent; color: #dddddd; border: none; font-size: 12px;")
+        share_text.setHtml("""
+            <h2 style="color: #4ade80; margin-top: 0;">📥 Easy Download &amp; Share for Other Users</h2>
+            <p>You can easily distribute Efface Magique LR to other photographers or friends without requiring Git:</p>
+            <ol>
+                <li>Click the button below to package a clean, portable <b>Efface-Magique-LR.zip</b> archive.</li>
+                <li>Share this ZIP file with any colleague or photographer via Google Drive, Dropbox, USB drive, or GitHub Release.</li>
+                <li>The recipient simply unzips the folder and double-clicks <code>install.bat</code> (Windows) or <code>./install.sh</code> (macOS/Linux).</li>
+                <li>In Lightroom, they add <code>plugin/ai_eraser.lrplugin</code> and they are ready to edit!</li>
+            </ol>
+        """)
+        share_vbox.addWidget(share_text)
+
+        btn_package = QPushButton("📦 Package Distribution ZIP for Other Users")
+        btn_package.setStyleSheet("""
+            QPushButton {
+                background-color: #0078d4;
+                color: #ffffff;
+                font-weight: bold;
+                padding: 10px 20px;
+                border-radius: 4px;
+                font-size: 13px;
+            }
+            QPushButton:hover {
+                background-color: #1084d8;
+            }
+        """)
+        btn_package.clicked.connect(self._on_package_distribution)
+        share_vbox.addWidget(btn_package)
+        share_vbox.addStretch(1)
+
+        self.tabs.addTab(tab_share_widget, "📥 Download & Share")
+        layout.addWidget(self.tabs)
+
+        # Bottom button row
+        bottom_row = QHBoxLayout()
+        btn_readme = QPushButton("📖 Open Full README.md")
+        btn_readme.setToolTip("Open complete repository README document in default viewer")
+        btn_readme.clicked.connect(self._on_open_readme)
+        bottom_row.addWidget(btn_readme)
+
+        bottom_row.addStretch(1)
+
+        btn_close = QPushButton("Close")
+        btn_close.setFixedWidth(90)
+        btn_close.clicked.connect(self.accept)
+        bottom_row.addWidget(btn_close)
+        layout.addLayout(bottom_row)
+
+    def _on_package_distribution(self):
+        try:
+            from package_release import create_release_zip
+            zip_path = create_release_zip()
+            if sys.platform == "win32" and os.path.isfile(zip_path):
+                import subprocess
+                subprocess.Popen(f'explorer /select,"{os.path.abspath(zip_path)}"')
+            QMessageBox.information(
+                self,
+                "Package Ready",
+                f"Successfully created distribution package:\n\n{zip_path}\n\nOther users can unzip this archive and run install.bat to get started!"
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "Packaging Error", f"Failed to create release ZIP:\n{e}")
+
+    def _on_open_readme(self):
+        readme_path = os.path.join(_PROJECT_ROOT, "README.md")
+        if os.path.isfile(readme_path):
+            QDesktopServices.openUrl(QUrl.fromLocalFile(readme_path))
+        else:
+            QMessageBox.warning(self, "Not Found", f"README.md not found at:\n{readme_path}")
 
 
 class MainWindow(QMainWindow):
@@ -346,6 +623,8 @@ class MainWindow(QMainWindow):
         self.var_buttons: List[QPushButton] = []
 
         self.setWindowTitle("Efface Magique LR - Adobe Firefly Generative Eraser")
+        if os.path.isfile(_LOGO_PATH):
+            self.setWindowIcon(QIcon(_LOGO_PATH))
         self.resize(1400, 920)
         self.setStyleSheet(DARK_STYLE)
 
@@ -490,6 +769,15 @@ class MainWindow(QMainWindow):
             sep.setStyleSheet("color: #383838; max-width: 1px;")
             layout.addWidget(sep)
 
+        # Brand App Logo
+        if os.path.isfile(_LOGO_PATH):
+            self.logo_label = QLabel()
+            pix = QPixmap(_LOGO_PATH).scaled(24, 24, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            self.logo_label.setPixmap(pix)
+            self.logo_label.setToolTip("Efface Magique LR - AI Generative Eraser")
+            self.logo_label.setStyleSheet("padding-right: 4px;")
+            layout.addWidget(self.logo_label)
+
         # Open file button (for standalone mode)
         self.btn_open = QPushButton("📂 Open")
         self.btn_open.setToolTip("Open Photo from computer")
@@ -582,8 +870,8 @@ class MainWindow(QMainWindow):
         add_vsep()
 
         # Open Output Folder
-        self.btn_open_folder = QPushButton("📁 Folder")
-        self.btn_open_folder.setToolTip("Open folder containing the edited photo in File Explorer")
+        self.btn_open_folder = QPushButton("📁 Show in Folder")
+        self.btn_open_folder.setToolTip("Reveal active photo in Windows File Explorer (Ctrl+E)")
         self.btn_open_folder.clicked.connect(self._on_open_output_folder)
         layout.addWidget(self.btn_open_folder)
 
@@ -610,9 +898,9 @@ class MainWindow(QMainWindow):
         self.live_badge.setToolTip("Lightroom Classic Live IPC Bridge status")
         layout.addWidget(self.live_badge)
 
-        # Lightroom setup help
-        self.btn_lr_help = QPushButton("💡 Help")
-        self.btn_lr_help.setToolTip("Lightroom Classic shortcut & setup guide")
+        # Lightroom setup & User Guide help
+        self.btn_lr_help = QPushButton("💡 Help & Guide")
+        self.btn_lr_help.setToolTip("Complete User Guide, Installation, Shortcuts, & Download (F1)")
         self.btn_lr_help.clicked.connect(self._on_show_lr_help)
         layout.addWidget(self.btn_lr_help)
 
@@ -693,6 +981,13 @@ class MainWindow(QMainWindow):
         self.shortcut_erase_ent = QShortcut(QKeySequence(Qt.Key.Key_Enter), self)
         self.shortcut_erase_ent.activated.connect(self._on_run_inpainting)
 
+        # Shortcuts for Folder & Help
+        self.shortcut_folder = QShortcut(QKeySequence("Ctrl+E"), self)
+        self.shortcut_folder.activated.connect(self._on_open_output_folder)
+
+        self.shortcut_help = QShortcut(QKeySequence(Qt.Key.Key_F1), self)
+        self.shortcut_help.activated.connect(self._on_show_lr_help)
+
     def _on_reset_all(self):
         """Reset canvas to original unedited photo and clear all variations."""
         self.canvas.reset_all()
@@ -703,17 +998,41 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Reset canvas and variations to original unedited photo.", 4000)
 
     def _on_open_output_folder(self):
-        """Open the directory of the active photo in Windows File Explorer."""
-        target = self.output_path or self.input_path
+        """Reveal active photo or containing folder in Windows File Explorer / OS file manager."""
+        target = None
+        if self.output_path and os.path.isfile(self.output_path):
+            target = self.output_path
+        elif self.input_path and os.path.isfile(self.input_path):
+            target = self.input_path
+        elif self.output_path or self.input_path:
+            candidate = self.output_path or self.input_path
+            folder = os.path.dirname(os.path.abspath(candidate))
+            if os.path.isdir(folder):
+                QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
+                self.statusBar().showMessage(f"Opened folder: {folder}", 3500)
+                return
+
         if not target:
-            QMessageBox.information(self, "No Photo Loaded", "Please open a photo first.")
+            tmp_dir = os.path.join(_PROJECT_ROOT, ".tmp")
+            target_folder = tmp_dir if os.path.isdir(tmp_dir) else _PROJECT_ROOT
+            QDesktopServices.openUrl(QUrl.fromLocalFile(target_folder))
+            self.statusBar().showMessage(f"Opened workspace folder: {target_folder}", 3500)
             return
-        folder = os.path.dirname(os.path.abspath(target))
+
+        abs_target = os.path.abspath(target)
+        if sys.platform == "win32":
+            try:
+                import subprocess
+                subprocess.Popen(f'explorer /select,"{abs_target}"')
+                self.statusBar().showMessage(f"Revealed in File Explorer: {os.path.basename(abs_target)}", 4000)
+                return
+            except Exception as e:
+                logger.warning(f"Failed to reveal file with explorer /select: {e}")
+
+        folder = os.path.dirname(abs_target)
         if os.path.isdir(folder):
-            from PyQt6.QtGui import QDesktopServices
-            from PyQt6.QtCore import QUrl
             QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
-            self.statusBar().showMessage(f"Opened folder: {folder}", 3000)
+            self.statusBar().showMessage(f"Opened folder: {folder}", 3500)
         else:
             QMessageBox.warning(self, "Folder Not Found", f"Directory does not exist:\n{folder}")
 
@@ -740,25 +1059,9 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Mask painted. Click '✨ Erase Object' (or press Enter) to run AI removal.", 4000)
 
     def _on_show_lr_help(self):
-        QMessageBox.information(
-            self,
-            "Lightroom Classic Integration",
-            "<h3>Efface Magique - Lightroom Classic Setup</h3>"
-            "<p>You can access this AI Eraser directly inside Lightroom in 3 easy ways:</p>"
-            "<ol>"
-            "<li><b>Top Menu:</b> Select photo &gt; <b>File &gt; Plug-in Extras &gt; 🪄 AI Generative Eraser...</b></li>"
-            "<li><b>Right-Click:</b> Right-click any photo in Library Grid or Loupe view &gt; <b>Plug-in Extras &gt; 🪄 AI Generative Eraser...</b></li>"
-            "<li><b>Instant Shortcut (Ctrl+Alt+E):</b>"
-            "<ul>"
-            "<li>In Lightroom, go to <b>Edit &gt; Preferences &gt; External Editing</b>.</li>"
-            "<li>Under <i>Additional External Editor</i>, click <b>Choose...</b> and select <code>companion.bat</code> in the project directory.</li>"
-            "<li>Set File Format to <b>TIFF</b>, Color Space to <b>ProPhoto RGB</b>, Bit Depth to <b>16 bits/component</b>.</li>"
-            "<li>Save as preset named <b>Efface Magique</b>.</li>"
-            "<li>Press <b>Ctrl + Alt + E</b> on any photo to open it immediately!</li>"
-            "</ul>"
-            "</li>"
-            "</ol>"
-        )
+        """Display the complete interactive User Guide, Installation, Shortcuts, & Download dialog."""
+        dialog = HelpGuideDialog(self)
+        dialog.exec()
 
     def _on_brush_size_changed(self, size: int):
         self.size_slider.blockSignals(True)
@@ -1195,8 +1498,19 @@ def main():
             logger.exception(f"Headless pipeline error: {e}")
             sys.exit(1)
 
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("effacemagique.ai.eraser")
+        except Exception:
+            pass
+
     app = QApplication(sys.argv)
     app.setApplicationName("Efface Magique LR")
+    if os.path.isfile(_LOGO_ICO_PATH):
+        app.setWindowIcon(QIcon(_LOGO_ICO_PATH))
+    elif os.path.isfile(_LOGO_PATH):
+        app.setWindowIcon(QIcon(_LOGO_PATH))
 
     window = MainWindow(input_path=input_file, output_path=output_file, live_mode=args.live)
     window.show()

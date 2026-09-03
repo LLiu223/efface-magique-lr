@@ -19,6 +19,8 @@ build/
 *.png
 !tests/sample_*.png
 !tests/sample_*.tif
+!companion/assets/*
+!plugin/**/*.png
 
 # System & IDE
 .DS_Store

@@ -37,7 +37,8 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from companion.live_bridge import LiveBridgeServer, BRIDGE_INFO_FILENAME
-from companion.app import MainWindow
+from companion.app import MainWindow, HelpGuideDialog, _LOGO_PATH, _LOGO_ICO_PATH, _CHECKMARK_PATH, DARK_STYLE
+from package_release import create_release_zip
 
 
 @pytest.fixture
@@ -345,3 +346,96 @@ class TestMainWindowLiveIntegration:
                     os.remove(out_path)
                 except Exception:
                     pass
+
+    def test_branding_checkbox_and_window_icon(self, qtbot, temp_image):
+        """Logo asset files exist, checkmark is wired in DARK_STYLE, and window has brand icon."""
+        assert os.path.isfile(_LOGO_PATH), f"Missing logo: {_LOGO_PATH}"
+        assert os.path.isfile(_LOGO_ICO_PATH), f"Missing logo ico: {_LOGO_ICO_PATH}"
+        assert os.path.isfile(_CHECKMARK_PATH), f"Missing checkmark: {_CHECKMARK_PATH}"
+        assert "checkmark.png" in DARK_STYLE, "DARK_STYLE must include checkmark.png"
+        assert "QCheckBox::indicator:checked" in DARK_STYLE
+
+        window = MainWindow(input_path=temp_image, live_mode=False)
+        qtbot.addWidget(window)
+        window.show()
+
+        # Window icon should be set
+        assert not window.windowIcon().isNull()
+
+        # Logo badge in top bar
+        assert hasattr(window, "logo_label")
+        assert window.logo_label is not None
+        assert not window.logo_label.pixmap().isNull()
+
+        window.close()
+
+    def test_folder_button_label_shortcut_and_revealing(self, qtbot, temp_image, monkeypatch):
+        """Folder button is renamed to '📁 Show in Folder', has Ctrl+E shortcut, and calls explorer /select."""
+        window = MainWindow(input_path=temp_image, live_mode=False)
+        qtbot.addWidget(window)
+        window.show()
+
+        assert window.btn_open_folder.text() == "📁 Show in Folder"
+        assert hasattr(window, "shortcut_folder")
+        assert window.shortcut_folder.key().toString() == "Ctrl+E"
+
+        # Mock subprocess.Popen to verify explorer /select invocation
+        popen_called = []
+        def mock_popen(cmd):
+            popen_called.append(cmd)
+            return None
+
+        monkeypatch.setattr("subprocess.Popen", mock_popen)
+        window._on_open_output_folder()
+
+        if sys.platform == "win32":
+            assert len(popen_called) == 1
+            assert 'explorer /select,' in popen_called[0]
+            assert os.path.basename(temp_image) in popen_called[0]
+
+        window.close()
+
+    def test_help_guide_dialog_tabs_and_actions(self, qtbot):
+        """Help button is '💡 Help & Guide' with F1 shortcut, and opens dialog with 4 detailed tabs."""
+        window = MainWindow(live_mode=False)
+        qtbot.addWidget(window)
+        window.show()
+
+        assert window.btn_lr_help.text() == "💡 Help & Guide"
+        assert hasattr(window, "shortcut_help")
+        assert window.shortcut_help.key().toString() == "F1"
+
+        dialog = HelpGuideDialog(window)
+        qtbot.addWidget(dialog)
+
+        assert dialog.tabs.count() == 4
+        tab_titles = [dialog.tabs.tabText(i) for i in range(dialog.tabs.count())]
+        assert "🚀 Installation" in tab_titles
+        assert "✨ How to Use" in tab_titles
+        assert "⌨ Shortcuts" in tab_titles
+        assert "📥 Download & Share" in tab_titles
+
+        dialog.close()
+        window.close()
+
+    def test_package_release_distribution_zip(self):
+        """Packaging utility produces a clean, complete distribution ZIP archive."""
+        import zipfile
+        zip_path = create_release_zip()
+        assert os.path.isfile(zip_path)
+        assert os.path.getsize(zip_path) > 50000  # > 50 KB
+
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            namelist = zf.namelist()
+            assert any(name.endswith("README.md") for name in namelist)
+            assert any(name.endswith("install.bat") for name in namelist)
+            assert any(name.endswith("companion.bat") for name in namelist)
+            assert any(name.endswith("companion/app.py") for name in namelist)
+            assert any(name.endswith("plugin/ai_eraser.lrplugin/Info.lua") for name in namelist)
+            assert any(name.endswith("companion/assets/logo.png") for name in namelist)
+            assert any(name.endswith("companion/assets/checkmark.png") for name in namelist)
+            # Ensure virtualenvs, git, and pycache are excluded
+            assert not any(".venv" in name for name in namelist)
+            assert not any(".git" in name for name in namelist)
+            assert not any("__pycache__" in name for name in namelist)
+
