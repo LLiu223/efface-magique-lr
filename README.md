@@ -24,6 +24,12 @@
 
 Integrated directly into Adobe Lightroom Classic via a native Lua plugin and a hardware-accelerated PyQt6 companion app, it enables you to erase tourists, power lines, trash, and blemishes with a single brush stroke while preserving 16-bit color depth, EXIF metadata, and natural camera sensor noise.
 
+### Key Highlights:
+- **🎯 Intelligent Object-Aware Erasing:** Upgraded subject detector automatically locks to the contours of any object (buildings, cabins, signs, poles, vehicles, animals, people) even for distant, small, or low-contrast elements without clipping rooflines, eaves, or posts.
+- **📚 Non-Destructive Modification Layers:** Every erase operation is tracked in a sidebar layer stack. Toggle visibility, re-edit masks, or delete any layer with a single click of its dedicated `✕` button.
+- **✨ Firefly-Grade Generative Variations:** Generate candidate variations with prompt conditioning or run instant LaMa GAN spot healing.
+- **⚡ Seamless Live Window:** Stays open while you browse photos in Lightroom; edits auto-stack into your catalog upon save.
+
 ---
 
 ## 📥 Easy Download for Other Users
@@ -88,14 +94,18 @@ Work through your entire photoshoot without ever relaunching or closing the edit
 2. The companion window opens, automatically loading your active photo.
 3. **Keep the window open:** As you browse through photos in Lightroom using your arrow keys or the Filmstrip, the companion window **updates instantly in real time**!
 4. **Erase unwanted elements:** Paint over tourists, power poles, or dust spots with the red brush. Use `[` and `]` to adjust the brush diameter.
-5. **Smart Selection (Optional):** Toggle **🎯 Subject** to automatically lock the mask to the detected object boundaries so surrounding background textures remain untouched.
+5. **Smart Object Selection (🎯 Subject):** Toggle **Subject** to automatically isolate and snap to the object's boundary. Our multi-cluster local background sampling and adaptive edge saliency preserve thin posts, eaves, and rooflines on distant/small structures so no wireframe outlines remain.
 6. **Generate Inpainting:** Click **✨ Erase Object** (or press `Enter`).
-7. **Pick a Variation:** Efface Magique generates 3 distinct candidate variations. Click any thumbnail card or press `1`, `2`, or `3` to select your favorite.
-8. **Save & Sync:** Click **⚡ Save & Sync to Lightroom** (or press `Ctrl + S`).  
+7. **Pick a Variation:** Efface Magique generates distinct candidate variations. Click any thumbnail card or press `1`, `2`, or `3` to select your favorite.
+8. **Manage Modification Layers:** Inspect each modification in the sidebar:
+   - Click the checkmark (`✓`) to toggle a layer's visibility on/off.
+   - Click the delete button (`✕`) on any card to permanently delete that layer with automatic, clean re-compositing.
+   - Click any card to re-enter edit mode and refine its mask.
+9. **Save & Sync:** Click **⚡ Save & Sync to Lightroom** (or press `Ctrl + S`).  
    - The edited photo is losslessly exported as a 16-bit ProPhoto TIFF.
    - Lightroom automatically imports and stacks the edited version with the original photo.
    - The companion window **stays open**, ready for your next photo!
-9. **Stay Floating:** Click **📌 Pin** (or press `Ctrl + T`) to keep the editor floating smoothly above Lightroom.
+10. **Stay Floating:** Click **📌 Pin** (or press `Ctrl + T`) to keep the editor floating smoothly above Lightroom.
 
 ---
 
@@ -148,6 +158,8 @@ You can also use Efface Magique as a standalone desktop photo eraser:
 - **16-bit Color Pipeline:** Full preservation of 16-bit ProPhoto RGB and Adobe RGB color spaces.
 - **Sensor Noise Matching:** Automatically estimates camera ISO noise in the surrounding area and injects monochromatic grain to eliminate plastic-looking patches.
 - **Sigmoid Alpha Blending:** High-resolution feathering with zero pixel blur on untouched regions.
+- **Object-Aware Saliency Engine:** Multi-cluster local background sampling in CIE-Lab, CLAHE Sobel gradient energy, adaptive Otsu bimodal segmentation, solid contour hole-filling, and proportional safety margins.
+- **Non-Destructive Layer Architecture:** In-memory composite caching, per-layer modification history, instant toggle/delete re-compositing.
 
 ---
 
@@ -184,17 +196,21 @@ efface-magique-lr/
 │       └── logo.png                  # Plugin branding icon
 │
 ├── companion/                        # Python AI Companion Application
-│   ├── app.py                        # PyQt6 Main Window, toolbar, & Help dialog
+│   ├── app.py                        # PyQt6 Main Window, toolbar, & layer cards
 │   ├── canvas.py                     # High-res canvas with brush, zoom, & pan
-│   ├── inpainting_engine.py          # AI inpainting pipelines (Firefly & Fast Spot)
-│   ├── subject_detector.py           # Object contour & subject isolation
+│   ├── layers.py                     # Non-destructive layer model & thumbnails
+│   ├── model_engine.py               # AI inpainting pipelines (Firefly & Fast Spot)
+│   ├── pipeline.py                   # Contextual cropping, blending, & grain matching
 │   ├── live_bridge.py                # Non-blocking IPC TCP bridge server
+│   ├── utils/
+│   │   ├── subject_detector.py       # Multi-cluster object-aware subject isolation
+│   │   └── blending.py               # Photographic blending facades
 │   └── assets/                       # Branding logos & UI icons
 │       ├── logo.png                  # 440x440 App logo
 │       ├── logo.ico                  # Multi-resolution Windows application icon
 │       └── checkmark.png             # Crisp checkbox checkmark icon
 │
-└── tests/                            # Automated test suite (76+ unit/integration tests)
+└── tests/                            # Automated test suite (90+ unit/integration tests)
 ```
 
 ---
