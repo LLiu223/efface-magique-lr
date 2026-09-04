@@ -59,14 +59,30 @@ from PyQt6.QtWidgets import (
     QScrollArea,
 )
 
-# Application Brand Assets
-_ASSETS_DIR = os.path.join(_CURRENT_DIR, "assets")
-_CHECKMARK_PATH = os.path.join(_ASSETS_DIR, "checkmark.png").replace("\\", "/")
-_LOGO_PATH = os.path.join(_ASSETS_DIR, "logo.png").replace("\\", "/")
-_LOGO_ICO_PATH = os.path.join(_ASSETS_DIR, "logo.ico").replace("\\", "/")
-
+from companion.ui import (
+    _ASSETS_DIR,
+    _CHECKMARK_PATH,
+    _LOGO_PATH,
+    _LOGO_ICO_PATH,
+    DARK_STYLE,
+    HelpGuideDialog,
+    LoadingSpinnerOverlay,
+)
 from companion.canvas import ImageCanvas, pil_to_qimage
-from companion.inpainting_engine import InpaintingEngine, get_optimal_device, EngineMode, get_device_telemetry
+from companion.device import (
+    DeviceType,
+    DeviceInfo,
+    get_optimal_device,
+    get_device_telemetry,
+    configure_cpu_threading,
+    setup_device_optimizations,
+    free_device_memory,
+)
+from companion.model_engine import (
+    EngineMode,
+    InpaintingEngine,
+    InpaintingWorker,
+)
 from companion.layers import ModificationLayer, create_layer_thumbnail
 from companion.live_bridge import LiveBridgeServer
 
@@ -105,484 +121,30 @@ qInstallMessageHandler(qt_message_handler)
 
 
 # -----------------------------------------------------------------------------
-# Background Worker Thread for Non-Blocking AI Inpainting
+# Background Worker Thread for Non-Blocking Image Loading
 # -----------------------------------------------------------------------------
 
-class InpaintingWorker(QThread):
-    progress = pyqtSignal(int, str)
-    variationsReady = pyqtSignal(list)
+class ImageLoaderWorker(QThread):
+    """Background worker for loading high-resolution images without GUI freezing."""
+    loaded = pyqtSignal(object, str)
     error = pyqtSignal(str)
 
-    def __init__(
-        self,
-        engine: InpaintingEngine,
-        image: Image.Image,
-        mask: Image.Image,
-        num_variations: int = 3,
-        prompt: Optional[str] = None,
-        seed: Optional[int] = None,
-        detect_subject: bool = True,
-        enable_grain: bool = False,
-    ):
+    def __init__(self, file_path: str):
         super().__init__()
-        self.engine = engine
-        self.image = image
-        self.mask = mask
-        self.num_variations = num_variations
-        self.prompt = prompt
-        self.seed = seed
-        self.detect_subject = detect_subject
-        self.enable_grain = enable_grain
+        self.file_path = file_path
 
     def run(self):
         try:
-            self.progress.emit(5, "Analyzing scene context and mask bounds...")
-            variations = self.engine.generate_variations(
-                image=self.image,
-                mask=self.mask,
-                num_variations=self.num_variations,
-                prompt=self.prompt,
-                base_seed=self.seed,
-                margin_ratio=0.85,
-                feather_radius=20,
-                detect_subject=self.detect_subject,
-                enable_grain=self.enable_grain,
-                progress_callback=lambda pct, msg: self.progress.emit(pct, msg),
-            )
-            self.variationsReady.emit(variations)
+            pil_img = Image.open(self.file_path)
+            pil_img.load()
+            self.loaded.emit(pil_img, self.file_path)
         except Exception as e:
-            logger.exception("Inpainting failed")
             self.error.emit(str(e))
 
 
 # -----------------------------------------------------------------------------
 # Main Application Window
 # -----------------------------------------------------------------------------
-
-DARK_STYLE = """
-QMainWindow {
-    background-color: #1e1e1e;
-    color: #e0e0e0;
-}
-QWidget {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-}
-QToolBar {
-    background-color: #252526;
-    border-bottom: 1px solid #333333;
-    padding: 6px 10px;
-    spacing: 8px;
-}
-QStatusBar {
-    background-color: #181818;
-    border-top: 1px solid #2d2d2d;
-    color: #999999;
-    font-size: 11px;
-}
-QPushButton {
-    background-color: #2d2d2d;
-    color: #ffffff;
-    border: 1px solid #3c3c3c;
-    border-radius: 4px;
-    padding: 6px 12px;
-    font-size: 12px;
-    font-weight: 500;
-}
-QPushButton:hover {
-    background-color: #383838;
-    border-color: #4a4a4a;
-}
-QPushButton:pressed {
-    background-color: #202020;
-}
-QPushButton:checked {
-    background-color: #0078d4;
-    border-color: #0086f0;
-    color: #ffffff;
-    font-weight: bold;
-}
-QPushButton:disabled {
-    background-color: #242424;
-    color: #555555;
-    border-color: #303030;
-}
-QPushButton#primaryAction {
-    background-color: #0078d4;
-    color: #ffffff;
-    font-weight: bold;
-    border: 1px solid #0086f0;
-    padding: 7px 18px;
-    border-radius: 4px;
-}
-QPushButton#primaryAction:hover {
-    background-color: #1084d8;
-}
-QPushButton#primaryAction:disabled {
-    background-color: #1b354b;
-    color: #6688aa;
-    border-color: #23425d;
-}
-QPushButton#saveAction, QPushButton#syncAction {
-    background-color: #107c41;
-    color: #ffffff;
-    font-weight: bold;
-    border: 1px solid #169b52;
-    padding: 7px 18px;
-    border-radius: 4px;
-}
-QPushButton#saveAction:hover, QPushButton#syncAction:hover {
-    background-color: #148f4b;
-}
-QComboBox {
-    background-color: #2d2d2d;
-    color: #ffffff;
-    border: 1px solid #3c3c3c;
-    border-radius: 4px;
-    padding: 4px 10px;
-    font-size: 12px;
-    font-weight: 500;
-}
-QComboBox:hover {
-    border-color: #0078d4;
-}
-QComboBox QAbstractItemView {
-    background-color: #252526;
-    color: #ffffff;
-    selection-background-color: #0078d4;
-    selection-color: #ffffff;
-    border: 1px solid #3c3c3c;
-}
-QLineEdit {
-    background-color: #262626;
-    color: #ffffff;
-    border: 1px solid #444444;
-    border-radius: 4px;
-    padding: 4px 8px;
-    font-size: 12px;
-}
-QLineEdit:focus {
-    border: 1px solid #0078d4;
-}
-QSlider::groove:horizontal {
-    border: 1px solid #333333;
-    height: 4px;
-    background: #252526;
-    border-radius: 2px;
-}
-QSlider::sub-page:horizontal {
-    background: #0078d4;
-    border-radius: 2px;
-}
-QSlider::handle:horizontal {
-    background: #ffffff;
-    border: 1px solid #555555;
-    width: 14px;
-    margin-top: -5px;
-    margin-bottom: -5px;
-    border-radius: 7px;
-}
-QSlider::handle:horizontal:hover {
-    background: #0078d4;
-    border-color: #0086f0;
-}
-QProgressBar {
-    border: 1px solid #333333;
-    border-radius: 3px;
-    text-align: center;
-    color: #ffffff;
-    background-color: #1a1a1a;
-    height: 16px;
-    font-size: 10px;
-}
-QProgressBar::chunk {
-    background-color: #0078d4;
-    border-radius: 2px;
-}
-QCheckBox {
-    color: #cccccc;
-    font-size: 12px;
-    spacing: 6px;
-}
-QCheckBox::indicator {
-    width: 16px;
-    height: 16px;
-    border: 1px solid #444444;
-    border-radius: 3px;
-    background-color: #262626;
-}
-QCheckBox::indicator:hover {
-    border-color: #0078d4;
-    background-color: #2f2f2f;
-}
-QCheckBox::indicator:checked {
-    background-color: #0078d4;
-    border-color: #0086f0;
-    image: url("__CHECKMARK_URL__");
-}
-QCheckBox::indicator:checked:hover {
-    background-color: #1084d8;
-    border-color: #1a94e8;
-    image: url("__CHECKMARK_URL__");
-}
-QCheckBox::indicator:disabled {
-    border-color: #383838;
-    background-color: #1a1a1a;
-}
-QLabel {
-    color: #cccccc;
-    font-size: 12px;
-}
-""".replace("__CHECKMARK_URL__", _CHECKMARK_PATH)
-
-
-class HelpGuideDialog(QDialog):
-    """Rich interactive User Guide, Installation, Shortcuts, and Distribution packaging dialog."""
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Efface Magique LR - User Guide & Setup")
-        self.resize(780, 600)
-        if os.path.isfile(_LOGO_PATH):
-            self.setWindowIcon(QIcon(_LOGO_PATH))
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(14)
-
-        # Header banner
-        header = QHBoxLayout()
-        if os.path.isfile(_LOGO_PATH):
-            logo_lbl = QLabel()
-            pix = QPixmap(_LOGO_PATH).scaled(56, 56, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-            logo_lbl.setPixmap(pix)
-            logo_lbl.setStyleSheet("margin-right: 8px;")
-            header.addWidget(logo_lbl)
-
-        header_text = QVBoxLayout()
-        title = QLabel("Efface Magique LR (AI Generative Eraser)")
-        title.setStyleSheet("font-size: 18px; font-weight: bold; color: #ffffff;")
-        subtitle = QLabel("Local, private AI inpainting companion for Adobe Lightroom Classic")
-        subtitle.setStyleSheet("font-size: 12px; color: #0078d4; font-weight: 500;")
-        header_text.addWidget(title)
-        header_text.addWidget(subtitle)
-        header.addLayout(header_text)
-        header.addStretch(1)
-        layout.addLayout(header)
-
-        # Tabs
-        self.tabs = QTabWidget(self)
-        self.tabs.setStyleSheet("""
-            QTabWidget::pane {
-                border: 1px solid #3c3c3c;
-                background-color: #242424;
-                border-radius: 4px;
-            }
-            QTabBar::tab {
-                background-color: #1e1e1e;
-                color: #aaaaaa;
-                padding: 8px 18px;
-                border-top-left-radius: 4px;
-                border-top-right-radius: 4px;
-                font-weight: 500;
-                font-size: 12px;
-            }
-            QTabBar::tab:selected {
-                background-color: #2d2d2d;
-                color: #ffffff;
-                border-bottom: 2px solid #0078d4;
-            }
-            QTabBar::tab:hover {
-                color: #ffffff;
-            }
-        """)
-
-        # Tab 1: Installation
-        tab_install = QTextBrowser()
-        tab_install.setOpenExternalLinks(True)
-        tab_install.setStyleSheet("background-color: #242424; color: #dddddd; border: none; padding: 12px; font-size: 12px;")
-        tab_install.setHtml("""
-            <h2 style="color: #4ade80; margin-top: 0;">🚀 Installation &amp; Setup Guide</h2>
-            <p>Efface Magique LR runs 100% locally and privately on your machine, integrating natively with Adobe Lightroom Classic.</p>
-            
-            <h3 style="color: #60a5fa;">Step 1: Install Dependencies (1-Click)</h3>
-            <ul>
-                <li><b>Windows:</b> Double-click <code>install.bat</code> in the app directory, or run it in Command Prompt / PowerShell.</li>
-                <li><b>macOS / Linux:</b> Open Terminal in the app folder and run <code>chmod +x install.sh && ./install.sh</code>.</li>
-            </ul>
-            <p style="color: #888888;"><i>The installer automatically configures a local Python virtual environment (<code>.venv</code>) with all AI PyTorch and Simple-LaMa dependencies.</i></p>
-
-            <h3 style="color: #60a5fa;">Step 2: Add the Plugin to Adobe Lightroom Classic</h3>
-            <ol>
-                <li>Open <b>Adobe Lightroom Classic</b>.</li>
-                <li>Open the Plug-in Manager by going to: <b>File &gt; Plug-in Manager...</b> (or press <code>Ctrl + Alt + Shift + ,</code> on Windows / <code>Cmd + Opt + Shift + ,</code> on Mac).</li>
-                <li>Click the <b>Add</b> button at the bottom-left corner of the dialog.</li>
-                <li>Select the plugin folder: <br/><code style="background-color: #181818; padding: 2px 6px; color: #f59e0b;">plugin/ai_eraser.lrplugin</code></li>
-                <li>Verify that the status dot is <b style="color: #4ade80;">🟢 Installed and running</b>.</li>
-                <li>Click <b>Done</b>. The plugin is now active!</li>
-            </ol>
-        """)
-        self.tabs.addTab(tab_install, "🚀 Installation")
-
-        # Tab 2: How to Use
-        tab_usage = QTextBrowser()
-        tab_usage.setOpenExternalLinks(True)
-        tab_usage.setStyleSheet("background-color: #242424; color: #dddddd; border: none; padding: 12px; font-size: 12px;")
-        tab_usage.setHtml("""
-            <h2 style="color: #4ade80; margin-top: 0;">✨ How to Use Efface Magique LR</h2>
-
-            <h3 style="color: #60a5fa;">⚡ Option A: Seamless Live Window Sync (Recommended)</h3>
-            <ol>
-                <li>In Lightroom Classic, select: <b>File &gt; Plug-in Extras &gt; ⚡ AI Generative Eraser (Live Window)...</b></li>
-                <li>The companion window appears displaying your active photo.</li>
-                <li><b>Switching photos in Lightroom</b> (arrow keys or clicking the filmstrip) instantly syncs the new photo into this window with zero lag!</li>
-                <li>Paint over tourists, wires, power poles, or blemishes using the red brush (use <code>[</code> and <code>]</code> to adjust size).</li>
-                <li>Toggle <b>🎯 Subject</b> to automatically lock contours to object boundaries.</li>
-                <li>Click <b>✨ Erase Object</b> (or press <b>Enter</b>) to generate inpainting.</li>
-                <li>Review the 3 candidate variation cards and pick your favorite result.</li>
-                <li>Click <b>📥 Save &amp; Sync to Lightroom</b> (<code>Ctrl + S</code>) — the image is losslessly saved as a 16-bit TIFF and auto-stacked into your Lightroom catalog!</li>
-                <li>Click <b>📌 Pin</b> (<code>Ctrl + T</code>) to keep the companion floating on top of Lightroom while you work.</li>
-            </ol>
-
-            <h3 style="color: #60a5fa;">🪄 Option B: Single Photo Mode</h3>
-            <p>Select any photo in Lightroom and click: <b>File &gt; Plug-in Extras &gt; 🪄 AI Generative Eraser (Single Photo)...</b></p>
-        """)
-        self.tabs.addTab(tab_usage, "✨ How to Use")
-
-        # Tab 3: Shortcuts
-        tab_shortcuts = QTextBrowser()
-        tab_shortcuts.setStyleSheet("background-color: #242424; color: #dddddd; border: none; padding: 12px; font-size: 12px;")
-        tab_shortcuts.setHtml("""
-            <h2 style="color: #4ade80; margin-top: 0;">⌨ Keyboard Shortcuts Reference</h2>
-            <table width="100%" cellpadding="6" cellspacing="0" style="border-collapse: collapse; border: 1px solid #3c3c3c;">
-                <tr style="background-color: #1a1a1a; color: #ffffff; border-bottom: 2px solid #0078d4;">
-                    <th align="left" style="padding: 6px 10px;">Shortcut</th>
-                    <th align="left" style="padding: 6px 10px;">Action</th>
-                </tr>
-                <tr style="border-bottom: 1px solid #333333;">
-                    <td style="padding: 6px 10px;"><code>Ctrl + S</code> / <code>Ctrl + Shift + S</code></td>
-                    <td><b>⚡ Save &amp; Sync to Lightroom</b> (Auto-stacks into catalog &amp; stays open)</td>
-                </tr>
-                <tr style="border-bottom: 1px solid #333333;">
-                    <td style="padding: 6px 10px;"><code>Enter</code> / <code>Return</code></td>
-                    <td><b>✨ Erase Object</b> (Run AI inpainting on marked areas)</td>
-                </tr>
-                <tr style="border-bottom: 1px solid #333333;">
-                    <td style="padding: 6px 10px;"><code>Ctrl + T</code></td>
-                    <td><b>📌 Toggle Pin (Always on Top)</b> floating above Lightroom</td>
-                </tr>
-                <tr style="border-bottom: 1px solid #333333;">
-                    <td style="padding: 6px 10px;"><code>[</code> / <code>]</code></td>
-                    <td>Decrease / Increase Brush Radius</td>
-                </tr>
-                <tr style="border-bottom: 1px solid #333333;">
-                    <td style="padding: 6px 10px;"><code>Ctrl + Z</code></td>
-                    <td>↶ Undo stroke or inpainting step</td>
-                </tr>
-                <tr style="border-bottom: 1px solid #333333;">
-                    <td style="padding: 6px 10px;"><code>Ctrl + Y</code> / <code>Ctrl + Shift + Z</code></td>
-                    <td>↷ Redo stroke or inpainting step</td>
-                </tr>
-                <tr style="border-bottom: 1px solid #333333;">
-                    <td style="padding: 6px 10px;"><code>Spacebar</code> (Hold) / <code>\\</code></td>
-                    <td>👁 Instant Before / After Comparison</td>
-                </tr>
-                <tr style="border-bottom: 1px solid #333333;">
-                    <td style="padding: 6px 10px;"><code>Y</code></td>
-                    <td>◫ Interactive Split-Screen Comparison Slider</td>
-                </tr>
-                <tr style="border-bottom: 1px solid #333333;">
-                    <td style="padding: 6px 10px;"><code>Ctrl + 0</code> / <code>F</code></td>
-                    <td>🔍 Fit photo to screen view</td>
-                </tr>
-                <tr style="border-bottom: 1px solid #333333;">
-                    <td style="padding: 6px 10px;"><code>Ctrl + 1</code></td>
-                    <td>1:1 View at 100% pixel scale</td>
-                </tr>
-                <tr style="border-bottom: 1px solid #333333;">
-                    <td style="padding: 6px 10px;"><code>F1</code></td>
-                    <td>💡 Open this User Guide &amp; Setup Dialog</td>
-                </tr>
-            </table>
-        """)
-        self.tabs.addTab(tab_shortcuts, "⌨ Shortcuts")
-
-        # Tab 4: Download & Share
-        tab_share_widget = QWidget()
-        share_vbox = QVBoxLayout(tab_share_widget)
-        share_vbox.setContentsMargins(14, 14, 14, 14)
-        share_vbox.setSpacing(14)
-
-        share_text = QTextBrowser()
-        share_text.setOpenExternalLinks(True)
-        share_text.setStyleSheet("background-color: transparent; color: #dddddd; border: none; font-size: 12px;")
-        share_text.setHtml("""
-            <h2 style="color: #4ade80; margin-top: 0;">📥 Easy Download &amp; Share for Other Users</h2>
-            <p>You can easily distribute Efface Magique LR to other photographers or friends without requiring Git:</p>
-            <ol>
-                <li>Click the button below to package a clean, portable <b>Efface-Magique-LR.zip</b> archive.</li>
-                <li>Share this ZIP file with any colleague or photographer via Google Drive, Dropbox, USB drive, or GitHub Release.</li>
-                <li>The recipient simply unzips the folder and double-clicks <code>install.bat</code> (Windows) or <code>./install.sh</code> (macOS/Linux).</li>
-                <li>In Lightroom, they add <code>plugin/ai_eraser.lrplugin</code> and they are ready to edit!</li>
-            </ol>
-        """)
-        share_vbox.addWidget(share_text)
-
-        btn_package = QPushButton("📦 Package Distribution ZIP for Other Users")
-        btn_package.setStyleSheet("""
-            QPushButton {
-                background-color: #0078d4;
-                color: #ffffff;
-                font-weight: bold;
-                padding: 10px 20px;
-                border-radius: 4px;
-                font-size: 13px;
-            }
-            QPushButton:hover {
-                background-color: #1084d8;
-            }
-        """)
-        btn_package.clicked.connect(self._on_package_distribution)
-        share_vbox.addWidget(btn_package)
-        share_vbox.addStretch(1)
-
-        self.tabs.addTab(tab_share_widget, "📥 Download & Share")
-        layout.addWidget(self.tabs)
-
-        # Bottom button row
-        bottom_row = QHBoxLayout()
-        btn_readme = QPushButton("📖 Open Full README.md")
-        btn_readme.setToolTip("Open complete repository README document in default viewer")
-        btn_readme.clicked.connect(self._on_open_readme)
-        bottom_row.addWidget(btn_readme)
-
-        bottom_row.addStretch(1)
-
-        btn_close = QPushButton("Close")
-        btn_close.setFixedWidth(90)
-        btn_close.clicked.connect(self.accept)
-        bottom_row.addWidget(btn_close)
-        layout.addLayout(bottom_row)
-
-    def _on_package_distribution(self):
-        try:
-            from package_release import create_release_zip
-            zip_path = create_release_zip()
-            if sys.platform == "win32" and os.path.isfile(zip_path):
-                import subprocess
-                subprocess.Popen(f'explorer /select,"{os.path.abspath(zip_path)}"')
-            QMessageBox.information(
-                self,
-                "Package Ready",
-                f"Successfully created distribution package:\n\n{zip_path}\n\nOther users can unzip this archive and run install.bat to get started!"
-            )
-        except Exception as e:
-            QMessageBox.critical(self, "Packaging Error", f"Failed to create release ZIP:\n{e}")
-
-    def _on_open_readme(self):
-        readme_path = os.path.join(_PROJECT_ROOT, "README.md")
-        if os.path.isfile(readme_path):
-            QDesktopServices.openUrl(QUrl.fromLocalFile(readme_path))
-        else:
-            QMessageBox.warning(self, "Not Found", f"README.md not found at:\n{readme_path}")
 
 
 class MainWindow(QMainWindow):
@@ -636,8 +198,9 @@ class MainWindow(QMainWindow):
         self.resize(1400, 920)
         self.setStyleSheet(DARK_STYLE)
 
-        # Inpainting Engine instance
+        # Inpainting Engine instance & Hardware Detection
         device = get_optimal_device()
+        setup_device_optimizations(device)
         self.engine = InpaintingEngine(device=device, mode=EngineMode.FIREFLY)
         self.worker: Optional[InpaintingWorker] = None
 
@@ -801,26 +364,9 @@ class MainWindow(QMainWindow):
         self.btn_new_layer.clicked.connect(self._on_new_layer_clicked)
         header_layout.addWidget(self.btn_new_layer)
 
-        # Delete layer button (Red with 'Delete' text)
+        # Delete layer button (retained on window instance for compatibility, hidden from UI)
         self.btn_delete_layer = QPushButton("Delete")
-        self.btn_delete_layer.setToolTip("Delete selected modification layer")
-        self.btn_delete_layer.setFixedHeight(24)
-        self.btn_delete_layer.setStyleSheet("""
-            QPushButton {
-                background-color: #c42b1c;
-                border: 1px solid #e81123;
-                border-radius: 4px;
-                color: #ffffff;
-                font-size: 11px;
-                font-weight: bold;
-                padding: 2px 8px;
-            }
-            QPushButton:hover {
-                background-color: #e81123;
-            }
-        """)
-        self.btn_delete_layer.clicked.connect(self._on_delete_selected_layer)
-        header_layout.addWidget(self.btn_delete_layer)
+        self.btn_delete_layer.setVisible(False)
 
         layout.addLayout(header_layout)
 
@@ -1041,27 +587,30 @@ class MainWindow(QMainWindow):
 
         layout.addLayout(info_layout, stretch=1)
 
-        # 4. Quick Delete button (Red with 'Delete' text)
-        btn_del = QPushButton("Delete")
-        btn_del.setToolTip(f"Delete {layer.name}")
-        btn_del.setFixedHeight(22)
-        btn_del.setStyleSheet("""
+        # 4. Per-Layer Delete Button
+        btn_delete = QPushButton("✕")
+        btn_delete.setFixedSize(24, 24)
+        btn_delete.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_delete.setToolTip(f"Delete {layer.name}")
+        btn_delete.setStyleSheet("""
             QPushButton {
-                background-color: #8b1818;
-                border: 1px solid #c42b1c;
-                border-radius: 3px;
-                color: #ffffff;
-                font-size: 10px;
+                background-color: transparent;
+                border: 1px solid #3a3a3a;
+                border-radius: 4px;
+                color: #888888;
+                font-size: 11px;
                 font-weight: bold;
-                padding: 1px 6px;
+                padding: 0px;
             }
             QPushButton:hover {
-                background-color: #c42b1c;
-                border-color: #e81123;
+                background-color: #d32f2f;
+                border-color: #f87171;
+                color: #ffffff;
             }
         """)
-        btn_del.clicked.connect(lambda _, i=idx: self._delete_layer(i))
-        layout.addWidget(btn_del)
+        btn_delete.clicked.connect(lambda _, i=idx: self._delete_layer(i))
+        layout.addWidget(btn_delete)
+        card.btn_delete = btn_delete
 
         # Left-click on card selects and enters edit mode for this layer
         card.mousePressEvent = lambda event, i=idx: self._on_layer_card_clicked(event, i)
@@ -1672,8 +1221,8 @@ class MainWindow(QMainWindow):
         self.live_badge.setToolTip("Lightroom Classic Live IPC Bridge status")
         layout.addWidget(self.live_badge)
 
-        # Normalized Help & Guide button
-        self.btn_lr_help = QPushButton("Help & Guide")
+        # Normalized Help/Guide button
+        self.btn_lr_help = QPushButton("Help/Guide")
         self.btn_lr_help.setToolTip("Complete User Guide, Installation, Shortcuts, & Download (F1)")
         self.btn_lr_help.clicked.connect(self._on_show_lr_help)
         layout.addWidget(self.btn_lr_help)
@@ -1696,10 +1245,10 @@ class MainWindow(QMainWindow):
         self.btn_erase.clicked.connect(self._on_run_inpainting)
         layout.addWidget(self.btn_erase)
 
-        # Save & Sync to Lightroom Button with download icon
-        self.btn_sync = QPushButton("📥 Save & Sync to Lightroom")
+        # Save to Lightroom Button with download icon
+        self.btn_sync = QPushButton("📥 Save to Lightroom")
         self.btn_sync.setObjectName("syncAction")
-        self.btn_sync.setToolTip("Save & sync photo into Lightroom without closing window (Ctrl+S)")
+        self.btn_sync.setToolTip("Save photo into Lightroom without closing window (Ctrl+S)")
         self.btn_sync.clicked.connect(self._on_sync_to_lightroom)
         layout.addWidget(self.btn_sync)
 
@@ -2027,6 +1576,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(message)
 
     def _on_inpainting_finished(self, variations: List[Image.Image]):
+        free_device_memory(self.engine.device)
         self.progress_bar.setValue(98)
         self.statusBar().showMessage("Applying inpainting composite to canvas...")
 
@@ -2247,6 +1797,7 @@ class MainWindow(QMainWindow):
             self._on_run_inpainting()
 
     def _on_inpainting_error(self, err_msg: str):
+        free_device_memory(self.engine.device)
         self.progress_bar.setVisible(False)
         self.btn_erase.setEnabled(True)
         QMessageBox.critical(self, "AI Inpainting Error", f"An error occurred during inpainting:\n\n{err_msg}")
@@ -2417,6 +1968,8 @@ class MainWindow(QMainWindow):
             # 1. Terminate active worker thread if running
             if hasattr(self, "worker") and self.worker is not None:
                 try:
+                    if hasattr(self.worker, "cancel"):
+                        self.worker.cancel()
                     self.worker.terminate()
                     self.worker.wait(300)
                 except Exception:

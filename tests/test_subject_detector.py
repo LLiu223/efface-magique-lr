@@ -116,6 +116,52 @@ class TestSubjectDetector(unittest.TestCase):
         )
         self.assertTrue(np.array_equal(np.array(clean_patch), np.array(out)))
 
+    def test_distant_small_object_detection(self):
+        """
+        Verify that a small, distant, low-contrast structure (like a house, barn,
+        or cabin on a distant hill) is accurately detected and cleanly masked
+        including all trim and structural features without leaving severed edges.
+        """
+        # Low contrast landscape scene: muted grass/hill background
+        scene = np.full((200, 200, 3), (78, 82, 75), dtype=np.uint8)
+
+        # Draw a small 30x25 cabin at [85:110, 85:115]
+        # Dark reddish wall
+        scene[90:110, 88:112] = (95, 75, 72)
+        # White / light roof eaves and corner posts
+        scene[85:90, 86:114] = (115, 112, 110)  # roof gable
+        scene[90:110, 86:88] = (115, 112, 110)   # left post
+        scene[90:110, 112:114] = (115, 112, 110) # right post
+
+        scene_pil = Image.fromarray(scene, mode="RGB")
+
+        # User paints a loose coloring zone around the structure
+        loose_zone = Image.new("L", (200, 200), 0)
+        draw = ImageDraw.Draw(loose_zone)
+        draw.rectangle([70, 70, 130, 125], fill=255)
+
+        refined_mask = extract_subject_in_zone(scene_pil, loose_zone)
+        ref_arr = np.array(refined_mask)
+
+        # 1. Must isolate subject from loose background
+        loose_count = np.count_nonzero(np.array(loose_zone) > 0)
+        ref_count = np.count_nonzero(ref_arr > 0)
+        self.assertLess(ref_count, loose_count, "Refined mask must cut away outer background.")
+
+        # 2. Entire structure (wall + roof gable + corner posts) must be enclosed
+        # Roof gable
+        self.assertTrue(np.all(ref_arr[85:90, 88:112] > 0), "Roof gable must be masked.")
+        # Left and right posts
+        self.assertTrue(np.all(ref_arr[92:108, 86:88] > 0), "Left post must be masked.")
+        self.assertTrue(np.all(ref_arr[92:108, 112:114] > 0), "Right post must be masked.")
+        # Interior wall core
+        self.assertTrue(np.all(ref_arr[95:105, 92:108] > 0), "Interior wall must be solid.")
+
+        # 3. Outer background in loose zone (e.g. corner [72:76, 72:76]) must remain unmasked
+        bg_corner = ref_arr[72:76, 72:76]
+        self.assertEqual(np.count_nonzero(bg_corner > 0), 0, "Distant background must remain unmasked.")
+
 
 if __name__ == "__main__":
     unittest.main()
+

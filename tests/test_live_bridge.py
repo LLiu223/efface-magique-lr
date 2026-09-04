@@ -321,9 +321,9 @@ class TestMainWindowLiveIntegration:
             qtbot.addWidget(window)
             window.show()
 
-            # 1. Verify Save & Sync button exists and has correct label
+            # 1. Verify Save to Lightroom button exists and has correct label
             assert hasattr(window, "btn_sync")
-            assert "Save & Sync to Lightroom" in window.btn_sync.text()
+            assert "Save to Lightroom" in window.btn_sync.text()
 
             # 2. Verify NO 'Exit' button is present in the top bar
             top_bar = window.findChild(QFrame, "topBar")
@@ -409,7 +409,7 @@ class TestMainWindowLiveIntegration:
         qtbot.addWidget(window)
         window.show()
 
-        assert "Help & Guide" in window.btn_lr_help.text()
+        assert "Help/Guide" in window.btn_lr_help.text()
         assert hasattr(window, "shortcut_help")
         assert window.shortcut_help.key().toString() == "F1"
 

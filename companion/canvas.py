@@ -37,6 +37,8 @@ from PyQt6.QtWidgets import (
 )
 from PIL import Image
 
+from companion.config import CONFIG
+
 try:
     from PyQt6.QtOpenGLWidgets import QOpenGLWidget
     HAS_OPENGL = True
@@ -175,6 +177,12 @@ class ImageCanvas(QGraphicsView):
         self.is_eraser: bool = False
         self._is_drawing: bool = False
         self._last_draw_pos: Optional[QPointF] = None
+
+        # Stroke throttling timer to eliminate 24MP-60MP pixmap conversion lag on mouseMoveEvent
+        self._mask_dirty: bool = False
+        self._stroke_timer = QTimer(self)
+        self._stroke_timer.setInterval(CONFIG.CANVAS_THROTTLE_MS)
+        self._stroke_timer.timeout.connect(self._flush_mask_pixmap)
 
         # Feather interactive drag adjustment (Shift + mouse drag)
         self._is_adjusting_feather: bool = False
@@ -535,6 +543,9 @@ class ImageCanvas(QGraphicsView):
 
     def clear_mask(self, save_state: bool = True):
         """Clear the current mask without altering the image."""
+        if self._stroke_timer.isActive():
+            self._stroke_timer.stop()
+        self._mask_dirty = False
         if self._mask_qimage is not None:
             self._mask_qimage.fill(QColor(0, 0, 0, 0))
             if self._mask_item:
@@ -842,6 +853,13 @@ class ImageCanvas(QGraphicsView):
 
             painter.restore()
 
+    def _flush_mask_pixmap(self):
+        """Update display pixmap from mask QImage if changes were painted."""
+        if self._mask_dirty and self._mask_qimage is not None:
+            if self._mask_item:
+                self._mask_item.setPixmap(QPixmap.fromImage(self._mask_qimage))
+            self._mask_dirty = False
+
     def _paint_stroke(self, p1: QPointF, p2: QPointF):
         """Draw or erase a stroke on the mask QImage between two points."""
         if self._mask_qimage is None:
@@ -889,9 +907,10 @@ class ImageCanvas(QGraphicsView):
 
         painter.end()
 
-        # Update display pixmap
-        if self._mask_item:
-            self._mask_item.setPixmap(QPixmap.fromImage(self._mask_qimage))
+        # Mark mask as dirty and ensure stroke timer is running for smooth 60 FPS throttled blitting
+        self._mask_dirty = True
+        if not self._stroke_timer.isActive():
+            self._stroke_timer.start()
 
     # -------------------------------------------------------------------------
     # Mouse & Keyboard Event Handlers
@@ -1020,6 +1039,9 @@ class ImageCanvas(QGraphicsView):
             return
 
         if event.button() == Qt.MouseButton.LeftButton and self._is_drawing:
+            if self._stroke_timer.isActive():
+                self._stroke_timer.stop()
+            self._flush_mask_pixmap()
             self._is_drawing = False
             self._last_draw_pos = None
             self._save_mask_state()

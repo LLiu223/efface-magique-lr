@@ -347,3 +347,39 @@ def test_deleting_older_layer_removes_its_changes(qtbot, sample_test_image):
     layer2_cache = np.array(window.modification_layers[0].composite_cache)
     assert np.all(layer2_cache[70, 70] == [30, 30, 30])
     assert not np.array_equal(layer2_cache[200, 270], [40, 40, 40])
+
+
+def test_layer_card_delete_button(qtbot, sample_test_image):
+    """Verify each layer card has an individual delete button that removes the layer and refreshes stack."""
+    path, _ = sample_test_image
+    window = MainWindow(input_path=path)
+    qtbot.addWidget(window)
+    window.show()
+    idx = window.combo_engine.findData(EngineMode.FAST)
+    window.combo_engine.setCurrentIndex(idx)
+
+    # Create Layer 1
+    window.canvas._paint_stroke(QPointF(60, 60), QPointF(80, 80))
+    window.canvas._save_mask_state()
+    window.btn_erase.click()
+    qtbot.waitUntil(lambda: window.worker is None and len(window.modification_layers) == 1, timeout=25000)
+
+    # Create Layer 2
+    window.canvas._paint_stroke(QPointF(260, 190), QPointF(280, 210))
+    window.canvas._save_mask_state()
+    window.btn_erase.click()
+    qtbot.waitUntil(lambda: window.worker is None and len(window.modification_layers) == 2, timeout=25000)
+
+    # Check both cards have btn_delete
+    assert hasattr(window.layer_card_widgets[0], "btn_delete")
+    assert hasattr(window.layer_card_widgets[1], "btn_delete")
+
+    # Click delete button on card 0
+    window.layer_card_widgets[0].btn_delete.click()
+    assert len(window.modification_layers) == 1
+    assert window.modification_layers[0].name == "Modification 2"
+
+    # Click delete button on remaining card
+    window.layer_card_widgets[0].btn_delete.click()
+    assert len(window.modification_layers) == 0
+
