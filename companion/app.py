@@ -20,7 +20,10 @@ import time
 import shutil
 import argparse
 import logging
+import uuid
 from typing import Optional, List
+import numpy as np
+import cv2
 from PIL import Image
 
 # Ensure project root is in sys.path when invoked directly as a script (e.g. from Lightroom)
@@ -53,6 +56,7 @@ from PyQt6.QtWidgets import (
     QDialog,
     QTabWidget,
     QTextBrowser,
+    QScrollArea,
 )
 
 # Application Brand Assets
@@ -63,6 +67,7 @@ _LOGO_ICO_PATH = os.path.join(_ASSETS_DIR, "logo.ico").replace("\\", "/")
 
 from companion.canvas import ImageCanvas, pil_to_qimage
 from companion.inpainting_engine import InpaintingEngine, get_optimal_device, EngineMode, get_device_telemetry
+from companion.layers import ModificationLayer, create_layer_thumbnail
 from companion.live_bridge import LiveBridgeServer
 
 # Configure logging to console and file
@@ -131,6 +136,7 @@ class InpaintingWorker(QThread):
 
     def run(self):
         try:
+            self.progress.emit(5, "Analyzing scene context and mask bounds...")
             variations = self.engine.generate_variations(
                 image=self.image,
                 mask=self.mask,
@@ -431,8 +437,8 @@ class HelpGuideDialog(QDialog):
                 <li>Paint over tourists, wires, power poles, or blemishes using the red brush (use <code>[</code> and <code>]</code> to adjust size).</li>
                 <li>Toggle <b>🎯 Subject</b> to automatically lock contours to object boundaries.</li>
                 <li>Click <b>✨ Erase Object</b> (or press <b>Enter</b>) to generate inpainting.</li>
-                <li>Review the 3 generated Firefly candidate cards and pick your favorite result.</li>
-                <li>Click <b>⚡ Save &amp; Sync to Lightroom</b> (<code>Ctrl + S</code>) — the image is losslessly saved as a 16-bit TIFF and auto-stacked into your Lightroom catalog!</li>
+                <li>Review the 3 candidate variation cards and pick your favorite result.</li>
+                <li>Click <b>📥 Save &amp; Sync to Lightroom</b> (<code>Ctrl + S</code>) — the image is losslessly saved as a 16-bit TIFF and auto-stacked into your Lightroom catalog!</li>
                 <li>Click <b>📌 Pin</b> (<code>Ctrl + T</code>) to keep the companion floating on top of Lightroom while you work.</li>
             </ol>
 
@@ -615,8 +621,16 @@ class MainWindow(QMainWindow):
         self.last_used_mask: Optional[Image.Image] = None
         self.last_base_image: Optional[Image.Image] = None
         self.var_buttons: List[QPushButton] = []
+        self._variation_pixmaps: List[QPixmap] = []
 
-        self.setWindowTitle("Efface Magique LR - Adobe Firefly Generative Eraser")
+        # Non-destructive Modification Layers state
+        self.base_image: Optional[Image.Image] = None
+        self._base_pixmap: Optional[QPixmap] = None
+        self.modification_layers: List[ModificationLayer] = []
+        self.active_layer_index: Optional[int] = None
+        self.layer_card_widgets: dict = {}
+
+        self.setWindowTitle("Efface Magique LR - Generative AI Eraser")
         if os.path.isfile(_LOGO_PATH):
             self.setWindowIcon(QIcon(_LOGO_PATH))
         self.resize(1400, 920)
@@ -626,6 +640,11 @@ class MainWindow(QMainWindow):
         device = get_optimal_device()
         self.engine = InpaintingEngine(device=device, mode=EngineMode.FIREFLY)
         self.worker: Optional[InpaintingWorker] = None
+
+        # Asynchronously pre-warm inpainting models in background daemon thread
+        import threading
+        self._prewarm_thread = threading.Thread(target=self._prewarm_engine, daemon=True)
+        self._prewarm_thread.start()
 
         # Start high-performance local Live IPC Bridge
         self.live_bridge = LiveBridgeServer(preferred_port=bridge_port, parent=self)
@@ -644,7 +663,18 @@ class MainWindow(QMainWindow):
         self.canvas = ImageCanvas(self)
         self.top_bar = self._create_top_bar()
         central_layout.addWidget(self.top_bar)
-        central_layout.addWidget(self.canvas, stretch=1)
+
+        # Middle container: Canvas (center) + Modifications Layers Sidebar (right)
+        middle_container = QWidget()
+        middle_layout = QHBoxLayout(middle_container)
+        middle_layout.setContentsMargins(0, 0, 0, 0)
+        middle_layout.setSpacing(0)
+
+        middle_layout.addWidget(self.canvas, stretch=1)
+        self.layers_panel = self._create_layers_panel()
+        middle_layout.addWidget(self.layers_panel)
+
+        central_layout.addWidget(middle_container, stretch=1)
 
         # Variations Carousel Panel at the bottom
         self.carousel_panel = self._create_carousel_panel()
@@ -662,6 +692,8 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("F"), self, self.canvas.fit_to_screen)
         QShortcut(QKeySequence("Ctrl+T"), self, lambda: self.btn_pin.setChecked(not self.btn_pin.isChecked()))
         QShortcut(QKeySequence("Y"), self, lambda: self.btn_split.setChecked(not self.btn_split.isChecked()))
+        QShortcut(QKeySequence("Ctrl+L"), self, lambda: self.btn_layers_toggle.setChecked(not self.btn_layers_toggle.isChecked()))
+        QShortcut(QKeySequence("L"), self, lambda: self.btn_layers_toggle.setChecked(not self.btn_layers_toggle.isChecked()))
 
         # Load initial image if provided
         if self.input_path and os.path.isfile(self.input_path):
@@ -673,6 +705,14 @@ class MainWindow(QMainWindow):
         super().showEvent(event)
         # Ensure image is fitted comfortably to the actual rendered window viewport
         QTimer.singleShot(50, self.canvas.fit_to_screen)
+
+    def _prewarm_engine(self):
+        """Pre-warm inpainting models in background daemon thread to eliminate first-erase cold-start delay."""
+        try:
+            if not self.engine.is_loaded:
+                self.engine.load_model()
+        except Exception as e:
+            logger.warning(f"Background engine warmup non-fatal exception: {e}")
 
     def _create_carousel_panel(self) -> QFrame:
         """Create the bottom carousel panel for Firefly candidate variations."""
@@ -688,7 +728,7 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(12, 6, 12, 6)
         layout.setSpacing(12)
 
-        lbl = QLabel("<b>✨ Firefly Variations:</b>")
+        lbl = QLabel("<b>Generative Variations:</b>")
         lbl.setStyleSheet("color: #0078d4; font-size: 12px; font-weight: bold;")
         layout.addWidget(lbl)
 
@@ -709,6 +749,758 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.btn_accept_variation)
 
         return panel
+
+    # -------------------------------------------------------------------------
+    # Non-Destructive Modifications Layer Stack & UI Panel
+    # -------------------------------------------------------------------------
+
+    def _create_layers_panel(self) -> QFrame:
+        """Create the right-side Modifications (Layers) sidebar panel."""
+        panel = QFrame(self)
+        panel.setObjectName("layersPanel")
+        panel.setFixedWidth(270)
+        panel.setStyleSheet("""
+            QFrame#layersPanel {
+                background-color: #1e1e1e;
+                border-left: 1px solid #333333;
+            }
+        """)
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
+
+        # Header with Title, Count, and Controls
+        header_layout = QHBoxLayout()
+        header_title = QLabel("<b>📋 Modifications</b>")
+        header_title.setStyleSheet("color: #ffffff; font-size: 12px;")
+        header_layout.addWidget(header_title)
+
+        self.lbl_layer_count = QLabel("(0)")
+        self.lbl_layer_count.setStyleSheet("color: #888888; font-size: 11px;")
+        header_layout.addWidget(self.lbl_layer_count)
+        header_layout.addStretch(1)
+
+        # "+ New" button: deselects active layer so user can draw a fresh modification
+        self.btn_new_layer = QPushButton("+ New")
+        self.btn_new_layer.setToolTip("Start a new modification on the current image")
+        self.btn_new_layer.setFixedHeight(24)
+        self.btn_new_layer.setStyleSheet("""
+            QPushButton {
+                background-color: #2b2b2b;
+                border: 1px solid #444444;
+                border-radius: 4px;
+                color: #ffffff;
+                font-size: 11px;
+                padding: 2px 8px;
+            }
+            QPushButton:hover {
+                background-color: #0078d4;
+                border-color: #0078d4;
+            }
+        """)
+        self.btn_new_layer.clicked.connect(self._on_new_layer_clicked)
+        header_layout.addWidget(self.btn_new_layer)
+
+        # Delete layer button (Red with 'Delete' text)
+        self.btn_delete_layer = QPushButton("Delete")
+        self.btn_delete_layer.setToolTip("Delete selected modification layer")
+        self.btn_delete_layer.setFixedHeight(24)
+        self.btn_delete_layer.setStyleSheet("""
+            QPushButton {
+                background-color: #c42b1c;
+                border: 1px solid #e81123;
+                border-radius: 4px;
+                color: #ffffff;
+                font-size: 11px;
+                font-weight: bold;
+                padding: 2px 8px;
+            }
+            QPushButton:hover {
+                background-color: #e81123;
+            }
+        """)
+        self.btn_delete_layer.clicked.connect(self._on_delete_selected_layer)
+        header_layout.addWidget(self.btn_delete_layer)
+
+        layout.addLayout(header_layout)
+
+        # Active layer notification / editing banner
+        self.layer_active_banner = QFrame()
+        self.layer_active_banner.setStyleSheet("""
+            QFrame {
+                background-color: #0d2847;
+                border: 1px solid #0078d4;
+                border-radius: 4px;
+                padding: 4px 6px;
+            }
+        """)
+        banner_layout = QHBoxLayout(self.layer_active_banner)
+        banner_layout.setContentsMargins(4, 2, 4, 2)
+        self.lbl_banner_text = QLabel("✏️ Editing: Mod 1")
+        self.lbl_banner_text.setStyleSheet("color: #4cc2ff; font-size: 11px; font-weight: bold;")
+        banner_layout.addWidget(self.lbl_banner_text)
+        banner_layout.addStretch(1)
+
+        btn_done_editing = QPushButton("Done")
+        btn_done_editing.setFixedHeight(20)
+        btn_done_editing.setStyleSheet("""
+            QPushButton {
+                background-color: #1a4971;
+                border: 1px solid #0078d4;
+                border-radius: 3px;
+                color: #ffffff;
+                font-size: 10px;
+                padding: 1px 6px;
+            }
+            QPushButton:hover {
+                background-color: #0078d4;
+            }
+        """)
+        btn_done_editing.clicked.connect(self._on_done_editing_layer)
+        banner_layout.addWidget(btn_done_editing)
+        self.layer_active_banner.setVisible(False)
+        layout.addWidget(self.layer_active_banner)
+
+        # Scroll Area for Layer Cards
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+
+        self.layer_cards_container = QWidget()
+        self.layer_cards_layout = QVBoxLayout(self.layer_cards_container)
+        self.layer_cards_layout.setContentsMargins(0, 0, 0, 0)
+        self.layer_cards_layout.setSpacing(6)
+        self.layer_cards_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        scroll.setWidget(self.layer_cards_container)
+        layout.addWidget(scroll, stretch=1)
+
+        # Base Image Layer Card at bottom
+        self.base_layer_card = self._create_base_layer_card()
+        layout.addWidget(self.base_layer_card)
+
+        return panel
+
+    def _create_base_layer_card(self) -> QFrame:
+        """Create the bottom card representing the unedited original photo."""
+        card = QFrame()
+        card.setStyleSheet("""
+            QFrame {
+                background-color: #1a1a1a;
+                border: 1px solid #333333;
+                border-radius: 6px;
+                padding: 4px 8px;
+            }
+            QFrame:hover {
+                background-color: #222222;
+                border-color: #444444;
+            }
+        """)
+        layout = QHBoxLayout(card)
+        layout.setContentsMargins(6, 4, 6, 4)
+        layout.setSpacing(8)
+
+        lbl_icon = QLabel("🖼️")
+        lbl_icon.setStyleSheet("font-size: 14px;")
+        layout.addWidget(lbl_icon)
+
+        lbl_text = QLabel("<b>Base Photo</b><br><span style='color: #888888; font-size: 10px;'>Original input</span>")
+        lbl_text.setStyleSheet("color: #dddddd; font-size: 11px;")
+        layout.addWidget(lbl_text, stretch=1)
+
+        btn_view_base = QPushButton("View")
+        btn_view_base.setToolTip("Preview original unedited photo on canvas")
+        btn_view_base.setFixedHeight(22)
+        btn_view_base.setStyleSheet("""
+            QPushButton {
+                background-color: #2a2a2a;
+                border: 1px solid #444444;
+                border-radius: 4px;
+                color: #cccccc;
+                font-size: 10px;
+                padding: 2px 6px;
+            }
+            QPushButton:hover {
+                background-color: #0078d4;
+                color: #ffffff;
+            }
+        """)
+        btn_view_base.clicked.connect(self._on_view_base_photo)
+        layout.addWidget(btn_view_base)
+
+        return card
+
+    def _on_view_base_photo(self):
+        """Display the original unedited photo on canvas."""
+        if self.base_image:
+            self.canvas.set_display_image(self.base_image, cached_pixmap=getattr(self, "_base_pixmap", None))
+            self.canvas.clear_mask(save_state=False)
+            self.active_layer_index = None
+            self.layer_active_banner.setVisible(False)
+            self.carousel_panel.setVisible(False)
+            self._update_layer_cards_selection()
+            self.statusBar().showMessage("Viewing original Base Photo. Click '+ New' or select a layer to resume editing.", 3000)
+
+    def _create_layer_card(self, idx: int) -> QFrame:
+        """Create a single clickable layer card representing one modification."""
+        layer = self.modification_layers[idx]
+        is_active = (idx == self.active_layer_index)
+
+        card = QFrame()
+        card.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        border_color = "#0078d4" if is_active else "#333333"
+        bg_color = "#15283c" if is_active else "#222222"
+        border_width = 2 if is_active else 1
+        card.setStyleSheet(f"""
+            QFrame {{
+                background-color: {bg_color};
+                border: {border_width}px solid {border_color};
+                border-radius: 6px;
+            }}
+            QFrame:hover {{
+                background-color: #272727;
+                border-color: #0078d4;
+            }}
+        """)
+
+        layout = QHBoxLayout(card)
+        layout.setContentsMargins(6, 4, 6, 4)
+        layout.setSpacing(6)
+
+        # 1. High-Visibility Modification Layer Toggle Box
+        btn_toggle = QPushButton("✓" if layer.visible else "")
+        btn_toggle.setFixedSize(26, 26)
+        btn_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        if layer.visible:
+            btn_toggle.setToolTip(f"{layer.name} is visible (click to hide)")
+            btn_toggle.setStyleSheet("""
+                QPushButton {
+                    background-color: #0f3d63;
+                    border: 2px solid #0078d4;
+                    border-radius: 5px;
+                    color: #38bdf8;
+                    font-size: 14px;
+                    font-weight: bold;
+                    padding: 0px;
+                }
+                QPushButton:hover {
+                    background-color: #1a4f80;
+                    border-color: #60cdff;
+                    color: #ffffff;
+                }
+            """)
+        else:
+            btn_toggle.setToolTip(f"{layer.name} is hidden (click to show)")
+            btn_toggle.setStyleSheet("""
+                QPushButton {
+                    background-color: #181818;
+                    border: 1.5px solid #555555;
+                    border-radius: 5px;
+                    color: #777777;
+                    font-size: 11px;
+                    font-weight: bold;
+                    padding: 0px;
+                }
+                QPushButton:hover {
+                    background-color: #252525;
+                    border-color: #888888;
+                    color: #aaaaaa;
+                }
+            """)
+        btn_toggle.clicked.connect(lambda _, i=idx: self._toggle_layer_visibility(i))
+        layout.addWidget(btn_toggle)
+        card.btn_toggle = btn_toggle
+        card.btn_eye = btn_toggle
+
+        # 2. Thumbnail
+        thumb_label = QLabel()
+        if layer.thumbnail is not None and not layer.thumbnail.isNull():
+            thumb_label.setPixmap(layer.thumbnail)
+        else:
+            thumb_pix = QPixmap(56, 42)
+            thumb_pix.fill(QColor(32, 32, 32))
+            thumb_label.setPixmap(thumb_pix)
+        thumb_label.setFixedSize(56, 42)
+        thumb_label.setStyleSheet("border-radius: 3px;")
+        layout.addWidget(thumb_label)
+
+        # 3. Layer Name and Details
+        info_layout = QVBoxLayout()
+        info_layout.setContentsMargins(0, 0, 0, 0)
+        info_layout.setSpacing(1)
+
+        name_color = "#4cc2ff" if is_active else "#ffffff"
+        name_lbl = QLabel(f"<b>{layer.name}</b>")
+        name_lbl.setStyleSheet(f"color: {name_color}; font-size: 11px;")
+        info_layout.addWidget(name_lbl)
+
+        mode_str = "Fast Spot" if layer.engine_mode == EngineMode.FAST else "Generative AI"
+        detail_lbl = QLabel(f"{mode_str}")
+        detail_lbl.setStyleSheet("color: #888888; font-size: 10px;")
+        info_layout.addWidget(detail_lbl)
+
+        layout.addLayout(info_layout, stretch=1)
+
+        # 4. Quick Delete button (Red with 'Delete' text)
+        btn_del = QPushButton("Delete")
+        btn_del.setToolTip(f"Delete {layer.name}")
+        btn_del.setFixedHeight(22)
+        btn_del.setStyleSheet("""
+            QPushButton {
+                background-color: #8b1818;
+                border: 1px solid #c42b1c;
+                border-radius: 3px;
+                color: #ffffff;
+                font-size: 10px;
+                font-weight: bold;
+                padding: 1px 6px;
+            }
+            QPushButton:hover {
+                background-color: #c42b1c;
+                border-color: #e81123;
+            }
+        """)
+        btn_del.clicked.connect(lambda _, i=idx: self._delete_layer(i))
+        layout.addWidget(btn_del)
+
+        # Left-click on card selects and enters edit mode for this layer
+        card.mousePressEvent = lambda event, i=idx: self._on_layer_card_clicked(event, i)
+
+        self.layer_card_widgets[idx] = card
+        return card
+
+    def _on_layer_card_clicked(self, event, idx: int):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._select_layer(idx)
+
+    def _update_layer_cards_selection(self):
+        """Update active borders on layer cards in-place without rebuilding widgets."""
+        for idx, card in list(self.layer_card_widgets.items()):
+            try:
+                is_active = (idx == self.active_layer_index)
+                border_color = "#0078d4" if is_active else "#333333"
+                bg_color = "#15283c" if is_active else "#222222"
+                border_width = 2 if is_active else 1
+                card.setStyleSheet(f"""
+                    QFrame {{
+                        background-color: {bg_color};
+                        border: {border_width}px solid {border_color};
+                        border-radius: 6px;
+                    }}
+                    QFrame:hover {{
+                        background-color: #272727;
+                        border-color: #0078d4;
+                    }}
+                """)
+            except RuntimeError:
+                pass
+
+    def _update_layer_card_visibility_ui(self, idx: int):
+        """Update toggle box styling in-place without rebuilding widgets."""
+        if idx in self.layer_card_widgets and 0 <= idx < len(self.modification_layers):
+            card = self.layer_card_widgets[idx]
+            layer = self.modification_layers[idx]
+            btn = getattr(card, "btn_toggle", None)
+            if btn is not None:
+                if layer.visible:
+                    btn.setText("✓")
+                    btn.setToolTip(f"{layer.name} is visible (click to hide)")
+                    btn.setStyleSheet("""
+                        QPushButton {
+                            background-color: #0f3d63;
+                            border: 2px solid #0078d4;
+                            border-radius: 5px;
+                            color: #38bdf8;
+                            font-size: 14px;
+                            font-weight: bold;
+                            padding: 0px;
+                        }
+                        QPushButton:hover {
+                            background-color: #1a4f80;
+                            border-color: #60cdff;
+                            color: #ffffff;
+                        }
+                    """)
+                else:
+                    btn.setText("")
+                    btn.setToolTip(f"{layer.name} is hidden (click to show)")
+                    btn.setStyleSheet("""
+                        QPushButton {
+                            background-color: #181818;
+                            border: 1.5px solid #555555;
+                            border-radius: 5px;
+                            color: #777777;
+                            font-size: 11px;
+                            font-weight: bold;
+                            padding: 0px;
+                        }
+                        QPushButton:hover {
+                            background-color: #252525;
+                            border-color: #888888;
+                            color: #aaaaaa;
+                        }
+                    """)
+
+    def _refresh_layers_ui(self):
+        """Re-render all modification layer cards in the sidebar panel."""
+        if not hasattr(self, "layer_cards_layout"):
+            return
+
+        self.layer_card_widgets.clear()
+        while self.layer_cards_layout.count():
+            item = self.layer_cards_layout.takeAt(0)
+            w = item.widget()
+            if w:
+                w.deleteLater()
+
+        self.lbl_layer_count.setText(f"({len(self.modification_layers)})")
+
+        if self.active_layer_index is not None and 0 <= self.active_layer_index < len(self.modification_layers):
+            active_layer = self.modification_layers[self.active_layer_index]
+            self.lbl_banner_text.setText(f"✏️ Editing: {active_layer.name}")
+            self.layer_active_banner.setVisible(True)
+            self.btn_erase.setText(f"Update {active_layer.name}")
+        else:
+            self.layer_active_banner.setVisible(False)
+            self.btn_erase.setText("Erase Object")
+
+        # Render in reverse order so the newest layer is on top of the list
+        for idx in reversed(range(len(self.modification_layers))):
+            card = self._create_layer_card(idx)
+            self.layer_cards_layout.addWidget(card)
+
+    def _select_layer(self, index: int):
+        """Select a modification layer to inspect or modify its mask, prompt, or variation."""
+        if not (0 <= index < len(self.modification_layers)):
+            return
+
+        self.active_layer_index = index
+        layer = self.modification_layers[index]
+
+        # Fast display switch using cached composite/pixmap (0ms)
+        if index == 0:
+            pre_layer_img = self.base_image
+            cached_pix = getattr(self, "_base_pixmap", None)
+        else:
+            prev_layer = self.modification_layers[index - 1]
+            pre_layer_img = prev_layer.composite_cache or self._get_composite_image(up_to_index=index - 1)
+            cached_pix = prev_layer.cached_pixmap
+
+        self.canvas.set_display_image(pre_layer_img, cached_pixmap=cached_pix)
+
+        # Load this layer's mask onto the canvas overlay (0ms if cached_mask_qimage present)
+        self.canvas.set_mask_image(layer.mask, cached_mask_qimage=layer.cached_mask_qimage)
+
+        # Update controls
+        self.btn_erase.setText(f"Update {layer.name}")
+        self.layer_active_banner.setVisible(True)
+        self.lbl_banner_text.setText(f"✏️ Editing: {layer.name}")
+
+        # Update mode combo and checkboxes
+        idx = self.combo_engine.findData(layer.engine_mode)
+        if idx >= 0:
+            self.combo_engine.setCurrentIndex(idx)
+        self.chk_detect_subject.setChecked(layer.detect_subject)
+        self.chk_grain.setChecked(layer.enable_grain)
+
+        # If layer has candidate variations, display them in the carousel
+        if layer.variations and len(layer.variations) > 1:
+            self.current_variations = layer.variations
+            self.active_variation_index = layer.active_variation_index
+            self._variation_pixmaps = [QPixmap.fromImage(pil_to_qimage(v)) for v in layer.variations]
+            self._render_carousel_thumbnails()
+            self.carousel_panel.setVisible(True)
+        else:
+            self.carousel_panel.setVisible(False)
+
+        # Update layer card selection styles in-place (INSTANT, no widget rebuild!)
+        self._update_layer_cards_selection()
+        self.statusBar().showMessage(
+            f"Selected {layer.name}. Paint or Erase to modify mask, then click 'Update {layer.name}'.", 4000
+        )
+
+    def _toggle_layer_visibility(self, index: int):
+        """Toggle visibility on a specific modification layer and re-composite the stack."""
+        if 0 <= index < len(self.modification_layers):
+            layer = self.modification_layers[index]
+            layer.visible = not layer.visible
+
+            # FAST PATH: If toggling the TOP layer and all preceding layers are visible
+            is_top = (index == len(self.modification_layers) - 1)
+            all_preceding_visible = all(l.visible for l in self.modification_layers[:index])
+
+            if is_top and all_preceding_visible:
+                if layer.visible:
+                    # Restoring top layer -> instantaneous display of its cached composite/pixmap (0ms)
+                    disp_img = layer.composite_cache or layer.get_active_image()
+                    disp_pix = layer.cached_pixmap
+                else:
+                    # Hiding top layer -> instantaneous display of preceding layer (0ms)
+                    if index > 0:
+                        disp_img = self.modification_layers[index - 1].composite_cache or self.base_image
+                        disp_pix = self.modification_layers[index - 1].cached_pixmap
+                    else:
+                        disp_img = self.base_image
+                        disp_pix = getattr(self, "_base_pixmap", None)
+
+                self.canvas.set_display_image(disp_img, cached_pixmap=disp_pix)
+                self.canvas._current_pil = disp_img.copy()
+            else:
+                # Invalidate composite caches from index onwards and recompute stack
+                for l in self.modification_layers[index:]:
+                    l.composite_cache = None
+                    l.cached_pixmap = None
+
+                full_composite = self._recompute_composite_stack(from_index=index)
+                top_cached_pix = (
+                    self.modification_layers[-1].cached_pixmap
+                    if (self.modification_layers and self.modification_layers[-1].cached_pixmap)
+                    else getattr(self, "_base_pixmap", None)
+                )
+                self.canvas.set_display_image(full_composite, cached_pixmap=top_cached_pix)
+                self.canvas._current_pil = full_composite.copy()
+
+            if self.active_layer_index == index and not layer.visible:
+                self._on_new_layer_clicked()
+            else:
+                self._update_layer_card_visibility_ui(index)
+
+            state = "visible" if layer.visible else "hidden"
+            self.statusBar().showMessage(f"{layer.name} is now {state}.", 3000)
+
+    def _delete_layer(self, index: int):
+        """Delete a modification layer and cleanly re-composite the stack."""
+        if 0 <= index < len(self.modification_layers):
+            layer = self.modification_layers.pop(index)
+            if self.active_layer_index == index:
+                self.active_layer_index = None
+                self.canvas.clear_mask(save_state=False)
+                if hasattr(self, "carousel_panel"):
+                    self.carousel_panel.setVisible(False)
+                self.current_variations = []
+            elif self.active_layer_index is not None and self.active_layer_index > index:
+                self.active_layer_index -= 1
+
+            # Invalidate composite caches from index onwards on all remaining layers
+            for l in self.modification_layers[index:]:
+                l.composite_cache = None
+                l.cached_pixmap = None
+
+            if self.modification_layers:
+                full_composite = self._recompute_composite_stack(from_index=index)
+                top_cached_pix = (
+                    self.modification_layers[-1].cached_pixmap
+                    if self.modification_layers[-1].cached_pixmap is not None
+                    else QPixmap.fromImage(pil_to_qimage(full_composite))
+                )
+            else:
+                full_composite = self.base_image.copy() if self.base_image is not None else Image.new("RGB", (100, 100), (0, 0, 0))
+                top_cached_pix = getattr(self, "_base_pixmap", None)
+
+            self.canvas.set_display_image(full_composite, cached_pixmap=top_cached_pix)
+            self.canvas._current_pil = full_composite.copy()
+
+            self._refresh_layers_ui()
+            self.statusBar().showMessage(f"Deleted {layer.name}.", 3000)
+
+    def _recompute_composite_stack(self, from_index: int = 0) -> Image.Image:
+        """
+        Recompute composite stack from `from_index` onwards and refresh all caches, pixmaps, and thumbnails.
+        Ensures deleted or hidden layers are completely purged from all subsequent layers.
+        """
+        if self.base_image is None:
+            curr = self.canvas.get_current_image()
+            if curr is not None:
+                self.base_image = curr.copy().convert("RGB")
+                self._base_pixmap = QPixmap.fromImage(pil_to_qimage(self.base_image))
+            else:
+                return Image.new("RGB", (100, 100), (0, 0, 0))
+
+        if not self.modification_layers:
+            return self.base_image.copy()
+
+        from_index = max(0, min(from_index, len(self.modification_layers)))
+        img_w, img_h = self.base_image.size
+
+        # Determine starting composite
+        if from_index == 0:
+            composite = self.base_image.copy()
+        else:
+            prev_layer = self.modification_layers[from_index - 1]
+            if prev_layer.composite_cache is not None:
+                composite = prev_layer.composite_cache.copy()
+            else:
+                composite = self._get_composite_image(up_to_index=from_index - 1)
+
+        from companion.utils.blending import seamless_distance_feather_blend
+
+        for i in range(from_index, len(self.modification_layers)):
+            layer = self.modification_layers[i]
+            if not layer.visible:
+                layer.composite_cache = None
+                layer.cached_pixmap = None
+                continue
+
+            pre_layer_composite = composite.copy()
+            active_img = layer.get_active_image()
+            if active_img is not None and layer.mask is not None:
+                mask_l = layer.mask.convert("L") if layer.mask.mode != "L" else layer.mask
+                mask_np = np.asarray(mask_l)
+                bx, by, bw, bh = cv2.boundingRect((mask_np > 10).astype(np.uint8))
+                if bw > 0 and bh > 0:
+                    pad = 25
+                    x1 = max(0, bx - pad)
+                    y1 = max(0, by - pad)
+                    x2 = min(img_w, bx + bw + pad)
+                    y2 = min(img_h, by + bh + pad)
+
+                    sub_comp = composite.crop((x1, y1, x2, y2)).convert("RGB")
+                    sub_active = active_img.crop((x1, y1, x2, y2)).convert("RGB")
+                    sub_mask = mask_l.crop((x1, y1, x2, y2))
+
+                    blended_sub = seamless_distance_feather_blend(
+                        sub_comp,
+                        sub_active,
+                        sub_mask,
+                        feather_radius=14,
+                    )
+                    composite.paste(blended_sub, (x1, y1))
+
+                    # If the layer has candidate variations, update each variation against pre_layer_composite
+                    if layer.variations and len(layer.variations) > 1:
+                        for v_idx, var_img in enumerate(layer.variations):
+                            if v_idx == layer.active_variation_index:
+                                layer.variations[v_idx] = composite.copy()
+                            else:
+                                var_comp = pre_layer_composite.copy()
+                                sub_v_comp = var_comp.crop((x1, y1, x2, y2)).convert("RGB")
+                                sub_v_act = var_img.crop((x1, y1, x2, y2)).convert("RGB")
+                                blended_v = seamless_distance_feather_blend(
+                                    sub_v_comp,
+                                    sub_v_act,
+                                    sub_mask,
+                                    feather_radius=14,
+                                )
+                                var_comp.paste(blended_v, (x1, y1))
+                                layer.variations[v_idx] = var_comp
+
+            # Store updated composite and pixmap on layer
+            layer.composite_cache = composite.copy()
+            layer.cached_pixmap = QPixmap.fromImage(pil_to_qimage(composite))
+            layer.inpainted_image = composite.copy()
+            layer.update_thumbnail(self.base_image)
+
+        return composite
+
+    def _on_new_layer_clicked(self):
+        """Deselect active layer and return canvas to full composited view ready for new edits."""
+        self.active_layer_index = None
+        if (
+            self.modification_layers
+            and all(l.visible for l in self.modification_layers)
+            and self.modification_layers[-1].composite_cache is not None
+        ):
+            full_composite = self.modification_layers[-1].composite_cache
+            top_cached_pix = self.modification_layers[-1].cached_pixmap
+        else:
+            full_composite = self._get_composite_image()
+            top_cached_pix = (
+                self.modification_layers[-1].cached_pixmap
+                if (self.modification_layers and self.modification_layers[-1].cached_pixmap)
+                else None
+            )
+        self.canvas.set_display_image(full_composite, cached_pixmap=top_cached_pix)
+        self.canvas.clear_mask(save_state=False)
+        self.btn_erase.setText("Erase Object")
+        self.layer_active_banner.setVisible(False)
+        self.carousel_panel.setVisible(False)
+        self._update_layer_cards_selection()
+        self.statusBar().showMessage("Ready for new modification. Paint red brush on photo and click Erase Object.", 3000)
+
+    def _on_delete_selected_layer(self):
+        """Delete whichever layer is currently selected."""
+        if self.active_layer_index is not None and 0 <= self.active_layer_index < len(self.modification_layers):
+            self._delete_layer(self.active_layer_index)
+        elif self.modification_layers:
+            self._delete_layer(len(self.modification_layers) - 1)
+
+    def _on_done_editing_layer(self):
+        """Exit layer editing mode and return to composite view."""
+        self._on_new_layer_clicked()
+
+    def _toggle_layers_panel(self, visible: bool):
+        """Show or hide the Modifications sidebar panel."""
+        if hasattr(self, "layers_panel"):
+            self.layers_panel.setVisible(visible)
+        if hasattr(self, "btn_layers_toggle"):
+            self.btn_layers_toggle.setText("✓ Layers" if visible else "Layers")
+
+    def _get_composite_image(self, up_to_index: Optional[int] = None) -> Image.Image:
+        """
+        Generate the composited image from self.base_image applying all visible layers.
+        Uses fast bounded-box localized feathering for 100x-500x speedup on 24MP-60MP photos.
+        If up_to_index is provided (e.g. -1 for pristine base image, or k for layers 0..k),
+        only applies layers up to that index.
+        """
+        if self.base_image is None:
+            curr = self.canvas.get_current_image()
+            if curr is not None:
+                self.base_image = curr.copy().convert("RGB")
+            else:
+                return Image.new("RGB", (100, 100), (0, 0, 0))
+
+        if up_to_index is not None and up_to_index < 0:
+            return self.base_image.copy()
+
+        limit = len(self.modification_layers) if up_to_index is None else min(up_to_index + 1, len(self.modification_layers))
+        if limit == 0:
+            return self.base_image.copy()
+
+        # Fast path: if all layers up to limit are visible and the top one has composite_cache, reuse it!
+        all_visible = all(self.modification_layers[i].visible for i in range(limit))
+        if all_visible and self.modification_layers[limit - 1].composite_cache is not None:
+            return self.modification_layers[limit - 1].composite_cache.copy()
+
+        composite = self.base_image.copy()
+        img_w, img_h = composite.size
+
+        from companion.utils.blending import seamless_distance_feather_blend
+
+        for i in range(limit):
+            layer = self.modification_layers[i]
+            if not layer.visible:
+                continue
+            active_img = layer.get_active_image()
+            if active_img is None or layer.mask is None:
+                continue
+
+            # Bounded crop optimization: find bounding box of mask + 25px feather padding
+            mask_l = layer.mask.convert("L") if layer.mask.mode != "L" else layer.mask
+            mask_np = np.asarray(mask_l)
+            bx, by, bw, bh = cv2.boundingRect((mask_np > 10).astype(np.uint8))
+            if bw == 0 or bh == 0:
+                continue
+
+            pad = 25
+            x1 = max(0, bx - pad)
+            y1 = max(0, by - pad)
+            x2 = min(img_w, bx + bw + pad)
+            y2 = min(img_h, by + bh + pad)
+
+            sub_comp = composite.crop((x1, y1, x2, y2)).convert("RGB")
+            sub_active = active_img.crop((x1, y1, x2, y2)).convert("RGB")
+            sub_mask = mask_l.crop((x1, y1, x2, y2))
+
+            blended_sub = seamless_distance_feather_blend(
+                sub_comp,
+                sub_active,
+                sub_mask,
+                feather_radius=14,
+            )
+            composite.paste(blended_sub, (x1, y1))
+
+        return composite
+
 
     def _render_loading_carousel(self):
         """Display placeholder loading cards during candidate generation."""
@@ -780,15 +1572,15 @@ class MainWindow(QMainWindow):
 
         add_vsep()
 
-        # Engine Mode Switcher
+        # Engine Mode Switcher (clean naming without emojis)
         self.combo_engine = QComboBox()
-        self.combo_engine.addItem("✨ Firefly AI", EngineMode.FIREFLY)
-        self.combo_engine.addItem("⚡ Fast Spot", EngineMode.FAST)
+        self.combo_engine.addItem("Generative AI", EngineMode.FIREFLY)
+        self.combo_engine.addItem("Fast Spot Removal", EngineMode.FAST)
         self.combo_engine.currentIndexChanged.connect(self._on_engine_changed)
         layout.addWidget(self.combo_engine)
 
         # Detect Subject (Object-Aware) toggle
-        self.chk_detect_subject = QCheckBox("🎯 Subject")
+        self.chk_detect_subject = QCheckBox("Subject")
         self.chk_detect_subject.setChecked(False)
         self.chk_detect_subject.setToolTip("Automatically isolate the subject inside your brush stroke so background does not change")
         layout.addWidget(self.chk_detect_subject)
@@ -817,20 +1609,20 @@ class MainWindow(QMainWindow):
         add_vsep()
 
         # Fit to Screen button
-        self.btn_fit = QPushButton("🔍 Fit")
+        self.btn_fit = QPushButton("Fit")
         self.btn_fit.setToolTip("Fit entire image into screen (Ctrl+0 / F)")
         self.btn_fit.clicked.connect(self.canvas.fit_to_screen)
         layout.addWidget(self.btn_fit)
 
         # Compare Before / After Toggle
-        self.btn_compare = QPushButton("👁 Compare")
+        self.btn_compare = QPushButton("Compare")
         self.btn_compare.setToolTip("Hold \\ or Spacebar for instant Before / After preview")
         self.btn_compare.setCheckable(True)
         self.btn_compare.toggled.connect(self.canvas.set_compare_mode)
         layout.addWidget(self.btn_compare)
 
         # Split-Screen Slider Comparison button
-        self.btn_split = QPushButton("◫ Split")
+        self.btn_split = QPushButton("Split")
         self.btn_split.setCheckable(True)
         self.btn_split.setToolTip("Before & After interactive split-screen slider (Hotkey: Y)")
         self.btn_split.toggled.connect(self.canvas.set_split_compare_mode)
@@ -839,12 +1631,12 @@ class MainWindow(QMainWindow):
         add_vsep()
 
         # Undo / Redo
-        self.btn_undo = QPushButton("↶ Undo")
+        self.btn_undo = QPushButton("Undo")
         self.btn_undo.setToolTip("Undo last action (Ctrl+Z)")
         self.btn_undo.clicked.connect(self.canvas.undo)
         layout.addWidget(self.btn_undo)
 
-        self.btn_redo = QPushButton("↷ Redo")
+        self.btn_redo = QPushButton("Redo")
         self.btn_redo.setToolTip("Redo last action (Ctrl+Y)")
         self.btn_redo.clicked.connect(self.canvas.redo)
         layout.addWidget(self.btn_redo)
@@ -858,7 +1650,7 @@ class MainWindow(QMainWindow):
         add_vsep()
 
         # Always on Top Pin
-        self.btn_pin = QPushButton("📌 Pin")
+        self.btn_pin = QPushButton("Pin")
         self.btn_pin.setCheckable(True)
         self.btn_pin.setToolTip("Keep window always on top of Lightroom (Ctrl+T)")
         self.btn_pin.toggled.connect(self._toggle_always_on_top)
@@ -880,24 +1672,32 @@ class MainWindow(QMainWindow):
         self.live_badge.setToolTip("Lightroom Classic Live IPC Bridge status")
         layout.addWidget(self.live_badge)
 
-        # Lightroom setup & User Guide help
-        self.btn_lr_help = QPushButton("💡 Help & Guide")
+        # Normalized Help & Guide button
+        self.btn_lr_help = QPushButton("Help & Guide")
         self.btn_lr_help.setToolTip("Complete User Guide, Installation, Shortcuts, & Download (F1)")
         self.btn_lr_help.clicked.connect(self._on_show_lr_help)
         layout.addWidget(self.btn_lr_help)
+
+        # Toggle Modifications / Layers Panel button with check mark
+        self.btn_layers_toggle = QPushButton("✓ Layers")
+        self.btn_layers_toggle.setCheckable(True)
+        self.btn_layers_toggle.setChecked(True)
+        self.btn_layers_toggle.setToolTip("Toggle Modifications (Layers) sidebar panel (Ctrl+L / L)")
+        self.btn_layers_toggle.toggled.connect(self._toggle_layers_panel)
+        layout.addWidget(self.btn_layers_toggle)
 
         # Spacer pushes action buttons smoothly to the right
         layout.addStretch(1)
 
         # Primary Inpainting Button
-        self.btn_erase = QPushButton("✨ Erase Object")
+        self.btn_erase = QPushButton("Erase Object")
         self.btn_erase.setObjectName("primaryAction")
         self.btn_erase.setToolTip("Run AI inpainting on marked red areas (Enter)")
         self.btn_erase.clicked.connect(self._on_run_inpainting)
         layout.addWidget(self.btn_erase)
 
-        # Save & Sync to Lightroom Button (auto-stacks in catalog and keeps window open)
-        self.btn_sync = QPushButton("⚡ Save & Sync to Lightroom")
+        # Save & Sync to Lightroom Button with download icon
+        self.btn_sync = QPushButton("📥 Save & Sync to Lightroom")
         self.btn_sync.setObjectName("syncAction")
         self.btn_sync.setToolTip("Save & sync photo into Lightroom without closing window (Ctrl+S)")
         self.btn_sync.clicked.connect(self._on_sync_to_lightroom)
@@ -968,12 +1768,18 @@ class MainWindow(QMainWindow):
         self.shortcut_help.activated.connect(self._on_show_lr_help)
 
     def _on_reset_all(self):
-        """Reset canvas to original unedited photo and clear all variations."""
+        """Reset canvas to original unedited photo and clear all variations and modification layers."""
         self.canvas.reset_all()
+        self.modification_layers.clear()
+        self.active_layer_index = None
+        if self.base_image:
+            self.canvas.set_display_image(self.base_image)
         self.current_variations = []
         self.carousel_panel.setVisible(False)
         self.last_base_image = None
         self.last_used_mask = None
+        if hasattr(self, "layer_cards_layout"):
+            self._refresh_layers_ui()
         self.statusBar().showMessage("Reset canvas and variations to original unedited photo.", 4000)
 
     def _on_open_output_folder(self):
@@ -1080,6 +1886,12 @@ class MainWindow(QMainWindow):
             self.original_dpi = pil_img.info.get("dpi")
 
             self.canvas.load_image(pil_img)
+            self.base_image = pil_img.copy().convert("RGB")
+            self._base_pixmap = QPixmap.fromImage(pil_to_qimage(self.base_image))
+            self.modification_layers = []
+            self.active_layer_index = None
+            self.layer_card_widgets = {}
+
             self.input_path = file_path
             if not self.output_path:
                 is_tmp_lr = os.path.abspath(file_path).startswith(os.path.abspath(os.path.join(_PROJECT_ROOT, ".tmp")))
@@ -1091,6 +1903,9 @@ class MainWindow(QMainWindow):
 
             self.current_variations = []
             self.carousel_panel.setVisible(False)
+
+            if hasattr(self, "layer_cards_layout"):
+                self._refresh_layers_ui()
 
             w, h = pil_img.size
             mp = (w * h) / 1_000_000.0
@@ -1126,13 +1941,46 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "No Mask", "Please paint over the object you want to erase using the red brush.")
             return
 
-        self._start_inpainting_pipeline(current_img, mask_img)
+        # Immediate UI reaction so button doesn't feel stuck
+        self.btn_erase.setEnabled(False)
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setValue(1)
+        self.statusBar().showMessage("Starting AI inpainting pipeline...")
+        from PyQt6.QtWidgets import QApplication
+        QApplication.processEvents()
+
+        if self.base_image is None:
+            self.base_image = current_img.copy().convert("RGB")
+            self._base_pixmap = getattr(self, "_base_pixmap", None) or QPixmap.fromImage(pil_to_qimage(self.base_image))
+
+        if self.active_layer_index is not None and 0 <= self.active_layer_index < len(self.modification_layers):
+            # Updating an existing layer! Input image is composite of layers before this one
+            if self.active_layer_index == 0:
+                input_img = self.base_image
+            else:
+                prev_layer = self.modification_layers[self.active_layer_index - 1]
+                input_img = prev_layer.composite_cache or self._get_composite_image(up_to_index=self.active_layer_index - 1)
+        else:
+            # New layer on top of all visible layers:
+            # Fast check: if layers exist, top layer has composite_cache, and all layers are visible, use it directly!
+            if (
+                self.modification_layers
+                and all(l.visible for l in self.modification_layers)
+                and self.modification_layers[-1].composite_cache is not None
+            ):
+                input_img = self.modification_layers[-1].composite_cache
+            elif not self.modification_layers:
+                input_img = self.base_image
+            else:
+                input_img = self._get_composite_image()
+
+        self._start_inpainting_pipeline(input_img, mask_img)
 
     def _start_inpainting_pipeline(self, current_img: Image.Image, mask_img: Image.Image, seed: Optional[int] = None):
         """Launch worker thread for single-pass or multi-variation generation."""
         self.btn_erase.setEnabled(False)
         self.progress_bar.setVisible(True)
-        self.progress_bar.setValue(0)
+        self.progress_bar.setValue(2)
         self._generation_start_time = time.time()
         if hasattr(self, "timer_label"):
             self.timer_label.setText("")
@@ -1179,17 +2027,99 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(message)
 
     def _on_inpainting_finished(self, variations: List[Image.Image]):
-        self.progress_bar.setVisible(False)
-        self.btn_erase.setEnabled(True)
+        self.progress_bar.setValue(98)
+        self.statusBar().showMessage("Applying inpainting composite to canvas...")
 
         if not variations:
+            self.progress_bar.setVisible(False)
+            self.btn_erase.setEnabled(True)
             return
 
         self.current_variations = variations
         self.active_variation_index = 0
 
-        # Apply primary variation
-        self.canvas.apply_inpainted_image(variations[0])
+        # Pre-cache primary variation QPixmap for instant 0ms canvas display
+        pix_0 = QPixmap.fromImage(pil_to_qimage(variations[0]))
+        self._variation_pixmaps = [pix_0]
+        for v in variations[1:]:
+            self._variation_pixmaps.append(QPixmap.fromImage(pil_to_qimage(v)))
+
+        detect_subj = self.chk_detect_subject.isChecked() if (hasattr(self, "chk_detect_subject") and self.chk_detect_subject.isEnabled()) else False
+        enable_grain = self.chk_grain.isChecked() if (hasattr(self, "chk_grain") and self.chk_grain.isEnabled()) else False
+
+        used_mask = (
+            self.last_used_mask.copy()
+            if self.last_used_mask is not None
+            else (self.canvas.get_mask_image() or Image.new("L", variations[0].size, 0))
+        )
+        if self.base_image is None:
+            curr = self.canvas.get_current_image()
+            self.base_image = (curr if curr is not None else variations[0]).copy().convert("RGB")
+            self._base_pixmap = QPixmap.fromImage(pil_to_qimage(self.base_image))
+
+        cached_mask_qi = self.canvas._mask_qimage.copy() if self.canvas._mask_qimage else None
+
+        if self.active_layer_index is not None and 0 <= self.active_layer_index < len(self.modification_layers):
+            # Update existing layer
+            layer = self.modification_layers[self.active_layer_index]
+            layer.mask = used_mask
+            layer.inpainted_image = variations[0].copy()
+            layer.variations = [v.copy() for v in variations]
+            layer.active_variation_index = 0
+            layer.engine_mode = self.engine.mode
+            layer.detect_subject = detect_subj
+            layer.enable_grain = enable_grain
+            layer.cached_pixmap = pix_0
+            layer.cached_mask_qimage = cached_mask_qi
+
+            # Invalidate composite caches from active_layer_index onwards and cleanly re-composite stack
+            for l in self.modification_layers[self.active_layer_index:]:
+                l.composite_cache = None
+                l.cached_pixmap = None
+
+            full_composite = self._recompute_composite_stack(from_index=self.active_layer_index)
+            is_top = (self.active_layer_index == len(self.modification_layers) - 1)
+            top_cached_pix = (
+                self.modification_layers[-1].cached_pixmap
+                if (self.modification_layers and self.modification_layers[-1].cached_pixmap is not None)
+                else pix_0
+            )
+            self.canvas.apply_inpainted_image(full_composite, cached_pixmap=top_cached_pix if is_top else None)
+            self.statusBar().showMessage(f"Updated {layer.name} successfully.", 4000)
+            self.active_layer_index = None
+        else:
+            # Create new layer
+            new_idx = len(self.modification_layers) + 1
+            new_layer = ModificationLayer(
+                layer_id=str(uuid.uuid4())[:8],
+                name=f"Modification {new_idx}",
+                mask=used_mask,
+                inpainted_image=variations[0].copy(),
+                variations=[v.copy() for v in variations],
+                active_variation_index=0,
+                engine_mode=self.engine.mode,
+                detect_subject=detect_subj,
+                enable_grain=enable_grain,
+                visible=True,
+                cached_pixmap=pix_0,
+                cached_mask_qimage=cached_mask_qi,
+            )
+
+            # When adding a new layer on top, variations[0] was generated directly on top
+            # of the active composite, so variations[0] IS ALREADY the complete composite!
+            full_composite = variations[0]
+            new_layer.composite_cache = full_composite.copy()
+            new_layer.update_thumbnail(self.base_image)
+            self.modification_layers.append(new_layer)
+            self.active_layer_index = None
+
+            # Apply to canvas directly reusing pix_0 without duplicate QPixmap conversion
+            self.canvas.apply_inpainted_image(full_composite, cached_pixmap=pix_0)
+            self.statusBar().showMessage(f"Added {new_layer.name} to Modifications stack.", 4000)
+
+        # Refresh layer cards UI
+        if hasattr(self, "layer_cards_layout"):
+            self._refresh_layers_ui()
 
         # Compute elapsed time
         elapsed = time.time() - getattr(self, "_generation_start_time", time.time())
@@ -1206,7 +2136,9 @@ class MainWindow(QMainWindow):
         if hasattr(self, "dev_label"):
             self.dev_label.setText(f" {get_device_telemetry(self.engine.device)} ")
 
-        self.statusBar().showMessage(f"Generated {len(variations)} variation(s) in {elapsed:.2f}s. Select below or Save to return.", 5000)
+        self.progress_bar.setValue(100)
+        self.progress_bar.setVisible(False)
+        self.btn_erase.setEnabled(True)
 
     def _render_carousel_thumbnails(self):
         """Populate the bottom carousel with thumbnails for each candidate variation."""
@@ -1259,12 +2191,46 @@ class MainWindow(QMainWindow):
 
     def _on_select_variation(self, index: int):
         """User clicked a candidate variation thumbnail card."""
-        if 0 <= index < len(self.current_variations):
-            self.active_variation_index = index
-            for idx, btn in enumerate(self.var_buttons):
-                btn.setChecked(idx == index)
-            self.canvas.set_preview_image(self.current_variations[index])
-            self.statusBar().showMessage(f"Displaying Variation {index + 1} of {len(self.current_variations)}", 3000)
+        if not (0 <= index < len(self.current_variations)):
+            return
+
+        self.active_variation_index = index
+        for idx, btn in enumerate(self.var_buttons):
+            btn.setChecked(idx == index)
+
+        cached_pix = self._variation_pixmaps[index] if (index < len(self._variation_pixmaps)) else None
+        target_img = self.current_variations[index]
+
+        target_layer_idx = (
+            self.active_layer_index
+            if (self.active_layer_index is not None)
+            else (len(self.modification_layers) - 1 if self.modification_layers else None)
+        )
+
+        if target_layer_idx is not None and 0 <= target_layer_idx < len(self.modification_layers):
+            layer = self.modification_layers[target_layer_idx]
+            layer.active_variation_index = index
+            layer.cached_pixmap = cached_pix
+
+            # If modifying the top layer or single layer, target_img IS the final composite!
+            if target_layer_idx == len(self.modification_layers) - 1:
+                layer.composite_cache = target_img.copy()
+                self.canvas.set_display_image(target_img, cached_pixmap=cached_pix)
+            else:
+                for l in self.modification_layers[target_layer_idx:]:
+                    l.composite_cache = None
+                    l.cached_pixmap = None
+                full_comp = self._recompute_composite_stack(from_index=target_layer_idx)
+                top_pix = (
+                    self.modification_layers[-1].cached_pixmap
+                    if self.modification_layers and self.modification_layers[-1].cached_pixmap is not None
+                    else None
+                )
+                self.canvas.set_display_image(full_comp, cached_pixmap=top_pix)
+        else:
+            self.canvas.set_preview_image(target_img, cached_pixmap=cached_pix)
+
+        self.statusBar().showMessage(f"Displaying Variation {index + 1} of {len(self.current_variations)}", 2000)
 
     def _on_accept_variation(self):
         """Lock in selected variation and hide carousel."""
@@ -1336,9 +2302,16 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "No Image", "There is no image to save.")
             return None
 
-        # Use actively selected variation if available
-        if self.current_variations and 0 <= self.active_variation_index < len(self.current_variations):
+        # Use actively selected variation if user is actively previewing variations in carousel
+        if (
+            hasattr(self, "carousel_panel")
+            and self.carousel_panel.isVisible()
+            and self.current_variations
+            and 0 <= self.active_variation_index < len(self.current_variations)
+        ):
             save_img = self.current_variations[self.active_variation_index]
+        elif self.modification_layers:
+            save_img = self._get_composite_image()
         else:
             save_img = current_img
 
@@ -1416,7 +2389,13 @@ class MainWindow(QMainWindow):
             if hasattr(self, "live_badge"):
                 self.live_badge.setText(" ✓ Synced ")
                 reset_text = " 🟢 Live Synced " if self.is_live_mode else " ⚡ Live Ready "
-                QTimer.singleShot(3000, lambda: self.live_badge.setText(reset_text))
+                def _safe_reset():
+                    try:
+                        if hasattr(self, "live_badge") and self.live_badge is not None:
+                            self.live_badge.setText(reset_text)
+                    except (RuntimeError, AttributeError):
+                        pass
+                QTimer.singleShot(3000, _safe_reset)
 
     def _on_save_and_exit(self):
         """Save the active image, queue import for Lightroom, and close companion."""

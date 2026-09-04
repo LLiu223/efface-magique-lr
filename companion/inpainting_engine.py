@@ -364,12 +364,10 @@ class InpaintingEngine:
         # 1. Automatic Mask Dilation (Eradicate Contact Shadows):
         # Apply morphological dilation with an elliptical kernel (8-15px) to expand user brush strokes.
         # Swallows contact shadows, penumbra, and edge anti-aliasing pixels of the removed object.
-        mask_coords_all = np.argwhere(np.array(effective_mask) > 10)
-        if len(mask_coords_all) > 0:
-            box_dim_all = max(mask_coords_all[:, 0].max() - mask_coords_all[:, 0].min() + 1,
-                              mask_coords_all[:, 1].max() - mask_coords_all[:, 1].min() + 1)
-        else:
-            box_dim_all = 100
+        effective_mask_l = effective_mask.convert("L") if effective_mask.mode != "L" else effective_mask
+        mask_np_all = np.asarray(effective_mask_l)
+        bx, by, bw, bh = cv2.boundingRect((mask_np_all > 10).astype(np.uint8))
+        box_dim_all = max(bw, bh) if (bw > 0 and bh > 0) else 100
 
         # Small spot masks: tight 4-6px dilation; Standard objects: 8-14px dilation
         if is_fast_mode or box_dim_all < 60:
@@ -413,12 +411,9 @@ class InpaintingEngine:
         variations: List[Image.Image] = []
 
         # Soft Sigmoidal / Distance feathering: 4-6px for spots, 12-16px for objects
-        mask_coords = np.argwhere(np.array(cropped_mask) > 10)
-        if len(mask_coords) > 0:
-            box_dim = max(mask_coords[:, 0].max() - mask_coords[:, 0].min() + 1,
-                          mask_coords[:, 1].max() - mask_coords[:, 1].min() + 1)
-        else:
-            box_dim = 100
+        crop_mask_l = cropped_mask.convert("L") if cropped_mask.mode != "L" else cropped_mask
+        cbx, cby, cbw, cbh = cv2.boundingRect((np.asarray(crop_mask_l) > 10).astype(np.uint8))
+        box_dim = max(cbw, cbh) if (cbw > 0 and cbh > 0) else 100
 
         if is_fast_mode or box_dim < 60:
             effective_feather = max(4, min(8, int(box_dim * 0.2)))
@@ -484,7 +479,7 @@ class InpaintingEngine:
                     break
 
             if progress_callback:
-                progress_callback(100, f"Generated {len(variations)} Firefly candidate variations.")
+                progress_callback(95, f"Generated {len(variations)} Firefly candidate variations.")
 
             return variations
         finally:

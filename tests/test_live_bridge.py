@@ -404,12 +404,12 @@ class TestMainWindowLiveIntegration:
         assert window.live_bridge.is_running is False
 
     def test_help_guide_dialog_tabs_and_actions(self, qtbot):
-        """Help button is '💡 Help & Guide' with F1 shortcut, and opens dialog with 4 detailed tabs."""
+        """Help button is 'Help & Guide' with F1 shortcut, and opens dialog with 4 detailed tabs."""
         window = MainWindow(live_mode=False)
         qtbot.addWidget(window)
         window.show()
 
-        assert window.btn_lr_help.text() == "💡 Help & Guide"
+        assert "Help & Guide" in window.btn_lr_help.text()
         assert hasattr(window, "shortcut_help")
         assert window.shortcut_help.key().toString() == "F1"
 

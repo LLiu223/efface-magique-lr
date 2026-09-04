@@ -97,18 +97,17 @@ def calculate_context_crop(
         if mask_np.ndim == 3:
             mask_np = mask_np[:, :, 0]
 
-    coords = np.column_stack(np.where(mask_np > 10))
-    if coords.shape[0] == 0:
+    bx, by, bw, bh = cv2.boundingRect((mask_np > 10).astype(np.uint8))
+    if bw == 0 or bh == 0:
         # Empty mask: return centered default or full image
         cx, cy = img_w // 2, img_h // 2
         span = min(min_dim, min(img_w, img_h)) // 2
         return (max(0, cx - span), max(0, cy - span), min(img_w, cx + span), min(img_h, cy + span))
 
-    y_min, x_min = coords.min(axis=0)
-    y_max, x_max = coords.max(axis=0)
-
-    box_w = int(x_max - x_min + 1)
-    box_h = int(y_max - y_min + 1)
+    x_min, y_min = bx, by
+    x_max, y_max = bx + bw - 1, by + bh - 1
+    box_w = bw
+    box_h = bh
 
     # Use at least min_margin_ratio (default >= 50% of mask dimension)
     effective_margin = max(float(min_margin_ratio), float(default_margin_ratio))

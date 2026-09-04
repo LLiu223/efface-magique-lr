@@ -12,7 +12,7 @@ PyQt6 Canvas supporting:
 
 from typing import Optional, List, Tuple
 import numpy as np
-from PyQt6.QtCore import Qt, QPoint, QPointF, QRect, QRectF, QTimer, pyqtSignal
+from PyQt6.QtCore import Qt, QPoint, QPointF, QRect, QRectF, QTimer, pyqtSignal, QSize
 from PyQt6.QtGui import (
     QImage,
     QPixmap,
@@ -324,11 +324,14 @@ class ImageCanvas(QGraphicsView):
         """Return the current active PIL image."""
         return self._current_pil
 
-    def set_preview_image(self, pil_img: Image.Image):
-        """Update the displayed image without altering history (for Firefly variations)."""
-        self._current_pil = pil_img.copy().convert("RGB")
-        base_qimg = pil_to_qimage(self._current_pil)
-        self._curr_pixmap = QPixmap.fromImage(base_qimg)
+    def set_preview_image(self, pil_img: Image.Image, cached_pixmap: Optional[QPixmap] = None):
+        """Update the displayed image without altering history (for candidate variations)."""
+        self._current_pil = pil_img
+        if cached_pixmap is not None:
+            self._curr_pixmap = cached_pixmap
+        else:
+            base_qimg = pil_to_qimage(self._current_pil)
+            self._curr_pixmap = QPixmap.fromImage(base_qimg)
         if self._image_item:
             self._image_item.setPixmap(self._curr_pixmap)
         if self._split_compare_mode:
@@ -361,15 +364,69 @@ class ImageCanvas(QGraphicsView):
             return False
         return bool(np.any(np.asarray(mask) > 10))
 
-    def apply_inpainted_image(self, new_pil_img: Image.Image):
+    def set_mask_image(self, mask_pil: Optional[Image.Image], cached_mask_qimage: Optional[QImage] = None):
+        """Load an existing binary PIL mask into the canvas mask overlay for editing."""
+        if self._current_pil is None:
+            return
+        w, h = self._current_pil.size
+
+        if cached_mask_qimage is not None and cached_mask_qimage.size() == QSize(w, h):
+            self._mask_qimage = cached_mask_qimage.copy()
+        else:
+            self._mask_qimage = QImage(w, h, QImage.Format.Format_ARGB32_Premultiplied)
+            self._mask_qimage.fill(QColor(0, 0, 0, 0))
+
+            if mask_pil is not None:
+                mask_l = mask_pil.convert("L")
+                if mask_l.size != (w, h):
+                    mask_l = mask_l.resize((w, h), Image.Resampling.NEAREST)
+                mask_arr = np.asarray(mask_l)
+                masked_pixels = mask_arr > 10
+
+                if np.any(masked_pixels):
+                    rgba_arr = np.zeros((h, w, 4), dtype=np.uint8)
+                    alpha_val = int(self.brush_opacity * 255)
+                    rgba_arr[masked_pixels, 0] = 255
+                    rgba_arr[masked_pixels, 1] = 30
+                    rgba_arr[masked_pixels, 2] = 30
+                    rgba_arr[masked_pixels, 3] = alpha_val
+
+                    qimg = QImage(rgba_arr.data, w, h, w * 4, QImage.Format.Format_RGBA8888)
+                    painter = QPainter(self._mask_qimage)
+                    painter.drawImage(0, 0, qimg)
+                    painter.end()
+
+        if self._mask_item:
+            self._mask_item.setPixmap(QPixmap.fromImage(self._mask_qimage))
+        self._mask_history = [self._mask_qimage.copy()]
+        self._mask_redo_stack.clear()
+        self.maskChanged.emit()
+
+    def set_display_image(self, pil_img: Image.Image, cached_pixmap: Optional[QPixmap] = None):
+        """Update the displayed canvas image without altering mask or history."""
+        self._current_pil = pil_img
+        if cached_pixmap is not None:
+            self._curr_pixmap = cached_pixmap
+        else:
+            base_qimg = pil_to_qimage(self._current_pil.convert("RGB"))
+            self._curr_pixmap = QPixmap.fromImage(base_qimg)
+        if self._image_item:
+            self._image_item.setPixmap(self._curr_pixmap)
+        if self._split_compare_mode:
+            self._update_split_display()
+
+    def apply_inpainted_image(self, new_pil_img: Image.Image, cached_pixmap: Optional[QPixmap] = None):
         """Update the canvas with new inpainted image, reset mask, and save to undo history."""
-        self._current_pil = new_pil_img.copy().convert("RGB")
+        self._current_pil = new_pil_img if new_pil_img.mode == "RGB" else new_pil_img.convert("RGB")
         self._image_history.append(self._current_pil.copy())
         self._image_redo_stack.clear()
 
-        # Update base image pixmap
-        base_qimg = pil_to_qimage(self._current_pil)
-        self._curr_pixmap = QPixmap.fromImage(base_qimg)
+        # Update base image pixmap (reuse cached_pixmap if provided to avoid 0.5-1.5s freeze)
+        if cached_pixmap is not None:
+            self._curr_pixmap = cached_pixmap
+        else:
+            base_qimg = pil_to_qimage(self._current_pil)
+            self._curr_pixmap = QPixmap.fromImage(base_qimg)
         if self._image_item:
             self._image_item.setPixmap(self._curr_pixmap)
         if self._split_compare_mode:
