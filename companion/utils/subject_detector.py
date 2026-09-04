@@ -11,39 +11,53 @@ Provides:
 """
 
 import logging
+import threading
 from typing import Optional, Union, Tuple
 import numpy as np
 import cv2
 from PIL import Image
 import torch
 
+from companion.config import CONFIG
+
 logger = logging.getLogger("EffaceMagiqueSubjectDetector")
 
-# Global cached neural segmentation model
+# Global cached neural segmentation model — protected by a lock so concurrent
+# first-load calls from background workers never race.
 _SEG_MODEL = None
-_SEG_DEVICE = None
+_SEG_DEVICE: Optional[torch.device] = None
+_SEG_MODEL_LOCK = threading.Lock()
 
 
 def get_segmentation_model(device: Optional[torch.device] = None) -> Optional[torch.nn.Module]:
-    """Load and cache lightweight LRASPP MobileNetV3 segmentation model."""
-    global _SEG_MODEL, _SEG_DEVICE
-    if _SEG_MODEL is not None and (_SEG_DEVICE == device or device is None):
-        return _SEG_MODEL
+    """Load and cache lightweight LRASPP MobileNetV3 segmentation model.
 
-    try:
-        import torchvision.models.segmentation as seg
-        weights = seg.LRASPP_MobileNet_V3_Large_Weights.DEFAULT
-        model = seg.lraspp_mobilenet_v3_large(weights=weights)
-        target_device = device or (torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"))
-        model = model.to(target_device)
-        model.eval()
-        _SEG_MODEL = model
-        _SEG_DEVICE = target_device
-        logger.info(f"Subject segmentation model loaded on {target_device}.")
-        return _SEG_MODEL
-    except Exception as e:
-        logger.warning(f"Could not load neural segmentation model: {e}. Falling back to GrabCut.")
-        return None
+    Thread-safe: uses a module-level lock so concurrent first-load calls
+    (e.g. background worker + GPU warmup) never race on the global cache.
+    """
+    global _SEG_MODEL, _SEG_DEVICE
+
+    target_device = device or (torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"))
+
+    with _SEG_MODEL_LOCK:
+        # Compare device type + index explicitly; torch.device("cpu") == torch.device("cpu:0") can differ
+        if _SEG_MODEL is not None and _SEG_DEVICE is not None:
+            if _SEG_DEVICE.type == target_device.type and (_SEG_DEVICE.index == target_device.index):
+                return _SEG_MODEL
+
+        try:
+            import torchvision.models.segmentation as seg
+            weights = seg.LRASPP_MobileNet_V3_Large_Weights.DEFAULT
+            model = seg.lraspp_mobilenet_v3_large(weights=weights)
+            model = model.to(target_device)
+            model.eval()
+            _SEG_MODEL = model
+            _SEG_DEVICE = target_device
+            logger.info(f"Subject segmentation model loaded on {target_device}.")
+            return _SEG_MODEL
+        except Exception as e:
+            logger.warning(f"Could not load neural segmentation model: {e}. Falling back to GrabCut.")
+            return None
 
 
 def run_neural_subject_detection(
@@ -54,22 +68,26 @@ def run_neural_subject_detection(
     """
     Run neural semantic segmentation on a high-resolution local context crop
     around the user's brushed zone.
-    
+
     Cropping the local context before running the neural model ensures that even
     small distant subjects in 24MP-60MP images retain rich feature resolution,
     yielding vastly superior detection fidelity compared to full-image downsampling.
-    
+
     Returns binary mask (uint8 0 or 255) of subject within zone, or None if no subject detected.
     """
     model = get_segmentation_model(device)
     if model is None:
         return None
 
+    # Guard against micro-zone accidental triggers
+    zone_binary = (mask_zone > 10).astype(np.uint8)
+    if np.count_nonzero(zone_binary) < CONFIG.SUBJECT_DETECT_MIN_ZONE_PX:
+        return None
+
     try:
         import torchvision.transforms.functional as TF
 
         h, w = image_rgb.shape[:2]
-        zone_binary = (mask_zone > 10).astype(np.uint8)
         bx, by, bw, bh = cv2.boundingRect(zone_binary)
         if bw == 0 or bh == 0:
             return None
@@ -87,8 +105,8 @@ def run_neural_subject_detection(
         if crop_h < 10 or crop_w < 10:
             return None
 
-        # Scale the local crop to standard 512px for high-detail neural evaluation
-        max_dim = 512
+        # Scale the local crop to standard CONFIG.NEURAL_CROP_MAX_DIM for high-detail neural evaluation
+        max_dim = CONFIG.NEURAL_CROP_MAX_DIM
         scale = min(1.0, max_dim / max(crop_h, crop_w))
         target_w, target_h = max(32, int(crop_w * scale)), max(32, int(crop_h * scale))
 
@@ -137,16 +155,22 @@ def run_grabcut_refinement(
     image_rgb: np.ndarray,
     mask_zone: np.ndarray,
     seed_mask: Optional[np.ndarray] = None,
-    iterations: int = 4,
+    iterations: Optional[int] = None,
 ) -> np.ndarray:
     """
     Refine object boundaries using multi-cluster local background sampling,
     adaptive CIE Lab color contrast, edge-preserving saliency, and OpenCV GrabCut.
-    
-    Robustly handles distant, small, and low-contrast objects by modeling the local
+
+    Robustly handles distant, small, and low-contrast objects by modelling the local
     background ring, preventing thin structural features (posts, roof gables, eaves)
     from being severed, and ensuring solid hole-filled contours.
+
+    Bug fixed: k-means minimum cluster count is now 2 when sufficient samples are
+    available (previously k=1 on small zones collapsed the background model to a
+    single centroid, defeating the foreground/background discrimination).
     """
+    n_iters = iterations if iterations is not None else CONFIG.GRABCUT_ITERATIONS
+
     h, w = image_rgb.shape[:2]
     zone_binary = (mask_zone > 10).astype(np.uint8)
 
@@ -161,7 +185,7 @@ def run_grabcut_refinement(
     x2 = min(w, bx + bw + pad)
     y2 = min(h, by + bh + pad)
 
-    crop_img = image_rgb[y1:y2, x1:x2].copy()
+    crop_img  = image_rgb[y1:y2, x1:x2].copy()
     crop_zone = zone_binary[y1:y2, x1:x2].copy()
     ch, cw = crop_img.shape[:2]
 
@@ -183,7 +207,12 @@ def run_grabcut_refinement(
 
         if len(bg_lab) >= 20:
             criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0)
-            k_clusters = min(3, max(1, len(bg_lab) // 50))
+            # Bug fix: minimum k=2 so background model has at least two clusters,
+            # preventing the colour-distance metric from collapsing to a trivial offset.
+            k_clusters = min(3, max(2, len(bg_lab) // 50))
+            if len(bg_lab) < 40:
+                # Too few samples for two clusters — fall back to single cluster
+                k_clusters = 1
             _, _, bg_centers = cv2.kmeans(
                 bg_lab.reshape(-1, 3), k_clusters, None, criteria, 3, cv2.KMEANS_PP_CENTERS
             )
@@ -221,7 +250,8 @@ def run_grabcut_refinement(
             zone_eroded = cv2.erode(crop_zone * 255, k_border) > 0
             outer_margin = (crop_zone > 0) & (~zone_eroded)
 
-            prob_bg = outer_margin & (sal_norm < max(int(thresh_val * 0.5), 10)) & (grad_mag < 20)
+            # grad_mag threshold uses float constant for clarity
+            prob_bg = outer_margin & (sal_norm < max(int(thresh_val * 0.5), 10)) & (grad_mag < 20.0)
             gc_mask[prob_bg] = cv2.GC_PR_BGD
     except Exception as e:
         logger.debug(f"Contrast analysis fallback: {e}")
@@ -234,9 +264,9 @@ def run_grabcut_refinement(
         gc_mask[seed_core] = cv2.GC_FGD
 
     # 4. Perimeter of crop is definite background
-    gc_mask[0, :] = cv2.GC_BGD
+    gc_mask[0, :]  = cv2.GC_BGD
     gc_mask[-1, :] = cv2.GC_BGD
-    gc_mask[:, 0] = cv2.GC_BGD
+    gc_mask[:, 0]  = cv2.GC_BGD
     gc_mask[:, -1] = cv2.GC_BGD
 
     has_fg = np.any((gc_mask == cv2.GC_FGD) | (gc_mask == cv2.GC_PR_FGD))
@@ -248,8 +278,10 @@ def run_grabcut_refinement(
     fgd_model = np.zeros((1, 65), np.float64)
 
     try:
-        cv2.grabCut(crop_img, gc_mask, None, bgd_model, fgd_model, iterations, cv2.GC_INIT_WITH_MASK)
-        refined_crop = np.where((gc_mask == cv2.GC_FGD) | (gc_mask == cv2.GC_PR_FGD), 255, 0).astype(np.uint8)
+        cv2.grabCut(crop_img, gc_mask, None, bgd_model, fgd_model, n_iters, cv2.GC_INIT_WITH_MASK)
+        refined_crop = np.where(
+            (gc_mask == cv2.GC_FGD) | (gc_mask == cv2.GC_PR_FGD), 255, 0
+        ).astype(np.uint8)
 
         # 5. Fill interior holes in object contours (roofs, shadows, windows) so the subject is completely solid
         contours, _ = cv2.findContours(refined_crop, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -285,17 +317,17 @@ def extract_subject_in_zone(
 ) -> Image.Image:
     """
     Extract and isolate the subject inside the user's brushed zone with high precision.
-    
+
     Ensures that surrounding background pixels in the coloring zone (ocean, sky, foliage)
     are cleanly excluded from the mask so they remain 100% untouched during inpainting,
     while guaranteeing that all parts of the subject (including eaves, rooflines, trim,
     and posts on small or distant structures) are solidly enclosed.
-    
+
     Args:
         image: Full input RGB image (PIL or numpy array).
         mask_zone: Grayscale mask containing user's painted brush strokes.
         device: PyTorch compute device (CUDA / MPS / CPU).
-        
+
     Returns:
         PIL Image (mode "L") containing refined subject mask.
     """

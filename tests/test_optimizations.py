@@ -196,3 +196,27 @@ def test_image_loader_worker_background_execution(tmp_path, qtbot):
     loaded_img, path = loaded_results[0]
     assert path == img_path
     assert loaded_img.size == (300, 200)
+
+
+def test_free_device_memory_is_idempotent():
+    """free_device_memory() must be callable multiple times without raising an error."""
+    device = get_optimal_device()
+    for _ in range(5):
+        try:
+            free_device_memory(device)
+        except Exception as e:
+            pytest.fail(f"free_device_memory raised on repeat call: {e}")
+
+
+def test_context_crop_empty_mask_returns_valid_centered_crop():
+    """calculate_context_crop with all-zero mask must not crash and must return a centred crop."""
+    empty_mask = np.zeros((3000, 4000), dtype=np.uint8)
+    x1, y1, x2, y2 = calculate_context_crop(
+        (4000, 3000),
+        empty_mask,
+        min_dim=512,
+    )
+    assert 0 <= x1 < x2 <= 4000, "Crop x-bounds must be within image width."
+    assert 0 <= y1 < y2 <= 3000, "Crop y-bounds must be within image height."
+    assert (x2 - x1) >= 1, "Crop must have positive width."
+    assert (y2 - y1) >= 1, "Crop must have positive height."

@@ -383,3 +383,63 @@ def test_layer_card_delete_button(qtbot, sample_test_image):
     window.layer_card_widgets[0].btn_delete.click()
     assert len(window.modification_layers) == 0
 
+
+def test_layer_thumbnail_correct_size(qapp):
+    """Thumbnail QPixmap must have exactly CONFIG.THUMBNAIL_WIDTH x CONFIG.THUMBNAIL_HEIGHT dimensions."""
+    from companion.config import CONFIG
+    base = Image.new("RGB", (800, 600), (100, 100, 100))
+    mask = Image.new("L", (800, 600), 0)
+    result = Image.new("RGB", (800, 600), (150, 200, 250))
+
+    layer = ModificationLayer(
+        layer_id="thumb_size_test",
+        name="Thumb Test",
+        mask=mask,
+        inpainted_image=result,
+        engine_mode=EngineMode.FAST,
+    )
+    layer.update_thumbnail(base)
+
+    assert layer.thumbnail is not None
+    assert layer.thumbnail.width()  == CONFIG.THUMBNAIL_WIDTH,  f"Expected width {CONFIG.THUMBNAIL_WIDTH}"
+    assert layer.thumbnail.height() == CONFIG.THUMBNAIL_HEIGHT, f"Expected height {CONFIG.THUMBNAIL_HEIGHT}"
+
+
+def test_get_active_image_with_empty_variations(qapp):
+    """get_active_image() with no variations list must return inpainted_image without raising."""
+    base = Image.new("RGB", (100, 100), (128, 128, 128))
+    result = Image.new("RGB", (100, 100), (200, 150, 100))
+    mask = Image.new("L", (100, 100), 0)
+
+    layer = ModificationLayer(
+        layer_id="no_var_test",
+        name="No Variations",
+        mask=mask,
+        inpainted_image=result,
+        variations=[],
+        engine_mode=EngineMode.FAST,
+    )
+    active = layer.get_active_image()
+    assert active is result, "get_active_image() must return inpainted_image when variations is empty."
+
+
+def test_get_active_image_with_out_of_bounds_index(qapp):
+    """A stale active_variation_index beyond the list length must fall back to inpainted_image safely."""
+    base = Image.new("RGB", (100, 100), (128, 128, 128))
+    result = Image.new("RGB", (100, 100), (200, 150, 100))
+    var1 = Image.new("RGB", (100, 100), (10, 20, 30))
+    mask = Image.new("L", (100, 100), 0)
+
+    layer = ModificationLayer(
+        layer_id="oob_test",
+        name="OOB Index Test",
+        mask=mask,
+        inpainted_image=result,
+        variations=[var1],
+        active_variation_index=99,   # deliberately out of bounds
+        engine_mode=EngineMode.FAST,
+    )
+    active = layer.get_active_image()
+    assert active is result, "Out-of-bounds active_variation_index must fall back to inpainted_image."
+    # Index should be reset to 0 by the guard
+    assert layer.active_variation_index == 0

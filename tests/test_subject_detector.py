@@ -161,6 +161,84 @@ class TestSubjectDetector(unittest.TestCase):
         bg_corner = ref_arr[72:76, 72:76]
         self.assertEqual(np.count_nonzero(bg_corner > 0), 0, "Distant background must remain unmasked.")
 
+    def test_grabcut_minimum_zone_threshold(self):
+        """
+        A very small brush zone (fewer pixels than CONFIG.SUBJECT_DETECT_MIN_ZONE_PX)
+        must not crash and must return a valid non-empty or empty mask gracefully.
+        """
+        from companion.config import CONFIG
+        scene = Image.new("RGB", (200, 200), (80, 90, 100))
+        # Paint exactly 5 pixels — below the minimum zone threshold
+        tiny_zone = Image.new("L", (200, 200), 0)
+        tiny_zone.putpixel((100, 100), 255)
+        tiny_zone.putpixel((101, 100), 255)
+        tiny_zone.putpixel((102, 100), 255)
+
+        result = extract_subject_in_zone(scene, tiny_zone)
+        # Must not raise; may return any valid L-mode image
+        self.assertEqual(result.mode, "L")
+        self.assertEqual(result.size, (200, 200))
+
+    def test_neural_model_caching(self):
+        """Calling get_segmentation_model() twice must return the exact same object (not reload)."""
+        import torch
+        cpu = torch.device("cpu")
+        model_a = get_segmentation_model(cpu)
+        model_b = get_segmentation_model(cpu)
+        if model_a is not None:
+            self.assertIs(model_a, model_b, "Second call must return the cached model instance.")
+
+    def test_subject_extraction_pil_and_numpy_equivalent(self):
+        """PIL Image input and numpy array input must produce identical masks."""
+        scene = np.full((150, 150, 3), (60, 70, 80), dtype=np.uint8)
+        scene[60:90, 60:90] = (200, 170, 140)
+        scene_pil = Image.fromarray(scene, mode="RGB")
+
+        zone_pil = Image.new("L", (150, 150), 0)
+        draw = ImageDraw.Draw(zone_pil)
+        draw.rectangle([45, 45, 105, 105], fill=255)
+        zone_np = np.array(zone_pil)
+
+        result_pil  = extract_subject_in_zone(scene_pil, zone_pil)
+        result_np   = extract_subject_in_zone(scene, zone_np)
+
+        arr_pil = np.array(result_pil)
+        arr_np  = np.array(result_np)
+        # Both paths must produce the same pixel data
+        self.assertTrue(np.array_equal(arr_pil, arr_np),
+                        "PIL and numpy inputs must produce identical refined masks.")
+
+    def test_full_image_mask_fallback(self):
+        """
+        A mask equal to the full image (all 255) must not crash GrabCut's
+        perimeter-background assumption and must return a valid mask.
+        """
+        scene = Image.new("RGB", (100, 100), (128, 128, 128))
+        full_mask = Image.new("L", (100, 100), 255)
+        result = extract_subject_in_zone(scene, full_mask)
+        self.assertEqual(result.mode, "L")
+        self.assertEqual(result.size, (100, 100))
+        # Must not be totally empty — either the full mask or a refined subset
+        self.assertGreater(np.count_nonzero(np.array(result)), 0)
+
+    def test_grabcut_kmin_two_cluster_coverage(self):
+        """
+        Verify that run_grabcut_refinement works correctly with a zone that has
+        enough background pixels for at least 2 k-means clusters (the bug-fixed path).
+        A zone with > 80 background pixels around the subject should not collapse.
+        """
+        scene = np.full((300, 300, 3), (50, 50, 200), dtype=np.uint8)  # blue background
+        scene[130:170, 130:170] = (230, 180, 100)  # yellow square subject
+        zone = np.zeros((300, 300), dtype=np.uint8)
+        zone[100:200, 100:200] = 255  # 100×100 loose zone → plenty of background pixels
+
+        result = run_grabcut_refinement(scene, zone)
+        result_count = np.count_nonzero(result > 0)
+        zone_count = np.count_nonzero(zone > 0)
+        # Refinement must produce something, and must be smaller than the full zone
+        self.assertGreater(result_count, 0, "GrabCut must detect subject with ≥2 clusters.")
+        self.assertLess(result_count, zone_count, "GrabCut must tighten the mask with ≥2 clusters.")
+
 
 if __name__ == "__main__":
     unittest.main()

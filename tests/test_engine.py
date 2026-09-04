@@ -190,6 +190,56 @@ class TestInpaintingEngine(unittest.TestCase):
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
 
+    def test_inpaint_returns_uint8_dtype(self):
+        """Output array must be dtype uint8 (not float or int) for safe downstream TIFF encoding."""
+        mask = Image.new("L", (self.w, self.h), 0)
+        draw = ImageDraw.Draw(mask)
+        draw.rectangle([300, 200, 400, 300], fill=255)
+        result = self.engine.inpaint_full_resolution(self.base_image, mask)
+        arr = np.asarray(result)
+        self.assertEqual(arr.dtype, np.uint8, "Output image array must be dtype uint8.")
+
+    def test_mode_switching_mid_session(self):
+        """Switching engine mode between calls must not corrupt internal state or raise."""
+        from companion.model_engine import EngineMode
+        mask = Image.new("L", (self.w, self.h), 0)
+        draw = ImageDraw.Draw(mask)
+        draw.rectangle([100, 100, 200, 200], fill=255)
+
+        self.engine.set_mode(EngineMode.FAST)
+        r1 = self.engine.inpaint_full_resolution(self.base_image, mask)
+        self.assertEqual(r1.size, (self.w, self.h))
+
+        self.engine.set_mode(EngineMode.FIREFLY)
+        r2 = self.engine.inpaint_full_resolution(self.base_image, mask)
+        self.assertEqual(r2.size, (self.w, self.h))
+
+    def test_empty_string_prompt_equivalent_to_none(self):
+        """prompt='' must behave identically to prompt=None and must not raise."""
+        mask = Image.new("L", (self.w, self.h), 0)
+        draw = ImageDraw.Draw(mask)
+        draw.rectangle([300, 200, 400, 300], fill=255)
+        # Neither call should raise
+        r_none = self.engine.inpaint_full_resolution(self.base_image, mask, prompt=None)
+        r_empty = self.engine.inpaint_full_resolution(self.base_image, mask, prompt="")
+        self.assertEqual(r_none.size, (self.w, self.h))
+        self.assertEqual(r_empty.size, (self.w, self.h))
+
+    def test_cancellable_worker_no_error_signal(self):
+        """InpaintingWorker must cleanly finish or be interrupted without emitting the error signal."""
+        from companion.model_engine import InpaintingWorker, EngineMode
+        self.engine.set_mode(EngineMode.FAST)
+        mask = Image.new("L", (200, 200), 0)
+        mask.putpixel((100, 100), 255)
+        small = Image.new("RGB", (200, 200), (80, 120, 160))
+
+        errors: list = []
+        worker = InpaintingWorker(self.engine, small, mask, num_variations=1)
+        worker.error.connect(errors.append)
+        worker.start()
+        worker.wait(10000)  # Wait up to 10s
+        self.assertEqual(errors, [], f"Worker must not emit error signal; got: {errors}")
+
 
 if __name__ == "__main__":
     unittest.main()

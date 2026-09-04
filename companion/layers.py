@@ -15,6 +15,7 @@ from PyQt6.QtGui import QImage, QPixmap, QColor, QPainter, QBrush, QPen
 from PyQt6.QtCore import Qt
 
 from companion.inpainting_engine import EngineMode
+from companion.config import CONFIG
 
 
 @dataclass
@@ -42,6 +43,8 @@ class ModificationLayer:
         """Return the active variation image or primary inpainted image."""
         if self.variations and 0 <= self.active_variation_index < len(self.variations):
             return self.variations[self.active_variation_index]
+        # Reset stale index so future calls don't silently fall back on the wrong path
+        self.active_variation_index = 0
         return self.inpainted_image
 
     def update_thumbnail(self, base_image: Image.Image):
@@ -54,12 +57,14 @@ def create_layer_thumbnail(
     base_image: Image.Image,
     mask: Image.Image,
     result_image: Optional[Image.Image] = None,
-    target_size: Tuple[int, int] = (56, 42),
+    target_size: Optional[Tuple[int, int]] = None,
 ) -> QPixmap:
     """
     Generate an informative, high-contrast thumbnail card for a modification layer.
     Shows the affected region on the photo with a subtle red overlay highlighting the erased area.
     """
+    if target_size is None:
+        target_size = (CONFIG.THUMBNAIL_WIDTH, CONFIG.THUMBNAIL_HEIGHT)
     display_img = result_image if result_image is not None else base_image
     w, h = display_img.size
     tw, th = target_size
@@ -79,6 +84,8 @@ def create_layer_thumbnail(
     mask_np = np.asarray(mask_thumb)
 
     # Base QImage
+    # Pin thumb_rgb as bytes so the QImage's data pointer stays valid for the
+    # lifetime of the QPixmap.fromImage() call (avoids UAF on the ndarray buffer).
     thumb_rgb = np.asarray(thumb_pil).copy()
     # Overlay bright red on masked region in thumbnail for scannability
     mask_zone = mask_np > 30
@@ -86,8 +93,10 @@ def create_layer_thumbnail(
     thumb_rgb[mask_zone, 1] = (thumb_rgb[mask_zone, 1] * 0.4).astype(np.uint8)
     thumb_rgb[mask_zone, 2] = (thumb_rgb[mask_zone, 2] * 0.4).astype(np.uint8)
 
-    qimg = QImage(thumb_rgb.data, real_tw, real_th, real_tw * 3, QImage.Format.Format_RGB888)
-    pix = QPixmap.fromImage(qimg.copy())
+    # Keep a bytes() copy so QImage's internal data pointer is never dangling
+    thumb_bytes = bytes(thumb_rgb.data)
+    qimg = QImage(thumb_bytes, real_tw, real_th, real_tw * 3, QImage.Format.Format_RGB888)
+    pix = QPixmap.fromImage(qimg)
 
     # Draw a rounded border on a fixed-size canvas
     final_pixmap = QPixmap(tw, th)

@@ -29,7 +29,7 @@ def main():
         "suite",
         nargs="?",
         default="all",
-        choices=["all", "engine", "gui", "plugin", "e2e", "firefly", "subject", "live", "layers"],
+        choices=["all", "engine", "gui", "plugin", "e2e", "firefly", "subject", "live", "layers", "perf", "opt"],
         help="Test suite to run (default: all)",
     )
     parser.add_argument(
@@ -56,15 +56,19 @@ def main():
             "tests/test_subject_detector.py",
             "tests/test_live_bridge.py",
             "tests/test_layers.py",
+            "tests/test_optimizations.py",
+            "tests/test_pipeline_perf.py",
         ],
-        "engine": ["tests/test_engine.py"],
-        "gui": ["tests/test_gui.py"],
-        "plugin": ["tests/test_plugin.py"],
-        "e2e": ["tests/test_e2e.py"],
+        "engine":  ["tests/test_engine.py"],
+        "gui":     ["tests/test_gui.py"],
+        "plugin":  ["tests/test_plugin.py"],
+        "e2e":     ["tests/test_e2e.py"],
         "firefly": ["tests/test_firefly_pipeline.py"],
         "subject": ["tests/test_subject_detector.py"],
-        "live": ["tests/test_live_bridge.py"],
-        "layers": ["tests/test_layers.py"],
+        "live":    ["tests/test_live_bridge.py"],
+        "layers":  ["tests/test_layers.py"],
+        "opt":     ["tests/test_optimizations.py"],
+        "perf":    ["tests/test_pipeline_perf.py"],
     }
 
     test_targets = suite_map[args.suite]

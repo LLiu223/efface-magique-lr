@@ -99,10 +99,12 @@ class InpaintingEngine:
                     dummy_mask = Image.new("L", (256, 256), 255)
                     with torch.inference_mode():
                         self._lama_model(dummy_img, dummy_mask)
-                    free_device_memory(self.device)
                     logger.info("GPU inference pipeline pre-warmed successfully.")
                 except Exception as e:
                     logger.warning(f"GPU warmup non-fatal exception: {e}")
+                finally:
+                    # Always free dummy tensors so they don't linger until next GC cycle
+                    free_device_memory(self.device)
         except Exception as e:
             logger.warning(f"SimpleLama initialization: {e}")
 
@@ -154,6 +156,57 @@ class InpaintingEngine:
 
         return raw_result
 
+    @staticmethod
+    def _generate_noise_variation(
+        h: int,
+        w: int,
+        seed: int,
+        seed_offset: int,
+        device: torch.device,
+        prompt: Optional[str] = None,
+    ) -> np.ndarray:
+        """
+        Generate a stochastic variation field (H×W×3 float32) conditioned on seed
+        and optional prompt string.  Shared by both CUDA and CPU execution paths,
+        eliminating the previous ~80-line duplication.
+
+        Variation modes (keyed on seed_offset % 3):
+          0 → flat zero (structural-only, no colour shift)
+          1 → medium-frequency noise grid   (5 × scale)
+          2 → fine-frequency noise grid     (6 × scale)
+        Returns numpy array (H, W, 3) ready to be blended into the patch.
+        """
+        rng_cpu = np.random.default_rng(seed)
+
+        def _make_mono(grid_dim_fn, strength: float) -> np.ndarray:
+            grid_dim = grid_dim_fn()
+            vh = max(1, h // grid_dim)
+            vw = max(1, w // grid_dim)
+            n = rng_cpu.normal(0, 1.0, (vh, vw)).astype(np.float32)
+            n -= n.mean()
+            return cv2.resize(n, (w, h), interpolation=cv2.INTER_CUBIC) * strength
+
+        if seed_offset == 0:
+            mono = np.zeros((h, w), dtype=np.float32)
+        elif seed_offset == 1:
+            mono = _make_mono(lambda: max(16, min(h, w) // 16), 5.0)
+        else:
+            mono = _make_mono(lambda: max(24, min(h, w) // 8),  6.0)
+
+        # Broadcast mono to 3-channel
+        variation = np.stack([mono, mono, mono], axis=-1)
+
+        # Optional prompt tint (deterministic hash → tiny ±2 per-channel bias)
+        if prompt:
+            prompt_hash = sum(ord(c) for c in prompt)
+            tint = np.array(
+                [(prompt_hash % 5) - 2, ((prompt_hash // 5) % 5) - 2, ((prompt_hash // 25) % 5) - 2],
+                dtype=np.float32,
+            ) * 2.0
+            variation = variation + tint
+
+        return variation
+
     def _run_diffusion_patch(
         self,
         image_crop_rgb: Image.Image,
@@ -199,76 +252,15 @@ class InpaintingEngine:
             cv_inpaint = cv2.inpaint(orig_np, mask_arr.astype(np.uint8) * 255, 5, cv2.INPAINT_NS)
             patch_np = cv_inpaint.astype(np.float32)
 
-        # 2. Stochastic Generative Variation injection conditioned on seed & prompt
-        seed_offset = (seed % 3)
-        if self.device.type == "cuda":
-            gen = torch.Generator(device="cuda").manual_seed(seed)
-            if seed_offset == 0:
-                variation_mono = torch.zeros((1, 1, crop_h, crop_w), device="cuda", dtype=torch.float32)
-            elif seed_offset == 1:
-                grid_dim = max(16, min(crop_h, crop_w) // 16)
-                vh = max(1, crop_h // grid_dim)
-                vw = max(1, crop_w // grid_dim)
-                noise_t = torch.randn((1, 1, vh, vw), generator=gen, device="cuda", dtype=torch.float32)
-                noise_t = noise_t - torch.mean(noise_t)
-                rescaled_t = F.interpolate(noise_t, size=(crop_h, crop_w), mode="bicubic", align_corners=False)
-                variation_mono = rescaled_t * 5.0
-            else:
-                grid_dim = max(24, min(crop_h, crop_w) // 8)
-                vh = max(1, crop_h // grid_dim)
-                vw = max(1, crop_w // grid_dim)
-                noise_t = torch.randn((1, 1, vh, vw), generator=gen, device="cuda", dtype=torch.float32)
-                noise_t = noise_t - torch.mean(noise_t)
-                rescaled_t = F.interpolate(noise_t, size=(crop_h, crop_w), mode="bicubic", align_corners=False)
-                variation_mono = rescaled_t * 6.0
-
-            if prompt:
-                prompt_hash = sum(ord(c) for c in prompt)
-                prompt_tint_t = torch.tensor(
-                    [(prompt_hash % 5) - 2, ((prompt_hash // 5) % 5) - 2, ((prompt_hash // 25) % 5) - 2],
-                    device="cuda", dtype=torch.float32
-                ).view(1, 3, 1, 1) * 2.0
-                variation_t = variation_mono.repeat(1, 3, 1, 1) + prompt_tint_t
-            else:
-                variation_t = variation_mono.repeat(1, 3, 1, 1)
-
-            mask_float = cv2.GaussianBlur(mask_arr.astype(np.float32), (15, 15), 0)
-            mask_t = torch.from_numpy(mask_float).unsqueeze(0).unsqueeze(0).to(device="cuda", dtype=torch.float32)
-            patch_t = torch.from_numpy(patch_np).permute(2, 0, 1).unsqueeze(0).to(device="cuda", dtype=torch.float32)
-
-            modulated_t = patch_t + (variation_t * mask_t)
-            modulated_np = modulated_t.clamp(0, 255).squeeze(0).permute(1, 2, 0).byte().cpu().numpy()
-            return Image.fromarray(modulated_np, mode="RGB")
-        else:
-            rng = np.random.default_rng(seed)
-            if seed_offset == 0:
-                variation_mono = np.zeros((crop_h, crop_w, 1), dtype=np.float32)
-            elif seed_offset == 1:
-                grid_dim = max(16, min(crop_h, crop_w) // 16)
-                vh = max(1, crop_h // grid_dim)
-                vw = max(1, crop_w // grid_dim)
-                n = rng.normal(0, 1.0, (vh, vw, 1)).astype(np.float32)
-                n = n - np.mean(n)
-                variation_mono = cv2.resize(n, (crop_w, crop_h), interpolation=cv2.INTER_CUBIC)[:, :, np.newaxis] * 5.0
-            else:
-                grid_dim = max(24, min(crop_h, crop_w) // 8)
-                vh = max(1, crop_h // grid_dim)
-                vw = max(1, crop_w // grid_dim)
-                n = rng.normal(0, 1.0, (vh, vw, 1)).astype(np.float32)
-                n = n - np.mean(n)
-                variation_mono = cv2.resize(n, (crop_w, crop_h), interpolation=cv2.INTER_CUBIC)[:, :, np.newaxis] * 6.0
-
-            if prompt:
-                prompt_hash = sum(ord(c) for c in prompt)
-                prompt_tint = np.array([(prompt_hash % 5) - 2, ((prompt_hash // 5) % 5) - 2, ((prompt_hash // 25) % 5) - 2], dtype=np.float32) * 2.0
-                variation_layer = np.repeat(variation_mono, 3, axis=2) + prompt_tint
-            else:
-                variation_layer = np.repeat(variation_mono, 3, axis=2)
-
-            mask_float = cv2.GaussianBlur(mask_arr.astype(np.float32), (15, 15), 0)[:, :, np.newaxis]
-            modulated_patch = patch_np + (variation_layer * mask_float)
-            modulated_patch = np.clip(modulated_patch, 0, 255).astype(np.uint8)
-            return Image.fromarray(modulated_patch, mode="RGB")
+        # 2. Stochastic Generative Variation injection via shared helper (no CUDA/CPU duplication)
+        seed_offset = seed % 3
+        variation_layer = self._generate_noise_variation(
+            h=crop_h, w=crop_w, seed=seed, seed_offset=seed_offset,
+            device=self.device, prompt=prompt,
+        )
+        mask_float = cv2.GaussianBlur(mask_arr.astype(np.float32), (15, 15), 0)[:, :, np.newaxis]
+        modulated_patch = np.clip(patch_np + (variation_layer * mask_float), 0, 255).astype(np.uint8)
+        return Image.fromarray(modulated_patch, mode="RGB")
 
     def generate_variations(
         self,
@@ -362,6 +354,9 @@ class InpaintingEngine:
         else:
             effective_feather = max(10, min(16, int(feather_radius)))
 
+        # Convert once outside the loop — avoids 1 full-resolution copy per variation
+        base_rgb = image.convert("RGB")
+
         try:
             for i, seed in enumerate(seeds):
                 pct_start = 30 + int(i * (50 / num_variations))
@@ -408,8 +403,8 @@ class InpaintingEngine:
                         seed=seed,
                     )
 
-                # 6. Paste back into full-resolution image copy
-                result_img = image.copy().convert("RGB")
+                # 6. Paste back into full-resolution image copy (reuse base_rgb conversion)
+                result_img = base_rgb.copy()
                 result_img.paste(blended_crop, (crop_x1, crop_y1))
                 variations.append(result_img)
 
@@ -471,6 +466,8 @@ class InpaintingWorker(QThread):
         seed: Optional[int] = None,
         detect_subject: bool = True,
         enable_grain: bool = False,
+        margin_ratio: float = 0.85,
+        feather_radius: int = 20,
     ):
         super().__init__()
         self.engine = engine
@@ -481,6 +478,8 @@ class InpaintingWorker(QThread):
         self.seed = seed
         self.detect_subject = detect_subject
         self.enable_grain = enable_grain
+        self.margin_ratio = margin_ratio
+        self.feather_radius = feather_radius
 
     def run(self):
         try:
@@ -491,8 +490,8 @@ class InpaintingWorker(QThread):
                 num_variations=self.num_variations,
                 prompt=self.prompt,
                 base_seed=self.seed,
-                margin_ratio=0.85,
-                feather_radius=20,
+                margin_ratio=self.margin_ratio,
+                feather_radius=self.feather_radius,
                 detect_subject=self.detect_subject,
                 enable_grain=self.enable_grain,
                 progress_callback=lambda pct, msg: self.progress.emit(pct, msg),
