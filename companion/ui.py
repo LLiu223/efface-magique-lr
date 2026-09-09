@@ -443,7 +443,7 @@ class HelpGuideDialog(QDialog):
         tab_usage.setHtml("""
             <h2 style="color: #4ade80; margin-top: 0;">✨ How to Use Efface Magique LR</h2>
 
-            <h3 style="color: #60a5fa;">⚡ Option A: Seamless Live Window Sync (Recommended)</h3>
+            <h3 style="color: #60a5fa;">⚡ Quick Start Guide</h3>
             <ol>
                 <li>In Lightroom Classic, select: <b>File &gt; Plug-in Extras &gt; ⚡ AI Generative Eraser (Live Window)...</b></li>
                 <li>The companion window appears displaying your active photo.</li>
@@ -455,9 +455,6 @@ class HelpGuideDialog(QDialog):
                 <li>Click <b>📥 Save &amp; Sync to Lightroom</b> (<code>Ctrl + S</code>) — the image is losslessly saved as a 16-bit TIFF and auto-stacked into your Lightroom catalog!</li>
                 <li>Click <b>📌 Pin</b> (<code>Ctrl + T</code>) to keep the companion floating on top of Lightroom while you work.</li>
             </ol>
-
-            <h3 style="color: #60a5fa;">🪄 Option B: Single Photo Mode</h3>
-            <p>Select any photo in Lightroom and click: <b>File &gt; Plug-in Extras &gt; 🪄 AI Generative Eraser (Single Photo)...</b></p>
         """)
         self.tabs.addTab(tab_usage, "✨ How to Use")
 

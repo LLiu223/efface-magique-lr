@@ -17,10 +17,6 @@ return {
             title = "⚡ AI Generative Eraser (Live Window)...",
             file = "LiveBridge.lua",
         },
-        {
-            title = "🪄 AI Generative Eraser (Single Photo)...",
-            file = "GenerativeEraser.lua",
-        },
     },
 
     -- Library module top menu & right-click photo context menu
@@ -28,18 +24,6 @@ return {
         {
             title = "⚡ AI Generative Eraser (Live Window)...",
             file = "LiveBridge.lua",
-        },
-        {
-            title = "🪄 AI Generative Eraser (Single Photo)...",
-            file = "GenerativeEraser.lua",
-        },
-    },
-
-    -- Help menu entry
-    LrHelpMenuItems = {
-        {
-            title = "About AI Generative Eraser...",
-            file = "GenerativeEraser.lua",
         },
     },
 

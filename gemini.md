@@ -10,16 +10,14 @@
 |                                      ADOBE LIGHTROOM CLASSIC                                      |
 |                                                                                                   |
 | 1. User selects target photo in Library or Develop module.                                        |
-| 2. User invokes: File > Plug-in Extras > "🪄 AI Generative Eraser" (or Library Context Menu,       |
-|    or Ctrl+Alt+E external editing preset).                                                        |
-| 3. GenerativeEraser.lua:                                                                          |
-|    - Validates target photo and acquires export session.                                          |
-|    - Exports full-resolution 16-bit TIFF with embedded color profile (ProPhoto RGB) to workspace. |
-|    - Launches local companion app via LrTasks.execute / LrShell, passing file arguments.         |
-|    - Yields task and listens for companion exit code.                                             |
-| 4. On companion exit code 0:                                                                      |
-|    - Reads exported & inpainted TIFF back into Lightroom Catalog using LrCatalog:addPhoto().     |
-|    - Stacks the new photo adjacent to the original source photo automatically.                    |
+| 2. User invokes: File > Plug-in Extras > "⚡ AI Generative Eraser" (Live Window).                   |
+| 3. LiveBridge.lua:                                                                                |
+|    - Observes photo selection, debounces exports, and communicates with Companion via IPC bridge.  |
+|    - Exports 16-bit TIFF with embedded color profile to workspace.                                |
+|    - Sends selection event to local companion app via HTTP IPC API.                               |
+| 4. On companion save & sync:                                                                      |
+|    - Reads edited TIFF back into Lightroom Catalog using LrCatalog:addPhoto().                    |
+|    - Auto-stacks the new photo adjacent to original photo and stays live.                         |
 +-------------------------------------------------+-------------------------------------------------+
                                                   | Process invocation (CLI arguments)
                                                   v
@@ -95,7 +93,6 @@ efface-magique-lr/
 ├── plugin/
 │   └── ai_eraser.lrplugin/              # Adobe Lightroom Classic Plugin Bundle
 │       ├── Info.lua                     # Plugin manifest, IDs, SDK version & multi-module menu hooks
-│       ├── GenerativeEraser.lua         # Single Photo: Export -> Launch Companion -> Await -> Re-import
 │       ├── LiveBridge.lua               # Live Window: Persistent selection observer & seamless IPC sync
 │       └── PluginUtils.lua              # Cross-platform path resolver & background process launcher
 │

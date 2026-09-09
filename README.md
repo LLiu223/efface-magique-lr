@@ -109,16 +109,7 @@ Work through your entire photoshoot without ever relaunching or closing the edit
 
 ---
 
-### 🪄 Mode 2: Single Photo Mode
-
-For one-off adjustments on a single image:
-1. Select a photo in Lightroom Classic.
-2. Go to **File > Plug-in Extras > 🪄 AI Generative Eraser (Single Photo)...**
-3. Perform your edits, click **⚡ Save & Sync to Lightroom** (`Ctrl + S`), and close the companion window when finished.
-
----
-
-### 🧪 Mode 3: Standalone Desktop App (Without Lightroom)
+### 🧪 Mode 2: Standalone Desktop App (Without Lightroom)
 
 You can also use Efface Magique as a standalone desktop photo eraser:
 - **Windows:** Double-click `companion.bat`.
@@ -190,7 +181,6 @@ efface-magique-lr/
 ├── plugin/
 │   └── ai_eraser.lrplugin/           # Adobe Lightroom Classic Plugin
 │       ├── Info.lua                  # Plugin manifest, menu hooks, & hotkeys
-│       ├── GenerativeEraser.lua      # Single photo workflow & auto-stacking
 │       ├── LiveBridge.lua            # High-speed background IPC bridge for Live Window
 │       ├── PluginUtils.lua           # Environment detection & CLI launcher
 │       └── logo.png                  # Plugin branding icon
