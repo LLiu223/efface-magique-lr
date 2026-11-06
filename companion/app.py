@@ -171,6 +171,10 @@ class MainWindow(QMainWindow):
                 base, ext = os.path.splitext(self.input_path)
                 self.output_path = f"{base}_ai_edit{ext}"
         self.saved_successfully = False
+        # Per-photo: True once the current layers were synced to Lightroom
+        self._layers_synced = False
+        # Latest Lightroom selection received while inpainting was running
+        self._pending_select: Optional[dict] = None
 
         # Metadata preservation
         self.original_icc_profile = None
@@ -1441,7 +1445,11 @@ class MainWindow(QMainWindow):
             self.active_layer_index = None
             self.layer_card_widgets = {}
 
+            # A different photo needs its own output path; keep an explicit one for the initial load
+            if self.input_path is None or os.path.abspath(file_path) != os.path.abspath(self.input_path):
+                self.output_path = None
             self.input_path = file_path
+            self._layers_synced = False
             if not self.output_path:
                 is_tmp_lr = os.path.abspath(file_path).startswith(os.path.abspath(os.path.join(_PROJECT_ROOT, ".tmp")))
                 if is_tmp_lr:
@@ -1474,8 +1482,25 @@ class MainWindow(QMainWindow):
             "",
             "Images (*.tif *.tiff *.png *.jpg *.jpeg *.dng *.psd);;All Files (*.*)"
         )
-        if file_path:
+        if file_path and self._confirm_discard_layers():
             self.load_image_file(file_path)
+
+    def _confirm_discard_layers(self) -> bool:
+        """Return True if the current photo may be replaced (no unsynced layers, or user agreed)."""
+        if not self.modification_layers or self._layers_synced:
+            return True
+        n = len(self.modification_layers)
+        answer = QMessageBox.question(
+            self,
+            "Unsaved Layers",
+            f"Discard {n} unsaved layers?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            return True
+        self.statusBar().showMessage("Kept current photo; switch cancelled. Sync still targets this photo.", 6000)
+        return False
 
     def _on_run_inpainting(self):
         """Trigger AI inpainting in a background worker thread."""
@@ -1570,6 +1595,10 @@ class MainWindow(QMainWindow):
         if self.worker is not None:
             self.worker.deleteLater()
             self.worker = None
+        # Clear before applying: the switch may open a modal prompt (re-entrancy)
+        pending, self._pending_select = self._pending_select, None
+        if pending is not None:
+            self._on_live_photo_selected(pending)
 
     def _on_inpainting_progress(self, percentage: int, message: str):
         self.progress_bar.setValue(percentage)
@@ -1661,6 +1690,7 @@ class MainWindow(QMainWindow):
             new_layer.composite_cache = full_composite.copy()
             new_layer.update_thumbnail(self.base_image)
             self.modification_layers.append(new_layer)
+            self._layers_synced = False
             self.active_layer_index = None
 
             # Apply to canvas directly reusing pix_0 without duplicate QPixmap conversion
@@ -1822,7 +1852,11 @@ class MainWindow(QMainWindow):
 
         if self.worker is not None:
             logger.info(f"Inpainting active; delaying switch to {new_path}")
-            self.statusBar().showMessage("Lightroom selection changed, but inpainting is currently in progress...", 4000)
+            self._pending_select = payload
+            self.statusBar().showMessage("Lightroom selection changed; switching once inpainting finishes...", 4000)
+            return
+
+        if not self._confirm_discard_layers():
             return
 
         self.current_photo_id = payload.get("photo_id")
@@ -1931,6 +1965,7 @@ class MainWindow(QMainWindow):
         saved_path = self.save_image_to_disk()
         if saved_path:
             self.saved_successfully = True
+            self._layers_synced = True
             self.live_bridge.queue_import(
                 export_path=saved_path,
                 original_path=self.current_original_path,
@@ -1948,33 +1983,19 @@ class MainWindow(QMainWindow):
                         pass
                 QTimer.singleShot(3000, _safe_reset)
 
-    def _on_save_and_exit(self):
-        """Save the active image, queue import for Lightroom, and close companion."""
-        saved_path = self.save_image_to_disk()
-        if saved_path:
-            self.saved_successfully = True
-            self.live_bridge.queue_import(
-                export_path=saved_path,
-                original_path=self.current_original_path,
-                photo_id=self.current_photo_id,
-            )
-            print(f"[Efface Magique] Edited photo successfully saved to: {saved_path}")
-            self.close()
-
     def closeEvent(self, event):
         """Ensure all threads, live servers, and background processes terminate when window is closed."""
         logger.info("MainWindow closeEvent: shutting down background processes and cleaning temp files...")
         try:
-            # 1. Terminate active worker thread if running
+            # 1. Give an active worker thread a moment to finish (os._exit in main() kills it otherwise)
             if hasattr(self, "worker") and self.worker is not None:
                 try:
-                    if hasattr(self.worker, "cancel"):
-                        self.worker.cancel()
-                    self.worker.terminate()
                     self.worker.wait(300)
+                    # Keep the reference while running so Python never GCs a live QThread
+                    if not self.worker.isRunning():
+                        self.worker = None
                 except Exception:
                     pass
-                self.worker = None
 
             # 2. Stop Live Bridge server and remove live_bridge.json
             if hasattr(self, "live_bridge") and self.live_bridge is not None:
