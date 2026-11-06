@@ -1,0 +1,14 @@
+# Conservative lint: ruff defaults only (syntax errors, pyflakes, a few pycodestyle E4/E7/E9).
+target-version = "py311"
+extend-exclude = [".venv", "dist", "factory"]
+
+[lint]
+select = ["E4", "E7", "E9", "F"]
+
+[lint.per-file-ignores]
+# sys.path insert must precede project imports.
+"tests/*" = ["E402"]
+# app.py re-exports names tests import (e.g. _CHECKMARK_PATH); keep its imports and `l` loop names untouched.
+"companion/app.py" = ["E402", "E741", "F401"]
+# Release script is out of scope for lint fixes.
+"package_release.py" = ["F401"]

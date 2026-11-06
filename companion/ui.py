@@ -12,10 +12,9 @@ import os
 import sys
 from typing import Optional
 
-from PyQt6.QtCore import Qt, QRect, QTimer, QSize, QUrl, QPointF
+from PyQt6.QtCore import Qt, QRect, QTimer, QUrl
 from PyQt6.QtGui import (
     QIcon,
-    QFont,
     QColor,
     QPainter,
     QPen,

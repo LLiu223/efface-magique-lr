@@ -6,3 +6,4 @@ numpy>=1.24.0
 Pillow>=9.5.0
 luaparser>=4.0.0
 
+ruff==0.17.4

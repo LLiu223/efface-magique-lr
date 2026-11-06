@@ -8,13 +8,11 @@ Comprehensive unit tests for AI optimization features:
 - Memory management and tensor cache clearance
 """
 
-import os
 import pytest
 import torch
 import numpy as np
 from PIL import Image
-from PyQt6.QtCore import Qt, QPointF
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtCore import QPointF
 
 from companion.device import (
     DeviceType,
@@ -29,15 +27,11 @@ from companion.device import (
 from companion.pipeline import (
     calculate_context_crop,
     seamless_distance_feather_blend,
-    feathered_sigmoid_blend,
-    estimate_sensor_noise_profile,
-    synthesize_and_match_sensor_grain,
 )
 from companion.config import CONFIG
 from companion.canvas import ImageCanvas
 from companion.ui import LoadingSpinnerOverlay
 from companion.app import ImageLoaderWorker
-from companion.model_engine import InpaintingEngine, EngineMode, InpaintingWorker
 
 
 def test_hardware_detection_and_fallback():

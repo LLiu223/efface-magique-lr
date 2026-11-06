@@ -15,7 +15,7 @@ import os
 import sys
 import numpy as np
 from PIL import Image
-from PyQt6.QtCore import Qt, QPointF
+from PyQt6.QtCore import QPointF
 from PyQt6.QtGui import QPixmap
 import pytest
 
@@ -24,9 +24,17 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from companion.layers import ModificationLayer, create_layer_thumbnail
+from companion.layers import ModificationLayer
 from companion.model_engine import EngineMode
 from companion.app import MainWindow
+
+try:
+    import simple_lama_inpainting  # noqa: F401
+    _HAS_LAMA = True
+except ImportError:  # CI installs no LaMa and fetches no weights
+    _HAS_LAMA = False
+# Fast-mode erase needs real LaMa; without it the GUI shows a modal error and the test would hang.
+_requires_lama = pytest.mark.skipif(not _HAS_LAMA, reason="simple_lama_inpainting not installed: real LaMa inference test skipped")
 
 
 @pytest.fixture
@@ -92,6 +100,7 @@ def test_layer_panel_widgets_present(qtbot, sample_test_image):
     assert window.layers_panel.isVisible() is True
 
 
+@_requires_lama
 def test_sequential_layer_creation(qtbot, sample_test_image):
     """Simulate two sequential erase steps and verify layers are added to stack."""
     path, _ = sample_test_image
@@ -126,6 +135,7 @@ def test_sequential_layer_creation(qtbot, sample_test_image):
     assert window.modification_layers[1].name == "Modification 2"
 
 
+@_requires_lama
 def test_select_and_modify_first_modification(qtbot, sample_test_image):
     """Verify selecting Modification 1 when multiple modifications exist and modifying it."""
     path, _ = sample_test_image
@@ -181,6 +191,7 @@ def test_select_and_modify_first_modification(qtbot, sample_test_image):
     assert window.modification_layers[1].visible is True
 
 
+@_requires_lama
 def test_toggle_visibility_and_delete_layer(qtbot, sample_test_image):
     """Verify toggling layer visibility on/off and deleting a layer."""
     path, _ = sample_test_image
@@ -226,6 +237,7 @@ def test_toggle_visibility_and_delete_layer(qtbot, sample_test_image):
     assert window.active_layer_index is None
 
 
+@_requires_lama
 def test_layer_toggle_box_visibility_and_styling(qtbot, sample_test_image):
     """Verify that the modification layer toggle box is visible with prominent styling and updates in-place."""
     path, _ = sample_test_image
@@ -259,6 +271,7 @@ def test_layer_toggle_box_visibility_and_styling(qtbot, sample_test_image):
     assert "0078d4" in card.btn_toggle.styleSheet()
 
 
+@_requires_lama
 def test_instant_layer_toggle_caching(qtbot, sample_test_image):
     """Verify top layer toggle uses cached pixmaps directly without full re-compositing."""
     path, _ = sample_test_image
@@ -287,6 +300,7 @@ def test_instant_layer_toggle_caching(qtbot, sample_test_image):
     assert window.canvas._curr_pixmap == layer.cached_pixmap
 
 
+@_requires_lama
 def test_deleting_older_layer_removes_its_changes(qtbot, sample_test_image):
     """
     Verify that when deleting an older layer (Modification 1), the remaining
@@ -349,6 +363,7 @@ def test_deleting_older_layer_removes_its_changes(qtbot, sample_test_image):
     assert not np.array_equal(layer2_cache[200, 270], [40, 40, 40])
 
 
+@_requires_lama
 def test_layer_card_delete_button(qtbot, sample_test_image):
     """Verify each layer card has an individual delete button that removes the layer and refreshes stack."""
     path, _ = sample_test_image
@@ -407,7 +422,6 @@ def test_layer_thumbnail_correct_size(qapp):
 
 def test_get_active_image_with_empty_variations(qapp):
     """get_active_image() with no variations list must return inpainted_image without raising."""
-    base = Image.new("RGB", (100, 100), (128, 128, 128))
     result = Image.new("RGB", (100, 100), (200, 150, 100))
     mask = Image.new("L", (100, 100), 0)
 
@@ -425,7 +439,6 @@ def test_get_active_image_with_empty_variations(qapp):
 
 def test_get_active_image_with_out_of_bounds_index(qapp):
     """A stale active_variation_index beyond the list length must fall back to inpainted_image safely."""
-    base = Image.new("RGB", (100, 100), (128, 128, 128))
     result = Image.new("RGB", (100, 100), (200, 150, 100))
     var1 = Image.new("RGB", (100, 100), (10, 20, 30))
     mask = Image.new("L", (100, 100), 0)

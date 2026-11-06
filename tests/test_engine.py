@@ -25,6 +25,14 @@ from companion.model_engine import InpaintingEngine
 from companion.device import get_optimal_device
 
 
+try:
+    import simple_lama_inpainting  # noqa: F401
+    _HAS_LAMA = True
+except ImportError:  # CI installs no LaMa and fetches no weights
+    _HAS_LAMA = False
+_requires_lama = unittest.skipUnless(_HAS_LAMA, "simple_lama_inpainting not installed: real LaMa inference test skipped")
+
+
 class TestInpaintingEngine(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -49,6 +57,7 @@ class TestInpaintingEngine(unittest.TestCase):
         self.assertEqual(result.mode, "RGB")
         self.assertTrue(np.array_equal(np.asarray(result), np.asarray(self.base_image)))
 
+    @_requires_lama
     def test_full_canvas_mask(self):
         """Full-image mask (entire canvas 255) must handle boundary limits gracefully."""
         mask = Image.new("L", (self.w, self.h), 255)
@@ -74,6 +83,7 @@ class TestInpaintingEngine(unittest.TestCase):
         result_br = self.engine.inpaint_full_resolution(self.base_image, mask_br)
         self.assertEqual(result_br.size, (self.w, self.h))
 
+    @_requires_lama
     def test_multi_island_disjoint_masks(self):
         """Multiple isolated brush marks across distinct corners must crop-and-blend cleanly."""
         mask = Image.new("L", (self.w, self.h), 0)
@@ -84,6 +94,7 @@ class TestInpaintingEngine(unittest.TestCase):
         self.assertEqual(result.size, (self.w, self.h))
         self.assertEqual(result.mode, "RGB")
 
+    @_requires_lama
     def test_single_pixel_micro_mask(self):
         """1-pixel micro-mask must maintain numerical stability with minimum context expansion."""
         mask = Image.new("L", (self.w, self.h), 0)
@@ -96,6 +107,7 @@ class TestInpaintingEngine(unittest.TestCase):
         # Untouched area at corner (10, 10) must be bit-exact identical
         self.assertTrue(np.array_equal(orig_arr[10, 10], res_arr[10, 10]))
 
+    @_requires_lama
     def test_dimension_and_channel_integrity(self):
         """Output image must strictly preserve input dimensions, channel count, and RGB mode."""
         mask = Image.new("L", (self.w, self.h), 0)
@@ -108,6 +120,7 @@ class TestInpaintingEngine(unittest.TestCase):
         self.assertEqual(res_arr.shape, (self.h, self.w, 3))
         self.assertEqual(res_arr.dtype, np.uint8)
 
+    @_requires_lama
     def test_zero_artifact_bleed_untouched_regions(self):
         """Verify unmasked pixel regions remain identical (0-diff) to original image."""
         mask = Image.new("L", (self.w, self.h), 0)
@@ -142,6 +155,7 @@ class TestInpaintingEngine(unittest.TestCase):
         result = cpu_engine.inpaint_full_resolution(small_img, mask)
         self.assertEqual(result.size, (200, 200))
 
+    @_requires_lama
     def test_synthetic_high_res_24mp_image(self):
         """Synthetic 24MP (6000x4000) image processing with patch crop & feather blend."""
         w_24mp, h_24mp = 6000, 4000
@@ -191,6 +205,7 @@ class TestInpaintingEngine(unittest.TestCase):
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
 
+    @_requires_lama
     def test_inpaint_returns_uint8_dtype(self):
         """Output array must be dtype uint8 (not float or int) for safe downstream TIFF encoding."""
         mask = Image.new("L", (self.w, self.h), 0)
@@ -200,6 +215,7 @@ class TestInpaintingEngine(unittest.TestCase):
         arr = np.asarray(result)
         self.assertEqual(arr.dtype, np.uint8, "Output image array must be dtype uint8.")
 
+    @_requires_lama
     def test_mode_switching_mid_session(self):
         """Switching engine mode between calls must not corrupt internal state or raise."""
         from companion.model_engine import EngineMode
@@ -215,6 +231,7 @@ class TestInpaintingEngine(unittest.TestCase):
         r2 = self.engine.inpaint_full_resolution(self.base_image, mask)
         self.assertEqual(r2.size, (self.w, self.h))
 
+    @_requires_lama
     def test_empty_string_prompt_equivalent_to_none(self):
         """prompt='' must behave identically to prompt=None and must not raise."""
         mask = Image.new("L", (self.w, self.h), 0)

@@ -13,7 +13,6 @@ micro-benchmark differences.
 import os
 import sys
 import time
-import pytest
 import numpy as np
 from PIL import Image, ImageDraw
 
@@ -27,10 +26,8 @@ from companion.pipeline import (
     harmonic_boundary_harmonization,
     calculate_context_crop,
     synthesize_and_match_sensor_grain,
-    estimate_sensor_noise_profile,
     seamless_distance_feather_blend,
 )
-from companion.config import CONFIG
 
 
 # ──────────────────────────────────────────────────────────────────────────────

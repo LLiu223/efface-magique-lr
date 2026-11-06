@@ -6,8 +6,7 @@ Defines global tuning parameters, inference resolution bounds for CPU vs GPU,
 context padding thresholds, and canvas render throttling rates.
 """
 
-import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass(frozen=True)

@@ -9,6 +9,8 @@
   <i>Runs entirely on your machine. Zero cloud subscriptions, zero data leaks, zero monthly costs.</i>
 </p>
 
+[![CI](https://github.com/LLiu223/efface-magique-lr/actions/workflows/ci.yml/badge.svg)](https://github.com/LLiu223/efface-magique-lr/actions/workflows/ci.yml)
+
 <p align="center">
   <a href="#-easy-download-for-other-users"><img src="https://img.shields.io/badge/Download-Release%20ZIP-0078d4?style=flat-square&logo=windows" alt="Download ZIP"></a>
   <a href="#-quick-installation"><img src="https://img.shields.io/badge/Setup-1--Click%20Install-107c41?style=flat-square" alt="Setup"></a>
@@ -183,6 +185,7 @@ efface-magique-lr/
 │   └── ai_eraser.lrplugin/           # Adobe Lightroom Classic Plugin
 │       ├── Info.lua                  # Plugin manifest, menu hooks, & hotkeys
 │       ├── LiveBridge.lua            # High-speed background IPC bridge for Live Window
+│       ├── JsonUtil.lua              # Pure JSON helpers (no Lightroom SDK, unit-testable)
 │       ├── PluginUtils.lua           # Environment detection & CLI launcher
 │       └── logo.png                  # Plugin branding icon
 │
@@ -201,7 +204,19 @@ efface-magique-lr/
 │       └── checkmark.png             # Crisp checkbox checkmark icon
 │
 └── tests/                            # Automated test suite (90+ unit/integration tests)
+    └── lua/
+        └── test_json_util.lua        # Plain-Lua tests for JsonUtil.lua
 ```
+
+---
+
+## 🧪 Running Tests
+
+```bash
+python run_tests.py
+```
+
+The Lua tests in `tests/lua/` need a plain `lua` or `luajit` interpreter on your `PATH`; the Python test suite runs them when one is found.
 
 ---
 

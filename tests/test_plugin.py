@@ -12,6 +12,8 @@ Covers:
 import os
 import re
 import sys
+import shutil
+import subprocess
 import glob
 import json
 import unittest
@@ -23,7 +25,7 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 
-# Python re port of LiveBridge.lua extractJsonField / parsePendingImports. Keep in exact sync with the Lua.
+# Python re port of JsonUtil.lua extractJsonField / parsePendingImports. Keep in exact sync with the Lua.
 def _lua_extract_json_field(json_str, field):
     m = re.search(r'"' + re.escape(field) + r'"\s*:\s*"([^"]+)"', json_str)
     if m:
@@ -52,16 +54,25 @@ def lua_parse_pending_imports(json_str):
     return imports
 
 
-# Python port of LiveBridge.lua jsonEscape: '\' first, then '"'.
+# Python port of JsonUtil.lua jsonEscape: '\' first, then '"'.
 def lua_json_escape(s):
     return str(s).replace("\\", "\\\\").replace('"', '\\"')
 
 
-_LIVE_BRIDGE = os.path.join(_PROJECT_ROOT, "plugin", "ai_eraser.lrplugin", "LiveBridge.lua")
+_PLUGIN_DIR = os.path.join(_PROJECT_ROOT, "plugin", "ai_eraser.lrplugin")
+_LIVE_BRIDGE = os.path.join(_PLUGIN_DIR, "LiveBridge.lua")
+_JSON_UTIL = os.path.join(_PLUGIN_DIR, "JsonUtil.lua")
+_LUA_TEST = os.path.join(_PROJECT_ROOT, "tests", "lua", "test_json_util.lua")
+_LUA = shutil.which("lua") or shutil.which("luajit")
 
 
 def _read_live_bridge():
     with open(_LIVE_BRIDGE, "r", encoding="utf-8") as f:
+        return f.read()
+
+
+def _read_json_util():
+    with open(_JSON_UTIL, "r", encoding="utf-8") as f:
         return f.read()
 
 
@@ -74,9 +85,20 @@ class TestLiveBridgeFixes(unittest.TestCase):
             self.assertEqual(json.loads(body), {"path": s, "title": s})
 
     def test_json_escape_lua_matches_port(self):
-        src = _read_live_bridge()
+        src = _read_json_util()
         self.assertIn("local function jsonEscape(s)", src)
         self.assertIn("""gsub('\\\\', '\\\\\\\\'):gsub('"', '\\\\"')""", src)
+        self.assertIn("jsonEscape = jsonEscape,", src)
+        self.assertIn("parsePendingImports = parsePendingImports,", src)
+        self.assertTrue(src.rstrip().endswith("return JsonUtil"))
+        self.assertIsNone(re.search(r"\bimport\s*[('\"]", src))  # plain Lua: no Lightroom import()
+        self.assertIsNone(re.search(r"\bLr\w+", src))
+
+    @unittest.skipUnless(_LUA, "lua/luajit not on PATH")
+    def test_json_util_lua_executes(self):
+        """Run tests/lua/test_json_util.lua with a real interpreter against JsonUtil.lua."""
+        proc = subprocess.run([_LUA, _LUA_TEST], capture_output=True, text=True, timeout=30)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
 
     def test_static_checks(self):
         src = _read_live_bridge()
@@ -85,8 +107,13 @@ class TestLiveBridgeFixes(unittest.TestCase):
             self.assertIn(needle, src)
         # Every JSON body built with string.format has its string fields escaped
         self.assertNotIn("tostring(targetId), jsonOrig", src)
-        self.assertIn("jsonEscape(exportPath), jsonEscape(targetId), jsonEscape(origPath), jsonEscape(baseName)", src)
-        self.assertIn("""string.format('{"path": "%s"}', jsonEscape(editedPath))""", src)
+        self.assertIn("local JsonUtil = require 'JsonUtil'", src)
+        self.assertNotIn("local function jsonEscape", src)
+        self.assertNotIn("local function parsePendingImports", src)
+        self.assertIn("JsonUtil.jsonEscape(exportPath), JsonUtil.jsonEscape(targetId), "
+                      "JsonUtil.jsonEscape(origPath), JsonUtil.jsonEscape(baseName)", src)
+        self.assertIn("""string.format('{"path": "%s"}', JsonUtil.jsonEscape(editedPath))""", src)
+        self.assertIn("JsonUtil.parsePendingImports(importsResp)", src)
 
     def test_port_read_only_in_failure_branch(self):
         src = _read_live_bridge()
