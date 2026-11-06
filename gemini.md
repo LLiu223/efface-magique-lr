@@ -13,7 +13,7 @@
 | 2. User invokes: File > Plug-in Extras > "⚡ AI Generative Eraser" (Live Window).                   |
 | 3. LiveBridge.lua:                                                                                |
 |    - Observes photo selection, debounces exports, and communicates with Companion via IPC bridge.  |
-|    - Exports 16-bit TIFF with embedded color profile; companion reduces it to 8-bit on load.       |
+|    - Exports 16-bit TIFF with embedded color profile; companion reduces it to 8-bit on load.      |
 |    - Sends selection event to local companion app via HTTP IPC API.                               |
 | 4. On companion save & sync:                                                                      |
 |    - Reads edited TIFF back into Lightroom Catalog using LrCatalog:addPhoto().                    |
