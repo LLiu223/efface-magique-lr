@@ -22,15 +22,31 @@
 
 ## 🌟 Overview
 
-**Efface Magique LR** provides photographers with a private, high-fidelity alternative to Adobe Lightroom's cloud-based Generative Remove. 
+**Erase tourists, power lines and dust from Lightroom Classic photos with local LaMa inpainting. Nothing leaves your machine.**
 
-Integrated directly into Adobe Lightroom Classic via a native Lua plugin and a hardware-accelerated PyQt6 companion app, it enables you to erase tourists, power lines, trash, and blemishes with a single brush stroke while preserving the color profile, EXIF metadata, and natural camera sensor noise.
+### Features
+- **✨ Generative AI Variations:** LaMa inpainting with 3 slightly different seeded candidates to pick from. The optional prompt only adds a deterministic colour tint of a few levels.
+- **⚡ Fast Spot Removal:** a single LaMa pass for dust, blemishes and thin wires.
+- **🎯 Object-Aware Erasing (Subject):** the subject detector tightens a rough brush mask to the object's contour inside the painted zone.
+- **📚 Non-Destructive Modification Layers:** every erase is a layer in the sidebar. Toggle it, re-edit its mask, or delete it with its `✕` button.
+- **⚡ Live Window:** stays open while you browse photos in Lightroom. Save & Sync stacks the edit above the original in your catalog.
+- **🎨 Color & bit depth:** keeps the ICC profile and DPI. A 16-bit TIFF from Lightroom is saved as a 16-bit TIFF in which only the erased pixels change (they are computed in 8-bit). EXIF is not rewritten.
+- **🔒 Local only:** the plugin and companion talk over an HTTP bridge on `127.0.0.1`, with no cloud calls. See [SECURITY.md](SECURITY.md) for what it does and does not protect against.
 
-### Key Highlights:
-- **🎯 Intelligent Object-Aware Erasing:** Upgraded subject detector automatically locks to the contours of any object (buildings, cabins, signs, poles, vehicles, animals, people) even for distant, small, or low-contrast elements without clipping rooflines, eaves, or posts.
-- **📚 Non-Destructive Modification Layers:** Every erase operation is tracked in a sidebar layer stack. Toggle visibility, re-edit masks, or delete any layer with a single click of its dedicated `✕` button.
-- **✨ Generative AI Variations:** LaMa inpainting with slight seeded variations (pick from several candidates), or run instant single-pass LaMa spot healing. The optional prompt only adds a deterministic colour tint of a few levels.
-- **⚡ Seamless Live Window:** Stays open while you browse photos in Lightroom; edits auto-stack into your catalog upon save.
+### How it works
+The Lightroom plugin (`LiveBridge.lua`) waits for the selection to settle (80 ms debounce), exports the photo as a 16-bit ProPhoto TIFF into `.tmp/`, and sends its path to the companion app over `127.0.0.1:51739`. You erase in the companion. **Save & Sync** writes the result and queues it, and the plugin, polling about every 300 ms, copies the file next to the original and stacks it above it in your catalog. Threads, hand-off files and shutdown are covered in [docs/architecture.md](docs/architecture.md).
+
+### Install & run
+1. Run `install.bat` (Windows) or `./install.sh` (macOS / Linux) to create `.venv` with PyTorch and Simple-LaMa. See [Quick Installation](#-quick-installation).
+2. In Lightroom Classic, open **File > Plug-in Manager... > Add** and select `plugin/ai_eraser.lrplugin`.
+3. Select a photo and choose **File > Plug-in Extras > ⚡ AI Generative Eraser (Live Window)...**.
+4. Paint over the object, press `Enter`, pick a variation, then press `Ctrl + S` to save and stack it in Lightroom.
+
+To use it without Lightroom, run `companion.bat` / `./companion.sh`.
+
+<!-- BEFORE/AFTER IMAGE: side-by-side crop of a photo before and after erasing (add the file under docs/ first, then link it here) -->
+
+<!-- DEMO GIF: screen recording of selecting a photo in Lightroom, erasing in the Live Window, and the edit stacking in the catalog (add the file under docs/ first, then link it here) -->
 
 ---
 
@@ -94,7 +110,7 @@ Work through your entire photoshoot without ever relaunching or closing the edit
 1. In Lightroom Classic, select any photo and choose:  
    **File > Plug-in Extras > ⚡ AI Generative Eraser (Live Window)...**
 2. The companion window opens, automatically loading your active photo.
-3. **Keep the window open:** As you browse through photos in Lightroom using your arrow keys or the Filmstrip, the companion window **updates instantly in real time**!
+3. **Keep the window open:** As you browse through photos in Lightroom using your arrow keys or the Filmstrip, the companion window follows along: about 80 ms after the selection settles, Lightroom exports a full TIFF and the companion loads it (recent exports are cached).
 4. **Erase unwanted elements:** Paint over tourists, power poles, or dust spots with the red brush. Use `[` and `]` to adjust the brush diameter.
 5. **Smart Object Selection (🎯 Subject):** Toggle **Subject** to automatically isolate and snap to the object's boundary. Our multi-cluster local background sampling and adaptive edge saliency preserve thin posts, eaves, and rooflines on distant/small structures so no wireframe outlines remain.
 6. **Generate Inpainting:** Click **✨ Erase Object** (or press `Enter`).
@@ -144,8 +160,8 @@ You can also use Efface Magique as a standalone desktop photo eraser:
 
 | Engine Mode | Technology | Best For |
 | :--- | :--- | :--- |
-| **✨ Firefly AI** *(Default)* | LaMa inpainting with slight seeded variations, noise matching & contextual cropping | Complex object removal, people, background reconstruction, texture synthesis |
-| **⚡ Fast Spot** | Fast Fourier GAN (Simple-LaMa) | Small spots, sensor dust, blemishes, thin power wires |
+| **✨ Generative AI** *(Default)* | LaMa inpainting with slight seeded variations, noise matching & contextual cropping | Complex object removal, people, background reconstruction, texture synthesis |
+| **⚡ Fast Spot Removal** | Fast Fourier GAN (Simple-LaMa) | Small spots, sensor dust, blemishes, thin power wires |
 
 ### Color & Photographic Quality
 - **Color Profile Preservation:** ProPhoto RGB and Adobe RGB ICC profiles and DPI are kept on save (EXIF is not rewritten).
@@ -180,6 +196,11 @@ efface-magique-lr/
 ├── companion.sh                      # Unix launcher for companion app
 ├── requirements.txt                  # Python dependencies
 ├── README.md                         # Documentation & user guide
+├── SECURITY.md                       # Bridge threat model & vulnerability reporting
+├── CHANGELOG.md                      # Release notes (Keep a Changelog)
+│
+├── docs/
+│   └── architecture.md               # Data flow, threading model, hand-off files
 │
 ├── plugin/
 │   └── ai_eraser.lrplugin/           # Adobe Lightroom Classic Plugin
@@ -195,15 +216,16 @@ efface-magique-lr/
 │   ├── layers.py                     # Non-destructive layer model & thumbnails
 │   ├── model_engine.py               # LaMa inpainting engine (Generative AI variations & Fast)
 │   ├── pipeline.py                   # Contextual cropping, blending, & grain matching
-│   ├── live_bridge.py                # Non-blocking IPC TCP bridge server
+│   ├── live_bridge.py                # Localhost (127.0.0.1) HTTP bridge server
 │   ├── utils/
-│   │   └── subject_detector.py       # Multi-cluster object-aware subject isolation
+│   │   ├── subject_detector.py       # Multi-cluster object-aware subject isolation
+│   │   └── tiff16.py                 # Lossless 16-bit RGB TIFF read/write & merge
 │   └── assets/                       # Branding logos & UI icons
 │       ├── logo.png                  # 440x440 App logo
 │       ├── logo.ico                  # Multi-resolution Windows application icon
 │       └── checkmark.png             # Crisp checkbox checkmark icon
 │
-└── tests/                            # Automated test suite (90+ unit/integration tests)
+└── tests/                            # Automated test suite (150+ unit/integration tests)
     └── lua/
         └── test_json_util.lua        # Plain-Lua tests for JsonUtil.lua
 ```
