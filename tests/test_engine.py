@@ -21,7 +21,8 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from companion.inpainting_engine import InpaintingEngine, get_optimal_device
+from companion.model_engine import InpaintingEngine
+from companion.device import get_optimal_device
 
 
 class TestInpaintingEngine(unittest.TestCase):
@@ -38,7 +39,7 @@ class TestInpaintingEngine(unittest.TestCase):
         arr[:, :, 0] = np.linspace(30, 230, self.w, dtype=np.uint8)
         arr[:, :, 1] = np.linspace(200, 50, self.h, dtype=np.uint8)[:, None]
         arr[:, :, 2] = 180
-        self.base_image = Image.fromarray(arr, mode="RGB")
+        self.base_image = Image.fromarray(arr)
 
     def test_empty_mask_returns_original(self):
         """Empty mask (all zeros) must return original image without error or modification."""

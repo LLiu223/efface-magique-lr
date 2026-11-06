@@ -79,7 +79,7 @@ def test_local_bounding_box_cropping_computation():
     mask_np = np.zeros((img_h, img_w), dtype=np.uint8)
     # A small 50x50 spot centered at (1000, 1500)
     mask_np[1500:1550, 1000:1050] = 255
-    mask_img = Image.fromarray(mask_np, mode="L")
+    mask_img = Image.fromarray(mask_np)
 
     # Small context crop with custom padding 35px
     crop_rect = calculate_context_crop(
@@ -114,7 +114,7 @@ def test_feathered_blending_preserves_unmasked_regions():
     # Mask with a small 20x20 square in the center
     mask_np = np.zeros((h, w), dtype=np.uint8)
     mask_np[90:110, 90:110] = 255
-    mask = Image.fromarray(mask_np, mode="L")
+    mask = Image.fromarray(mask_np)
 
     blended = seamless_distance_feather_blend(orig, inpainted, mask, feather_radius=5)
     blended_np = np.asarray(blended)

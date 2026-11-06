@@ -1,8 +1,8 @@
-# GEMINI.md — Project Blueprint: Efface Magique LR (Adobe Firefly Grade)
+# GEMINI.md — Project Blueprint: Efface Magique LR
 
 ## 1. Executive Summary & Architecture
 
-**Efface Magique LR** is an open-source, local, private, and high-performance alternative to Adobe Lightroom's cloud-based Generative Remove / Magic Eraser, engineered to match and rival Adobe Firefly (Generative Fill). It integrates directly into Adobe Lightroom Classic via a native Lua SDK plugin (`.lrplugin`) and a high-performance local Python companion application built with PyQt6, PyTorch, and a dual-tier inpainting pipeline.
+**Efface Magique LR** is an open-source, local, private, and high-performance alternative to Adobe Lightroom's cloud-based Generative Remove / Magic Eraser. It integrates directly into Adobe Lightroom Classic via a native Lua SDK plugin (`.lrplugin`) and a high-performance local Python companion application built with PyQt6, PyTorch, and a dual-tier inpainting pipeline.
 
 ### End-to-End Workflow Architecture
 ```
@@ -26,8 +26,8 @@
 |                                                                                                   |
 | - High-performance hardware-accelerated canvas supporting 24MP-60MP raw/tiff exports.             |
 | - Dual Inpainting Engine:                                                                         |
-|   * ✨ Generative Firefly Mode: Diffusion-based inpainting generating 3 candidate variations     |
-|     with distinct random seeds and optional text prompt conditioning.                             |
+|   * ✨ Generative AI Mode: LaMa inpainting with slight seeded variations (3 candidates, distinct  |
+|     seeds). The optional prompt only adds a deterministic colour tint of a few levels.            |
 |   * ⚡ Fast Mode: Simple-LaMa GAN for instantaneous spot, dust, and wire removal.                 |
 | - Variations Carousel: Clickable thumbnail cards at bottom to instantly preview & switch          |
 |   between generated variations, plus "🔄 More Variations" button with seed re-roll.               |
@@ -54,7 +54,7 @@
   - Python 3.10+ (Tested on 3.11 / 3.12)
   - **GUI Toolkit**: PyQt6 (High-DPI aware, OpenGL viewport canvas, dark studio aesthetic)
   - **Dual Inference Engine**:
-    * Firefly Diffusion Inpainting with multi-seed variation & prompt guidance
+    * Generative AI mode: LaMa inpainting with slight seeded variations (prompt only adds a few levels of colour tint)
     * Simple-LaMa (Fast Fourier Convolutions) for rapid spot healing
   - **GPU Hardware Acceleration & Optimizations**:
     * NVIDIA CUDA GPU acceleration with cuDNN auto-tuning (`torch.backends.cudnn.benchmark = True`)
@@ -64,7 +64,7 @@
     * Auto-scaling neural inference (`max_dim = 1024` with Lanczos high-res reconstruction): Prevents VRAM exhaustion and thread freezes when inpainting large objects on 24MP-60MP images
     * Automatic VRAM garbage collection (`torch.cuda.empty_cache()`) to leave VRAM available for Lightroom Classic
   - **Photographic Pipeline**:
-    * Sensor noise profiling & ISO grain matching (`companion.utils.blending`)
+    * Sensor noise profiling & ISO grain matching (`companion.pipeline`)
     * Softened sigmoid transition alpha composite
     * Bounding box margin scaling ($\ge 35\%$ margin)
   - **Deep Learning Runtime**: PyTorch (CUDA 12.4 / Apple Silicon MPS / multi-threaded CPU fallback)
@@ -101,11 +101,11 @@ efface-magique-lr/
 │   ├── __main__.py                      # Entry point for python -m companion
 │   ├── app.py                           # PyQt6 Main Window, toolbars, prompt bar, carousel, headless CLI
 │   ├── canvas.py                        # Interactive high-res canvas, brush, auto-fit, hold-to-compare (\)
-│   ├── inpainting_engine.py             # Dual Engine (EngineMode.FIREFLY & FAST) + multi-seed variations
+│   ├── model_engine.py                  # LaMa engine (EngineMode.FIREFLY & FAST) + seeded variations
+│   ├── pipeline.py                      # Photographic pipeline (crop, noise, grain, sigmoid blending)
 │   ├── live_bridge.py                   # High-performance local HTTP IPC bridge (port discovery, REST endpoints)
 │   └── utils/
 │       ├── __init__.py                  # Utils package marker
-│       ├── blending.py                  # High-fidelity photographic pipeline (crop, noise, grain, sigmoid)
 │       └── subject_detector.py          # Subject / object awareness and segmentation
 │
 └── tests/                               # Comprehensive Automated Test Suite (72 Tests)
@@ -139,7 +139,7 @@ chmod +x install.sh && ./install.sh
 # Or without arguments for GUI file picker mode
 .venv\Scripts\python -m companion.app
 
-# With prompt guidance in headless automated mode
+# With a prompt (only adds a slight deterministic colour tint) in headless automated mode
 .venv\Scripts\python -m companion.app --headless --input photo.tif --output out.tif --prompt "clear sky" --test-mask-rect "100,100,200,200"
 ```
 
@@ -190,7 +190,7 @@ The project enforces an automated five-tier testing pyramid to guarantee reliabi
 5. **Firefly Generative Pipeline (`tests/test_firefly_pipeline.py` - 7 Tests)**:
    - 3-variation batch inference with distinct random seeds.
    - Dual engine mode switching (`EngineMode.FIREFLY` vs `EngineMode.FAST`).
-   - Prompt-conditioned synthesis vs context-aware unguided removal.
+   - Prompt colour tint vs no-prompt removal.
    - Context-aware crop margin calculation enforcing $\ge 35\%$ margin.
    - Camera sensor noise profile estimation and ISO grain synthesis.
    - 24MP full-resolution bit-exact untouched preservation.

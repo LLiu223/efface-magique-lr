@@ -25,7 +25,7 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from companion.layers import ModificationLayer, create_layer_thumbnail
-from companion.inpainting_engine import EngineMode
+from companion.model_engine import EngineMode
 from companion.app import MainWindow
 
 
@@ -38,7 +38,7 @@ def sample_test_image(tmp_path):
     arr[50:100, 50:100] = [30, 30, 30]
     # Feature 2: Dark box on right
     arr[180:230, 250:300] = [40, 40, 40]
-    img = Image.fromarray(arr, mode="RGB")
+    img = Image.fromarray(arr)
     path = str(tmp_path / "test_layers_input.png")
     img.save(path)
     return path, img
@@ -51,7 +51,7 @@ def test_layer_dataclass_and_thumbnail(qapp):
     # Paint a 30x30 white square on mask
     mask_np = np.zeros((200, 200), dtype=np.uint8)
     mask_np[20:50, 20:50] = 255
-    mask = Image.fromarray(mask_np, mode="L")
+    mask = Image.fromarray(mask_np)
 
     result = Image.new("RGB", (200, 200), (100, 150, 200))
     layer = ModificationLayer(

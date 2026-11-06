@@ -49,7 +49,7 @@ def temp_image():
     with tempfile.NamedTemporaryFile(suffix=".tif", delete=False) as f:
         path = f.name
     arr = np.full((120, 160, 3), 180, dtype=np.uint8)
-    img = Image.fromarray(arr, mode="RGB")
+    img = Image.fromarray(arr)
     img.save(path, compression="tiff_deflate")
     yield path
     if os.path.isfile(path):

@@ -26,8 +26,9 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from companion.inpainting_engine import InpaintingEngine, EngineMode, get_optimal_device
-from companion.utils.blending import (
+from companion.model_engine import InpaintingEngine, EngineMode
+from companion.device import get_optimal_device
+from companion.pipeline import (
     calculate_context_crop,
     estimate_sensor_noise_profile,
     synthesize_and_match_sensor_grain,
@@ -139,7 +140,7 @@ class TestFireflyPipeline(unittest.TestCase):
         clean = np.full((300, 300, 3), 128, dtype=np.float32)
         noise = rng.normal(0, 10.0, (300, 300, 3)).astype(np.float32)
         noisy_img = np.clip(clean + noise, 0, 255).astype(np.uint8)
-        img_pil = Image.fromarray(noisy_img, mode="RGB")
+        img_pil = Image.fromarray(noisy_img)
 
         mask = Image.new("L", (300, 300), color=0)
         draw = ImageDraw.Draw(mask)
@@ -297,8 +298,8 @@ class TestFireflyPipeline(unittest.TestCase):
         rng = np.random.default_rng(77)
         orig_arr = rng.integers(0, 256, (150, 150, 3), dtype=np.uint8)
         inp_arr  = rng.integers(0, 256, (150, 150, 3), dtype=np.uint8)
-        orig = Image.fromarray(orig_arr, mode="RGB")
-        inp  = Image.fromarray(inp_arr,  mode="RGB")
+        orig = Image.fromarray(orig_arr)
+        inp  = Image.fromarray(inp_arr)
         mask = Image.new("L", (150, 150), 0)
         draw = ImageDraw.Draw(mask)
         draw.ellipse([40, 40, 110, 110], fill=255)
