@@ -101,3 +101,4 @@ For each item from `/api/pending_imports` whose `path` exists, the plugin runs t
 - `python -m pytest tests -q` runs the Python suite, with GUI tests headless through pytest-qt.
 - `tests/lua/test_json_util.lua` tests `JsonUtil.lua` under real Lua. `tests/test_plugin.py` runs it when `lua` or `luajit` is on `PATH`, and skips it otherwise.
 - `.github/workflows/ci.yml` runs on pushes and pull requests to `main` (Ubuntu, Python 3.11, CPU-only torch, Lua 5.1, `QT_QPA_PLATFORM=offscreen`). It runs `ruff check .` with the conservative rule set in `ruff.toml`, then `python -m pytest tests -q -rs`. CI does not install `simple-lama-inpainting`, so tests that need the real LaMa model are skipped there.
+- `python tools/benchmark.py --stub` times the erase pipeline stage by stage on synthetic 12/24/60 MP images (not run by CI). Results and how they were measured are in [performance.md](performance.md).

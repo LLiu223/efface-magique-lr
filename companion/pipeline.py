@@ -62,19 +62,26 @@ def dilate_mask_for_contact_shadows(
     object so that the inpainting boundary blends into clean, unshadowed background.
     """
     if isinstance(mask, Image.Image):
-        mask_arr = np.array(mask.convert("L"))
+        mask_arr = np.array(mask if mask.mode == "L" else mask.convert("L"))
     else:
         mask_arr = np.array(mask)
         if mask_arr.ndim == 3:
             mask_arr = mask_arr[:, :, 0]
 
     binary = (mask_arr > 10).astype(np.uint8) * 255
-    if np.count_nonzero(binary) == 0:
+    bx, by, bw, bh = cv2.boundingRect(binary)
+    if bw == 0 or bh == 0:
         return mask_arr
 
     r = max(4, min(24, int(radius)))
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (r * 2 + 1, r * 2 + 1))
-    dilated = cv2.dilate(binary, kernel)
+    # Dilate only the mask bbox grown by r: nothing beyond it can change, and cv2's
+    # default dilate border ignores out-of-window pixels, so the result is bit-identical
+    # to a full-frame dilate (see tests/test_benchmark_hotspots.py).
+    h, w = binary.shape
+    x1, y1, x2, y2 = max(0, bx - r), max(0, by - r), min(w, bx + bw + r), min(h, by + bh + r)
+    dilated = np.zeros_like(binary)
+    dilated[y1:y2, x1:x2] = cv2.dilate(binary[y1:y2, x1:x2], kernel)
     return dilated
 
 
