@@ -162,7 +162,7 @@ def test_save_and_return_file_export(qtbot, sample_pil_image):
         qtbot.addWidget(window)
 
         # Trigger save
-        window._on_save_and_exit()
+        window._on_sync_to_lightroom()
 
         # Check that saved_successfully is true and output file exists and is valid
         assert window.saved_successfully is True
@@ -363,7 +363,7 @@ def test_save_tiff_with_complex_lightroom_metadata(qtbot, tmp_path):
     window.show()
 
     # Save
-    window._on_save_and_exit()
+    window._on_sync_to_lightroom()
     assert window.saved_successfully is True
     assert os.path.isfile(out_path)
     assert os.path.getsize(out_path) > 0
@@ -390,6 +390,8 @@ def test_manual_erase_button_required(qtbot, sample_pil_image, tmp_path):
     # 2. Clicking Erase Object must trigger inpainting worker
     window.btn_erase.click()
     assert window.worker is not None, "Clicking 'Erase Object' must launch inpainting worker!"
+    # closeEvent no longer terminates the worker; let it finish before teardown
+    qtbot.waitUntil(lambda: window.worker is None, timeout=25000)
 
 
 def test_fast_spot_removal_workflow(qtbot, sample_pil_image, tmp_path):
@@ -424,7 +426,7 @@ def test_nondestructive_save_preserves_original(qtbot, sample_pil_image, tmp_pat
     window.show()
 
     assert window.output_path.endswith("_ai_edit.jpg")
-    window._on_save_and_exit()
+    window._on_sync_to_lightroom()
 
     assert window.saved_successfully is True
     # Verify original file was not overwritten
