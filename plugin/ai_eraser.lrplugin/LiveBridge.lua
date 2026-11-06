@@ -29,13 +29,20 @@ local function parsePendingImports(jsonStr)
     local imports = {}
     if not jsonStr then return imports end
 
-    -- Extract array contents inside "imports": [ ... ]
-    local arrayContent = jsonStr:match('"imports"%s*:%s*%[(.-)%]')
+    -- Greedy: paths may contain ']'. Relies on "imports" being the LAST key in the response.
+    local arrayContent = jsonStr:match('"imports"%s*:%s*%[(.*)%]')
     if not arrayContent or arrayContent:match('^%s*$') then
         return imports
     end
 
-    for itemStr in arrayContent:gmatch('{([^}]+)}') do
+    -- Hide braces inside quoted strings ('"' is illegal in Windows paths, so strings are "[^"]*"),
+    -- leaving only structural braces for the item split.
+    local masked = arrayContent:gsub('"[^"]*"', function(s)
+        return (s:gsub('{', '\1'):gsub('}', '\2'))
+    end)
+
+    for maskedItem in masked:gmatch('{([^}]+)}') do
+        local itemStr = maskedItem:gsub('\1', '{'):gsub('\2', '}')
         local path = extractJsonField(itemStr, "path")
         local origPath = extractJsonField(itemStr, "original_path")
         local photoId = extractJsonField(itemStr, "photo_id")

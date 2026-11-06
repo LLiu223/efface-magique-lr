@@ -21,6 +21,7 @@ import os
 import sys
 import json
 import time
+import http.client
 import urllib.request
 import urllib.error
 import tempfile
@@ -39,6 +40,7 @@ if _PROJECT_ROOT not in sys.path:
 from companion.live_bridge import LiveBridgeServer, BRIDGE_INFO_FILENAME
 from companion.app import MainWindow, HelpGuideDialog, _LOGO_PATH, _LOGO_ICO_PATH, _CHECKMARK_PATH, DARK_STYLE
 from package_release import create_release_zip
+from tests.test_plugin import lua_parse_pending_imports
 
 
 @pytest.fixture
@@ -215,6 +217,88 @@ class TestLiveBridgeServer:
             assert exc_info.value.code == 404
         finally:
             server.stop()
+
+
+def _raw_request(port, method, path, headers=None, body=None):
+    """http.client request so tests can set Origin/Host/Content-Length freely. Returns (status, headers, raw body)."""
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=3.0)
+    try:
+        conn.request(method, path, body=body, headers=headers or {})
+        resp = conn.getresponse()
+        return resp.status, resp.getheaders(), resp.read()
+    finally:
+        conn.close()
+
+
+class TestLiveBridgeHardening:
+    @pytest.fixture
+    def server(self, qtbot):
+        server = LiveBridgeServer(preferred_port=0)
+        server.start()
+        yield server
+        server.stop()
+
+    def test_origin_header_rejected(self, qtbot, server):
+        fired = []
+        server.close_requested.connect(lambda: fired.append(1))
+        evil = {"Origin": "http://evil.example"}
+        status, _, body = _raw_request(server.port, "GET", "/api/ping", evil)
+        assert status == 403 and "error" in json.loads(body)
+        status, _, body = _raw_request(server.port, "POST", "/api/close", {**evil, "Content-Type": "application/json"}, b"{}")
+        assert status == 403 and "error" in json.loads(body)
+        qtbot.wait(100)
+        assert fired == []
+
+    def test_wrong_host_rejected(self, qtbot, server):
+        for host in (f"evil.example:{server.port}", f"localhost:{server.port}", "127.0.0.1"):
+            status, _, _ = _raw_request(server.port, "GET", "/api/unknown_route", {"Host": host})
+            assert status == 403, host
+
+    def test_missing_host_rejected(self, qtbot, server):
+        conn = http.client.HTTPConnection("127.0.0.1", server.port, timeout=3.0)
+        try:
+            conn.putrequest("GET", "/api/ping", skip_host=True)
+            conn.endheaders()
+            assert conn.getresponse().status == 403
+        finally:
+            conn.close()
+
+    def test_normal_request_ok_without_cors(self, qtbot, server):
+        status, headers, _ = _raw_request(server.port, "GET", "/api/ping")
+        assert status == 200
+        assert not any(k.lower().startswith("access-control-") for k, _ in headers)
+
+    def test_options_not_implemented(self, qtbot, server):
+        status, _, _ = _raw_request(server.port, "OPTIONS", "/api/ping")
+        assert status == 501
+
+    def test_body_too_large_rejected(self, qtbot, server):
+        # Headers only: the server must answer without reading the (absent) body
+        status, _, _ = _raw_request(server.port, "POST", "/api/select", {"Content-Length": str(64 * 1024 + 1)})
+        assert status == 413
+
+    @pytest.mark.parametrize("value", ["abc", "-5"])
+    def test_bad_content_length_rejected(self, qtbot, server, value):
+        status, _, _ = _raw_request(server.port, "POST", "/api/select", {"Content-Length": value})
+        assert status == 400
+
+    def test_notify_lightroom_closing_still_accepted(self, qtbot, server):
+        # urllib caller used by the companion itself must pass the guards
+        status, data = _http_post(f"http://127.0.0.1:{server.port}/api/companion_closed", {})
+        assert status == 200 and data["status"] == "companion_closed"
+        server.notify_lightroom_closing()
+
+    def test_pending_imports_utf8_round_trip_through_lua_parser(self, qtbot, server):
+        path = r"C:\Photos\Été [2024]\a.tif"
+        orig = r"C:\Photos\Été [2024]\a}.cr3"
+        server.queue_import(path, original_path=orig)
+        status, headers, raw = _raw_request(server.port, "GET", "/api/pending_imports")
+        assert status == 200
+        assert int(dict(headers)["Content-Length"]) == len(raw)
+        assert b"\\u00" not in raw
+        assert "É".encode("utf-8") in raw  # C3 89
+        body = raw.decode("utf-8")
+        assert lua_parse_pending_imports(body) == [{"path": path, "original_path": orig, "photo_id": None}]
 
 
 class TestMainWindowLiveIntegration:

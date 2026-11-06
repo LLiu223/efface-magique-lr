@@ -10,6 +10,7 @@ Covers:
 """
 
 import os
+import re
 import sys
 import glob
 import unittest
@@ -19,6 +20,35 @@ from luaparser import ast
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
+
+
+# Python re port of LiveBridge.lua extractJsonField / parsePendingImports. Keep in exact sync with the Lua.
+def _lua_extract_json_field(json_str, field):
+    m = re.search(r'"' + re.escape(field) + r'"\s*:\s*"([^"]+)"', json_str)
+    if m:
+        return m.group(1)
+    m = re.search(r'"' + re.escape(field) + r'"\s*:\s*(\d+)', json_str)
+    return m.group(1) if m else None
+
+
+def lua_parse_pending_imports(json_str):
+    imports = []
+    m = re.search(r'"imports"\s*:\s*\[(.*)\]', json_str, re.S)  # Lua '.' matches newlines too
+    if not m or not m.group(1).strip():
+        return imports
+    masked = re.sub(r'"[^"]*"', lambda s: s.group(0).replace("{", "\x01").replace("}", "\x02"), m.group(1))
+    for item_match in re.finditer(r'\{([^}]+)\}', masked):
+        item_str = item_match.group(1).replace("\x01", "{").replace("\x02", "}")
+        p = _lua_extract_json_field(item_str, "path")
+        orig = _lua_extract_json_field(item_str, "original_path")
+        pid = _lua_extract_json_field(item_str, "photo_id")
+        if p:
+            imports.append({
+                "path": p.replace("\\\\", "\\"),
+                "original_path": orig.replace("\\\\", "\\") if orig else None,
+                "photo_id": pid,
+            })
+    return imports
 
 
 class TestLuaPluginStaticAnalysis(unittest.TestCase):
@@ -200,35 +230,7 @@ class TestLightroomLiveBridgeMocking(unittest.TestCase):
 
     def test_live_bridge_lua_json_parser_simulation(self):
         """Verify simulated LiveBridge.lua JSON parsing logic handles empty array and Windows backslashes."""
-        import re
-
-        def extract_json_field(json_str, field):
-            pattern = r'"' + re.escape(field) + r'"\s*:\s*"([^"]+)"'
-            m = re.search(pattern, json_str)
-            if m:
-                return m.group(1)
-            num_pattern = r'"' + re.escape(field) + r'"\s*:\s*(\d+)'
-            m = re.search(num_pattern, json_str)
-            return m.group(1) if m else None
-
-        def parse_pending_imports(json_str):
-            imports = []
-            m = re.search(r'"imports"\s*:\s*\[(.*?)\]', json_str)
-            if not m or not m.group(1).strip():
-                return imports
-            array_content = m.group(1)
-            for item_match in re.finditer(r'\{([^}]+)\}', array_content):
-                item_str = item_match.group(1)
-                p = extract_json_field(item_str, "path")
-                orig = extract_json_field(item_str, "original_path")
-                pid = extract_json_field(item_str, "photo_id")
-                if p:
-                    imports.append({
-                        "path": p.replace(r"\\", "\\"),
-                        "original_path": orig.replace(r"\\", "\\") if orig else None,
-                        "photo_id": pid,
-                    })
-            return imports
+        parse_pending_imports = lua_parse_pending_imports
 
         # 1. Empty imports array must return empty list without error
         empty_json = '{"status": "ok", "count": 0, "imports": []}'
@@ -241,6 +243,16 @@ class TestLightroomLiveBridgeMocking(unittest.TestCase):
         self.assertEqual(result[0]["path"], r"C:\tmp\live_edit.tif")
         self.assertEqual(result[0]["original_path"], r"C:\photos\raw.cr3")
         self.assertEqual(result[0]["photo_id"], "42")
+
+        # 3. Brackets/braces inside paths, multiple items, null fields
+        tricky_json = ('{"status": "ok", "count": 2, "imports": ['
+                       '{"path": "C:\\\\Été [2024]\\\\a}.tif", "original_path": "C:\\\\x{y}\\\\b].cr3", "photo_id": null}, '
+                       '{"path": "C:\\\\c.tif", "original_path": null, "photo_id": "7"}]}')
+        result = parse_pending_imports(tricky_json)
+        self.assertEqual(result, [
+            {"path": "C:\\Été [2024]\\a}.tif", "original_path": "C:\\x{y}\\b].cr3", "photo_id": None},
+            {"path": "C:\\c.tif", "original_path": None, "photo_id": "7"},
+        ])
 
 
 if __name__ == "__main__":
