@@ -62,6 +62,11 @@ local function parsePendingImports(jsonStr)
     return imports
 end
 
+-- Escape a string for a JSON string literal: '\' first, then '"'.
+local function jsonEscape(s)
+    return (tostring(s):gsub('\\', '\\\\'):gsub('"', '\\"'))
+end
+
 local function runLiveBridge()
     local catalog = LrApplication.activeCatalog()
 
@@ -151,6 +156,24 @@ local function runLiveBridge()
     local pendingTime = 0
     local disconnectedCount = 0
     local DEBOUNCE_DELAY = 0.08 -- 80ms snappy debounce
+    local tick = 0 -- pending imports are polled every 10th 30ms tick (~300ms)
+
+    -- Recency list of live_<id>.tif paths exported this session (oldest first); only these are pruned.
+    local MAX_CACHED_EXPORTS = 5
+    local cachedExports = {}
+    local exportEditTimes = {} -- photo id -> lastEditTime at export (false when the photo has none)
+
+    local function touchCachedExport(path)
+        for i = #cachedExports, 1, -1 do
+            if cachedExports[i] == path then
+                table.remove(cachedExports, i)
+            end
+        end
+        table.insert(cachedExports, path)
+        while #cachedExports > MAX_CACHED_EXPORTS do
+            LrFileUtils.delete(table.remove(cachedExports, 1))
+        end
+    end
 
     local headers = {
         { field = "Content-Type", value = "application/json" }
@@ -158,13 +181,13 @@ local function runLiveBridge()
 
     while not progressScope:isCanceled() do
         LrTasks.sleep(0.03) -- 30ms high-frequency polling
+        tick = tick + 1
 
         -- Fast close detection: if the info file was deleted by the companion on close, exit immediately
         if LrFileUtils.exists(bridgeInfoFile) ~= "file" then
             break
         end
 
-        port = PluginUtils.getLiveBridgePort()
         local targetPhoto = catalog:getTargetPhoto()
         local targetId = targetPhoto and targetPhoto.localIdentifier or nil
 
@@ -186,16 +209,19 @@ local function runLiveBridge()
                         local exportPath = LrPathUtils.child(tempDir, exportName)
 
                         local selectUrl = string.format("http://127.0.0.1:%d/api/select", port)
-                        -- Escape Windows backslashes for JSON
-                        local jsonPath = (exportPath:gsub('\\', '\\\\'))
-                        local jsonOrig = (origPath:gsub('\\', '\\\\'))
                         local jsonBody = string.format(
                             '{"path": "%s", "photo_id": "%s", "original_path": "%s", "title": "%s"}',
-                            jsonPath, tostring(targetId), jsonOrig, baseName
+                            jsonEscape(exportPath), jsonEscape(targetId), jsonEscape(origPath), jsonEscape(baseName)
                         )
 
-                        -- Instant Cache Hit: if already exported in this session, swap immediately in 0ms!
-                        if LrFileUtils.exists(exportPath) == "file" then
+                        -- false stands in for a missing edit time so the table entry still exists
+                        local editTime = activePhoto:getRawMetadata('lastEditTime') or false
+                        local cachedEditTime = exportEditTimes[targetId]
+
+                        -- Cache hit only for files exported this session from the same edit state
+                        if LrFileUtils.exists(exportPath) == "file"
+                            and cachedEditTime ~= nil and cachedEditTime == editTime then
+                            touchCachedExport(exportPath)
                             LrHttp.post(selectUrl, jsonBody, headers)
                         else
                             -- Ultra-fast uncompressed 16-bit TIFF export (no CPU-heavy ZIP compression)
@@ -224,6 +250,8 @@ local function runLiveBridge()
                             exportSession:doExportOnCurrentTask()
 
                             if LrFileUtils.exists(exportPath) == "file" then
+                                exportEditTimes[targetId] = editTime
+                                touchCachedExport(exportPath)
                                 LrHttp.post(selectUrl, jsonBody, headers)
                             end
                         end
@@ -232,70 +260,78 @@ local function runLiveBridge()
             end
         end
 
-        -- 2. Check for completed edits waiting to be imported into Lightroom
-        local importsUrl = string.format("http://127.0.0.1:%d/api/pending_imports", port)
-        local importsResp = LrHttp.get(importsUrl)
-        if importsResp then
+        -- 2. Check for completed edits waiting to be imported into Lightroom (every 10th tick)
+        local isPollTick = tick % 10 == 0
+        local importsResp = isPollTick
+            and LrHttp.get(string.format("http://127.0.0.1:%d/api/pending_imports", port))
+        if not isPollTick then
+            -- Selection-only tick
+        elseif importsResp then
             disconnectedCount = 0
             if string.find(importsResp, '"imports"') then
                 local items = parsePendingImports(importsResp)
                 for _, item in ipairs(items) do
                     local editedPath = item.path
                     if editedPath and LrFileUtils.exists(editedPath) == "file" then
-                        local targetForImport = targetPhoto
-                        if item.photo_id then
-                            -- Attempt to find matching photo object
-                            local allPhotos = catalog:getAllPhotos()
-                            for _, p in ipairs(allPhotos) do
-                                if tostring(p.localIdentifier) == tostring(item.photo_id) then
-                                    targetForImport = p
-                                    break
+                        local ok = LrTasks.pcall(function()
+                            local targetForImport = (item.original_path and catalog:findPhotoByPath(item.original_path))
+                                or targetPhoto
+
+                            -- Copy edited TIFF adjacent to original photo folder
+                            local origPath = item.original_path or (targetForImport and targetForImport:getRawMetadata('path'))
+                            local finalDestPath = editedPath
+
+                            if origPath then
+                                local origFolder = LrPathUtils.parent(origPath)
+                                local leaf = LrPathUtils.leafName(editedPath)
+                                finalDestPath = LrPathUtils.child(origFolder, leaf)
+
+                                if LrFileUtils.exists(finalDestPath) then
+                                    LrFileUtils.delete(finalDestPath)
+                                end
+                                if not LrFileUtils.copy(editedPath, finalDestPath) then
+                                    finalDestPath = editedPath
                                 end
                             end
-                        end
 
-                        -- Move/copy edited TIFF adjacent to original photo folder
-                        local origPath = item.original_path or (targetForImport and targetForImport:getRawMetadata('path'))
-                        local finalDestPath = editedPath
-
-                        if origPath then
-                            local origFolder = LrPathUtils.parent(origPath)
-                            local leaf = LrPathUtils.leafName(editedPath)
-                            finalDestPath = LrPathUtils.child(origFolder, leaf)
-
-                            if LrFileUtils.exists(finalDestPath) then
-                                LrFileUtils.delete(finalDestPath)
+                            local imported = false
+                            catalog:withWriteAccessDo("Import AI Generative Eraser Edit", function()
+                                local newPhoto = catalog:addPhoto(finalDestPath, targetForImport, 'above')
+                                if newPhoto then
+                                    imported = true
+                                    catalog:setSelectedPhotos(newPhoto, { newPhoto })
+                                end
+                            end)
+                            if not imported then
+                                error("addPhoto failed")
                             end
-                            local copySuccess = LrFileUtils.copy(editedPath, finalDestPath)
-                            if copySuccess then
+
+                            -- Only now is the AI edit safe in the catalog; drop the temp copy (never the imported file)
+                            if finalDestPath ~= editedPath then
                                 LrFileUtils.delete(editedPath)
-                            else
-                                finalDestPath = editedPath
-                            end
-                        end
-
-                        catalog:withWriteAccessDo("Import AI Generative Eraser Edit", function()
-                            local newPhoto = catalog:addPhoto(finalDestPath, targetForImport, 'above')
-                            if newPhoto then
-                                catalog:setSelectedPhotos(newPhoto, { newPhoto })
                             end
                         end)
 
-                        if LrDialogs.showBeep then
-                            LrDialogs.showBeep()
+                        if ok then
+                            if LrDialogs.showBeep then
+                                LrDialogs.showBeep()
+                            end
+                        else
+                            progressScope:setCaption("Import failed: " .. LrPathUtils.leafName(editedPath))
                         end
 
-                        -- Acknowledge import to companion
+                        -- Acknowledge (also on failure, so the item is not retried every poll)
                         local doneUrl = string.format("http://127.0.0.1:%d/api/import_done", port)
-                        local jsonDoneBody = string.format('{"path": "%s"}', (editedPath:gsub('\\', '\\\\')))
+                        local jsonDoneBody = string.format('{"path": "%s"}', jsonEscape(editedPath))
                         LrHttp.post(doneUrl, jsonDoneBody, headers)
                     end
                 end
             end
         else
             disconnectedCount = disconnectedCount + 1
-            -- If companion closed or connection lost for ~150ms (5 ticks)
+            -- Companion unreachable for 5 failed polls x ~300ms = ~1.5s: re-read port, then ping before giving up
             if disconnectedCount >= 5 then
+                port = PluginUtils.getLiveBridgePort()
                 local pingUrl = string.format("http://127.0.0.1:%d/api/ping", port)
                 local pingResp = LrHttp.get(pingUrl)
                 if not pingResp or not string.find(pingResp, "EffaceMagique") then

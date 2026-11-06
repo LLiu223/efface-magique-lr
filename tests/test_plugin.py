@@ -13,6 +13,7 @@ import os
 import re
 import sys
 import glob
+import json
 import unittest
 from luaparser import ast
 
@@ -49,6 +50,122 @@ def lua_parse_pending_imports(json_str):
                 "photo_id": pid,
             })
     return imports
+
+
+# Python port of LiveBridge.lua jsonEscape: '\' first, then '"'.
+def lua_json_escape(s):
+    return str(s).replace("\\", "\\\\").replace('"', '\\"')
+
+
+_LIVE_BRIDGE = os.path.join(_PROJECT_ROOT, "plugin", "ai_eraser.lrplugin", "LiveBridge.lua")
+
+
+def _read_live_bridge():
+    with open(_LIVE_BRIDGE, "r", encoding="utf-8") as f:
+        return f.read()
+
+
+class TestLiveBridgeFixes(unittest.TestCase):
+    def test_json_escape_port(self):
+        self.assertEqual(lua_json_escape('a"b\\c'), 'a\\"b\\\\c')
+        for s in ['a"b\\c', 'C:\\Photos\\say "hi"\\x.tif', '\\"', '']:
+            self.assertEqual(json.loads('"' + lua_json_escape(s) + '"'), s)
+            body = '{"path": "%s", "title": "%s"}' % (lua_json_escape(s), lua_json_escape(s))
+            self.assertEqual(json.loads(body), {"path": s, "title": s})
+
+    def test_json_escape_lua_matches_port(self):
+        src = _read_live_bridge()
+        self.assertIn("local function jsonEscape(s)", src)
+        self.assertIn("""gsub('\\\\', '\\\\\\\\'):gsub('"', '\\\\"')""", src)
+
+    def test_static_checks(self):
+        src = _read_live_bridge()
+        self.assertNotIn("getAllPhotos", src)
+        for needle in ["findPhotoByPath", "pcall", "lastEditTime", "MAX_CACHED_EXPORTS = 5", "% 10"]:
+            self.assertIn(needle, src)
+        # Every JSON body built with string.format has its string fields escaped
+        self.assertNotIn("tostring(targetId), jsonOrig", src)
+        self.assertIn("jsonEscape(exportPath), jsonEscape(targetId), jsonEscape(origPath), jsonEscape(baseName)", src)
+        self.assertIn("""string.format('{"path": "%s"}', jsonEscape(editedPath))""", src)
+
+    def test_port_read_only_in_failure_branch(self):
+        src = _read_live_bridge()
+        start = src.index("while not progressScope:isCanceled() do\n        LrTasks.sleep(0.03)")
+        end = src.index("-- If user clicked cancel", start)
+        loop = src[start:end]
+        self.assertEqual(loop.count("getLiveBridgePort"), 1)
+        failure = loop.index("disconnectedCount = disconnectedCount + 1")
+        port_read = loop.index("getLiveBridgePort")
+        ping = loop.index("/api/ping", failure)
+        self.assertLess(failure, port_read)
+        self.assertLess(port_read, ping)
+
+    def test_edited_path_deleted_only_after_add_photo(self):
+        src = _read_live_bridge()
+        add = src.index("catalog:addPhoto(")
+        guard = src.index('error("addPhoto failed")')
+        deletes = [m.start() for m in re.finditer(r"LrFileUtils\.delete\(editedPath\)", src)]
+        self.assertEqual(len(deletes), 1)
+        self.assertLess(add, guard)
+        self.assertLess(guard, deletes[0])
+
+
+class RecencyCacheModel:
+    """Python model of LiveBridge.lua touchCachedExport + exportEditTimes cache-hit rule."""
+
+    def __init__(self, cap=5):
+        self.cap = cap
+        self.paths = []  # oldest first
+        self.edit_times = {}
+        self.on_disk = set()
+        self.deleted = []
+
+    def _touch(self, path):
+        if path in self.paths:
+            self.paths.remove(path)
+        self.paths.append(path)
+        while len(self.paths) > self.cap:
+            old = self.paths.pop(0)
+            self.on_disk.discard(old)
+            self.deleted.append(old)
+
+    def select(self, photo_id, edit_time):
+        path = "live_%s.tif" % photo_id
+        edit_time = edit_time if edit_time is not None else False
+        if path in self.on_disk and photo_id in self.edit_times and self.edit_times[photo_id] == edit_time:
+            self._touch(path)
+            return "HIT"
+        self.on_disk.add(path)
+        self.edit_times[photo_id] = edit_time
+        self._touch(path)
+        return "EXPORT"
+
+
+class TestRecencyCache(unittest.TestCase):
+    def test_seven_exports_leave_newest_five(self):
+        m = RecencyCacheModel()
+        for i in range(1, 8):
+            self.assertEqual(m.select(i, 100), "EXPORT")
+        self.assertEqual(m.paths, ["live_%d.tif" % i for i in range(3, 8)])
+        self.assertEqual(m.deleted, ["live_1.tif", "live_2.tif"])
+        self.assertEqual(m.on_disk, set(m.paths))
+
+    def test_reselect_cached_makes_it_newest(self):
+        m = RecencyCacheModel()
+        for i in range(1, 6):
+            m.select(i, 100)
+        self.assertEqual(m.select(1, 100), "HIT")
+        self.assertEqual(m.paths[-1], "live_1.tif")
+        m.select(6, 100)  # evicts 2, not the re-selected 1
+        self.assertEqual(m.deleted, ["live_2.tif"])
+        self.assertIn("live_1.tif", m.paths)
+
+    def test_stale_and_leftover_files_reexport(self):
+        m = RecencyCacheModel()
+        m.on_disk.add("live_9.tif")  # left over from an earlier session
+        self.assertEqual(m.select(9, None), "EXPORT")
+        self.assertEqual(m.select(9, None), "HIT")  # missing edit time still needs the table entry
+        self.assertEqual(m.select(9, 200), "EXPORT")  # edited since export
 
 
 class TestLuaPluginStaticAnalysis(unittest.TestCase):
