@@ -13,7 +13,7 @@
 | 2. User invokes: File > Plug-in Extras > "⚡ AI Generative Eraser" (Live Window).                   |
 | 3. LiveBridge.lua:                                                                                |
 |    - Observes photo selection, debounces exports, and communicates with Companion via IPC bridge.  |
-|    - Exports 16-bit TIFF with embedded color profile to workspace.                                |
+|    - Exports 16-bit TIFF with embedded color profile; companion reduces it to 8-bit on load.      |
 |    - Sends selection event to local companion app via HTTP IPC API.                               |
 | 4. On companion save & sync:                                                                      |
 |    - Reads edited TIFF back into Lightroom Catalog using LrCatalog:addPhoto().                    |
@@ -38,8 +38,8 @@
 |   4. Seamless sigmoid / outer-feather alpha blending (zero untouched pixel bleed).                |
 | - Brush mask tools: Auto-Erase on stroke release, adjustable radius ([ and ]), eraser mode.       |
 | - Hold-to-Compare: Hold \ (Backslash) or Spacebar for instant Before/After comparison.            |
-| - 16-bit Color & Metadata: Lossless ProPhoto RGB ICC profile, EXIF, and DPI tag preservation.    |
-| - "Save & Return to Lightroom": Writes active variation losslessly to TIFF and exits code 0.      |
+| - Color & Metadata: ProPhoto RGB ICC profile, EXIF, and DPI tag preservation (8-bit pipeline).    |
+| - "Save & Return to Lightroom": Writes active variation to an 8-bit TIFF and exits code 0.        |
 +---------------------------------------------------------------------------------------------------+
 ```
 
@@ -160,7 +160,7 @@ chmod +x install.sh && ./install.sh
 - **Zero Artifact Bleed**: Never blur or resample untouched photo regions. Inpainting strictly blends back into the full-res source image with bit-exact 0-difference outside the context crop.
 - **Sensor Grain Matching**: Never leave plastic, overly-smooth patches. Synthesize and match the local camera sensor noise profile ($\sigma_r, \sigma_g, \sigma_b$) and Laplacian variance.
 - **Non-blocking UI**: All inpainting tasks run on background `QThread` workers with continuous progress updates.
-- **Color Profile & Metadata Preservation**: Preserve 16-bit ProPhoto RGB ICC profile bytes, EXIF metadata tags, and resolution DPI across export and save roundtrips.
+- **Color Profile & Metadata Preservation**: Preserve ProPhoto RGB ICC profile bytes (pixels are processed at 8 bits per channel), EXIF metadata tags, and resolution DPI across export and save roundtrips.
 
 ---
 

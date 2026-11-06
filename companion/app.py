@@ -10,7 +10,7 @@ Key Capabilities:
 - Variations Carousel Panel with real-time viewport updates & "More Variations" regeneration
 - Camera Sensor Grain & Noise Matching
 - Split-Screen & Hold-to-Compare (\\ and Space keys)
-- 16-bit Lossless Color (ProPhoto RGB / Adobe RGB / sRGB) & EXIF metadata preservation
+- Color profile (ProPhoto RGB / Adobe RGB / sRGB) & EXIF metadata preservation (8-bit pipeline)
 - Headless CLI pipeline for automated testing
 """
 
@@ -1907,7 +1907,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"✓ Stacked adjacent to original in Lightroom: {base}", 5000)
 
     def save_image_to_disk(self) -> Optional[str]:
-        """Save the active variation to disk with full 16-bit color profile and metadata preservation."""
+        """Save the active variation to disk as an 8-bit TIFF with color profile and metadata preservation."""
         current_img = self.canvas.get_current_image()
         if current_img is None:
             QMessageBox.information(self, "No Image", "There is no image to save.")

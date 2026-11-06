@@ -452,7 +452,7 @@ class HelpGuideDialog(QDialog):
                 <li>Toggle <b>🎯 Subject</b> to automatically lock contours to object boundaries.</li>
                 <li>Click <b>✨ Erase Object</b> (or press <b>Enter</b>) to generate inpainting.</li>
                 <li>Review the 3 candidate variation cards and pick your favorite result.</li>
-                <li>Click <b>📥 Save &amp; Sync to Lightroom</b> (<code>Ctrl + S</code>) — the image is losslessly saved as a 16-bit TIFF and auto-stacked into your Lightroom catalog!</li>
+                <li>Click <b>📥 Save &amp; Sync to Lightroom</b> (<code>Ctrl + S</code>) — the image is saved as an 8-bit TIFF and auto-stacked into your Lightroom catalog!</li>
                 <li>Click <b>📌 Pin</b> (<code>Ctrl + T</code>) to keep the companion floating on top of Lightroom while you work.</li>
             </ol>
         """)
