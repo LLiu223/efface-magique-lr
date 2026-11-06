@@ -102,7 +102,7 @@ Work through your entire photoshoot without ever relaunching or closing the edit
    - Click the delete button (`✕`) on any card to permanently delete that layer with automatic, clean re-compositing.
    - Click any card to re-enter edit mode and refine its mask.
 9. **Save & Sync:** Click **⚡ Save & Sync to Lightroom** (or press `Ctrl + S`).  
-   - Lightroom exports a 16-bit ProPhoto TIFF; the companion processes and saves it at 8 bits per channel.
+   - Lightroom exports a 16-bit ProPhoto TIFF; untouched pixels keep full 16-bit precision; the erased area is computed in 8-bit and merged back; preview is 8-bit. The saved TIFF is 16-bit.
    - Lightroom automatically imports and stacks the edited version with the original photo.
    - The companion window **stays open**, ready for your next photo!
 10. **Stay Floating:** Click **📌 Pin** (or press `Ctrl + T`) to keep the editor floating smoothly above Lightroom.
@@ -122,7 +122,7 @@ You can also use Efface Magique as a standalone desktop photo eraser:
 
 | Shortcut | Action | Description |
 | :--- | :--- | :--- |
-| **`Ctrl + S`** / **`Ctrl + Shift + S`** | **⚡ Save & Sync to Lightroom** | Saves 8-bit TIFF, auto-stacks into Lightroom catalog, and stays open |
+| **`Ctrl + S`** / **`Ctrl + Shift + S`** | **⚡ Save & Sync to Lightroom** | Saves TIFF (16-bit for a 16-bit input), auto-stacks into Lightroom catalog, and stays open |
 | **`Enter`** / **`Return`** | **✨ Erase Object** | Runs local AI inpainting on painted mask |
 | **`Ctrl + T`** | **📌 Toggle Pin** | Keeps window floating always on top of Lightroom Classic |
 | **`[` / `]`** | **Brush Size** | Decrease / Increase brush radius |
@@ -146,8 +146,8 @@ You can also use Efface Magique as a standalone desktop photo eraser:
 | **⚡ Fast Spot** | Fast Fourier GAN (Simple-LaMa) | Small spots, sensor dust, blemishes, thin power wires |
 
 ### Color & Photographic Quality
-- **Color Profile Preservation:** ProPhoto RGB and Adobe RGB ICC profiles, EXIF and DPI are kept on save.
-- **8-bit Limitation:** The companion works in 8 bits per channel; the 16-bit TIFF from Lightroom is reduced to 8-bit on load, and the saved TIFF is 8-bit.
+- **Color Profile Preservation:** ProPhoto RGB and Adobe RGB ICC profiles and DPI are kept on save (EXIF is not rewritten).
+- **16-bit TIFF Round Trip:** For a 16-bit RGB TIFF saved as TIFF, untouched pixels keep full 16-bit precision; the erased area is computed in 8-bit and merged back; preview is 8-bit. 8-bit inputs and PNG/JPEG output stay 8-bit.
 - **Sensor Noise Matching:** Automatically estimates camera ISO noise in the surrounding area and injects monochromatic grain to eliminate plastic-looking patches.
 - **Sigmoid Alpha Blending:** High-resolution feathering with zero pixel blur on untouched regions.
 - **Object-Aware Saliency Engine:** Multi-cluster local background sampling in CIE-Lab, CLAHE Sobel gradient energy, adaptive Otsu bimodal segmentation, solid contour hole-filling, and proportional safety margins.

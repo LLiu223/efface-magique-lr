@@ -13,7 +13,7 @@
 | 2. User invokes: File > Plug-in Extras > "⚡ AI Generative Eraser" (Live Window).                   |
 | 3. LiveBridge.lua:                                                                                |
 |    - Observes photo selection, debounces exports, and communicates with Companion via IPC bridge.  |
-|    - Exports 16-bit TIFF with embedded color profile; companion reduces it to 8-bit on load.      |
+|    - Exports 16-bit TIFF with embedded color profile (kept in memory as 16-bit by companion).     |
 |    - Sends selection event to local companion app via HTTP IPC API.                               |
 | 4. On companion save & sync:                                                                      |
 |    - Reads edited TIFF back into Lightroom Catalog using LrCatalog:addPhoto().                    |
@@ -38,8 +38,10 @@
 |   4. Seamless sigmoid / outer-feather alpha blending (zero untouched pixel bleed).                |
 | - Brush mask tools: Auto-Erase on stroke release, adjustable radius ([ and ]), eraser mode.       |
 | - Hold-to-Compare: Hold \ (Backslash) or Spacebar for instant Before/After comparison.            |
-| - Color & Metadata: ProPhoto RGB ICC profile, EXIF, and DPI tag preservation (8-bit pipeline).    |
-| - "Save & Return to Lightroom": Writes active variation to an 8-bit TIFF and exits code 0.        |
+| - Color & Metadata: ProPhoto RGB ICC profile and DPI tag preservation. 16-bit TIFFs: untouched    |
+|   pixels keep full 16-bit precision; the erased area is computed in 8-bit and merged back;        |
+|   preview is 8-bit.                                                                               |
+| - "Save & Return to Lightroom": Writes active variation to a TIFF (16-bit for 16-bit input).      |
 +---------------------------------------------------------------------------------------------------+
 ```
 

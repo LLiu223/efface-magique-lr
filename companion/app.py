@@ -11,7 +11,9 @@ Key Capabilities:
 - Variations Carousel Panel with real-time viewport updates & "More Variations" regeneration
 - Camera Sensor Grain & Noise Matching
 - Split-Screen & Hold-to-Compare (\\ and Space keys)
-- Color profile (ProPhoto RGB / Adobe RGB / sRGB) & EXIF metadata preservation (8-bit pipeline)
+- Color profile (ProPhoto RGB / Adobe RGB / sRGB) & DPI preservation
+- 16-bit TIFFs: untouched pixels keep full 16-bit precision; the erased area is computed in
+  8-bit and merged back; preview is 8-bit
 - Headless CLI pipeline for automated testing
 """
 
@@ -86,6 +88,7 @@ from companion.model_engine import (
 )
 from companion.layers import ModificationLayer, create_layer_thumbnail
 from companion.live_bridge import LiveBridgeServer
+from companion.utils.tiff16 import read_rgb16, write_tiff16, merge_into_16bit
 
 # Configure logging to console and file
 _log_file = os.path.join(_PROJECT_ROOT, "companion.log")
@@ -183,6 +186,8 @@ class MainWindow(QMainWindow):
         self.original_icc_profile = None
         self.original_exif = None
         self.original_dpi = None
+        # Lossless uint16 RGB pixels of a 16-bit TIFF input (None for every other input)
+        self.base_image16: Optional[np.ndarray] = None
 
         # Variations state
         self.current_variations: List[Image.Image] = []
@@ -1431,6 +1436,7 @@ class MainWindow(QMainWindow):
 
     def load_image_file(self, file_path: str):
         """Open and display an image file, preserving original ICC profile and EXIF metadata."""
+        self.base_image16 = None
         try:
             pil_img = Image.open(file_path)
             # Cache color profile and metadata
@@ -1444,6 +1450,13 @@ class MainWindow(QMainWindow):
             self.canvas.load_image(pil_img)
             self.base_image = pil_img.copy().convert("RGB")
             self._base_pixmap = QPixmap.fromImage(pil_to_qimage(self.base_image))
+            tag = getattr(pil_img, "tag_v2", None)
+            if tag is not None and tuple(tag.get(258, ())) == (16, 16, 16):
+                arr16 = read_rgb16(file_path)
+                if arr16 is not None and arr16.shape[:2] == (self.base_image.height, self.base_image.width):
+                    self.base_image16 = arr16
+                else:
+                    logger.warning("16-bit decode unavailable or size differs from 8-bit decode; saving at 8 bits.")
             self.modification_layers = []
             self.active_layer_index = None
             self.layer_card_widgets = {}
@@ -1908,7 +1921,14 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"✓ Stacked adjacent to original in Lightroom: {base}", 5000)
 
     def save_image_to_disk(self) -> Optional[str]:
-        """Save the active variation to disk as an 8-bit TIFF with color profile and metadata preservation."""
+        """
+        Save the active variation (or layer composite) with its ICC profile and DPI.
+
+        16-bit TIFF input saved as .tif/.tiff: untouched pixels keep full 16-bit precision;
+        the erased area is computed in 8-bit and merged back (orig16 + (out8 - base8) * 257,
+        clipped) and written as a 16-bit TIFF via a temp file + os.replace. Preview is 8-bit.
+        Every other input or output format is saved through Pillow at 8 bits per channel.
+        """
         current_img = self.canvas.get_current_image()
         if current_img is None:
             QMessageBox.information(self, "No Image", "There is no image to save.")
@@ -1967,6 +1987,12 @@ class MainWindow(QMainWindow):
                     save_kwargs["dpi"] = self.original_dpi
 
             os.makedirs(os.path.dirname(os.path.abspath(self.output_path)), exist_ok=True)
+            if self.base_image16 is not None and self.output_path.lower().endswith((".tif", ".tiff")):
+                merged = merge_into_16bit(self.base_image16, self.base_image, save_img)
+                write_tiff16(self.output_path, merged, self.original_icc_profile, self.original_dpi)
+                del merged
+                logger.info(f"Saved 16-bit image to {self.output_path} (ICC Profile preserved: {bool(self.original_icc_profile)})")
+                return self.output_path
             try:
                 save_img.save(self.output_path, **save_kwargs)
             except Exception as enc_err:
