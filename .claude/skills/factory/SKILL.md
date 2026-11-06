@@ -10,7 +10,7 @@ You are the orchestrator. You spawn every agent, and you are the **only writer o
 ```
 feature -> spec-writer -> builder -> [security|ux|ui|code] -> all PASS -> approver -> APPROVE: merge
                             ^              wait for all 4        |            \-> ESCALATE: needs-human
-                            '--- any CHANGES: resume builder (max 2 rounds)
+                            '--- any CHANGES: resume builder (max 3 rounds)
 ```
 
 ## Commands
@@ -33,8 +33,8 @@ Update `board.json` at every transition (stage and review verdicts) so the dashb
 3. **review** — set `round` to 1, create `round-1/`, set `reviews` to all `pending`. Spawn the four reviewers **in one message** (security-reviewer, ux-reviewer, ui-reviewer, code-reviewer), each told the job folder and round folder. WAIT FOR ALL: the round is done only when all four `review-*.md` files exist. Read line 1 of each, update `reviews` as they land. Never touch the builder mid-round.
 4. **Verdicts**
    - all PASS -> step 5
-   - any CHANGES and round < 2 -> push the finished `reviews` object onto the job's `history` array, `round += 1`, create the new round folder, resume the builder with `SendMessage` to `builder-<id>`: "Round N reviews are in factory/jobs/<id>/round-<N-1>/. Fix every CHANGES item." Then repeat step 3 (all four reviewers again).
-   - any CHANGES in round 2 -> stage `needs-human`, write `decision.md` yourself starting with `ESCALATE` and the unresolved findings.
+   - any CHANGES and round < 3 -> push the finished `reviews` object onto the job's `history` array, `round += 1`, create the new round folder, resume the builder with `SendMessage` to `builder-<id>`: "Round N reviews are in factory/jobs/<id>/round-<N-1>/. Fix every CHANGES item." Then repeat step 3 (all four reviewers again).
+   - any CHANGES in round 3 -> stage `needs-human`, write `decision.md` yourself starting with `ESCALATE` and the unresolved findings.
 5. **approve** — spawn `approver`. Read line 1 of `decision.md`: `APPROVE` -> `git switch main && git merge --no-ff factory/<id>`, run the test command once more, stage `merged`. `ESCALATE` -> stage `needs-human`.
 
 Finish by switching back to `main` and summarising each job in one line: stage, branch, and the reason if it needs a human.
