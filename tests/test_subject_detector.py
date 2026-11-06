@@ -20,7 +20,7 @@ from companion.utils.subject_detector import (
     run_grabcut_refinement,
     get_segmentation_model,
 )
-from companion.utils.blending import synthesize_and_match_sensor_grain
+from companion.pipeline import synthesize_and_match_sensor_grain
 
 
 class TestSubjectDetector(unittest.TestCase):
@@ -35,7 +35,7 @@ class TestSubjectDetector(unittest.TestCase):
 
         # Draw a bright subject in the center (e.g. 40x80 standing figure)
         scene[110:190, 130:170] = (220, 180, 140)
-        scene_pil = Image.fromarray(scene, mode="RGB")
+        scene_pil = Image.fromarray(scene)
 
         # User draws a loose coloring zone with 30px padding all around the figure
         loose_zone = Image.new("L", (300, 300), 0)
@@ -133,7 +133,7 @@ class TestSubjectDetector(unittest.TestCase):
         scene[90:110, 86:88] = (115, 112, 110)   # left post
         scene[90:110, 112:114] = (115, 112, 110) # right post
 
-        scene_pil = Image.fromarray(scene, mode="RGB")
+        scene_pil = Image.fromarray(scene)
 
         # User paints a loose coloring zone around the structure
         loose_zone = Image.new("L", (200, 200), 0)
@@ -192,7 +192,7 @@ class TestSubjectDetector(unittest.TestCase):
         """PIL Image input and numpy array input must produce identical masks."""
         scene = np.full((150, 150, 3), (60, 70, 80), dtype=np.uint8)
         scene[60:90, 60:90] = (200, 170, 140)
-        scene_pil = Image.fromarray(scene, mode="RGB")
+        scene_pil = Image.fromarray(scene)
 
         zone_pil = Image.new("L", (150, 150), 0)
         draw = ImageDraw.Draw(zone_pil)

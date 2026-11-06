@@ -345,7 +345,7 @@ def extract_subject_in_zone(
 
     zone_binary = (mask_np > 10).astype(np.uint8)
     if np.count_nonzero(zone_binary) == 0:
-        return Image.fromarray(mask_np, mode="L")
+        return Image.fromarray(mask_np.astype(np.uint8))
 
     # 1. Neural subject segmentation on high-res local crop (persons, animals, vehicles, objects)
     neural_subject = run_neural_subject_detection(img_np, mask_np, device=device)
@@ -375,11 +375,11 @@ def extract_subject_in_zone(
     # Fallback to user mask if refined mask is empty
     if np.count_nonzero(refined_subject > 10) == 0:
         logger.info("Subject detection fell back to original painted zone.")
-        return Image.fromarray(mask_np, mode="L")
+        return Image.fromarray(mask_np.astype(np.uint8))
 
     logger.info(
         f"Subject detected in zone: refined mask from "
         f"{np.count_nonzero(mask_np > 10)} to {np.count_nonzero(refined_subject > 10)} px "
         f"({np.count_nonzero(refined_subject > 10) / max(1, np.count_nonzero(mask_np > 10)) * 100:.1f}% subject)."
     )
-    return Image.fromarray(refined_subject, mode="L")
+    return Image.fromarray(refined_subject.astype(np.uint8))

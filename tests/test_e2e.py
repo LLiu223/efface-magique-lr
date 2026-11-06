@@ -35,7 +35,7 @@ class TestEndToEndHeadlessPipeline(unittest.TestCase):
         arr[:, :, 2] = np.linspace(200, 40, self.height, dtype=np.uint8)[:, None]
 
         self.input_tiff = os.path.join(self.tmp_dir, "sample_input.tif")
-        pil_img = Image.fromarray(arr, mode="RGB")
+        pil_img = Image.fromarray(arr)
         pil_img.save(self.input_tiff, compression="tiff_deflate")
 
         self.python_exe = sys.executable

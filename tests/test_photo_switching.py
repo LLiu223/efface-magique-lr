@@ -13,7 +13,7 @@ if _PROJECT_ROOT not in sys.path:
 
 from companion.app import MainWindow
 from companion.layers import ModificationLayer
-from companion.inpainting_engine import EngineMode
+from companion.model_engine import EngineMode
 
 
 @pytest.fixture

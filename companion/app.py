@@ -1,11 +1,12 @@
 """
 app.py
 Efface Magique LR - Adobe Lightroom Classic AI Companion Application
-Adobe Firefly-grade Generative Fill & Fast GAN Dual Inpainting Interface
+Dual-Mode LaMa Inpainting Interface (Generative AI variations & Fast)
 
 Key Capabilities:
 - Dual Inpainting Engine:
-  * ✨ Generative Firefly (Diffusion-based, 3 candidate variations, optional prompt guidance)
+  * ✨ Generative AI mode (LaMa inpainting with slight seeded variations, 3 candidates;
+    the optional prompt only adds a deterministic colour tint of a few levels)
   * ⚡ Fast Mode (Simple-LaMa GAN for spots, wires, and quick fixes)
 - Variations Carousel Panel with real-time viewport updates & "More Variations" regeneration
 - Camera Sensor Grain & Noise Matching
@@ -887,7 +888,7 @@ class MainWindow(QMainWindow):
             else:
                 composite = self._get_composite_image(up_to_index=from_index - 1)
 
-        from companion.utils.blending import seamless_distance_feather_blend
+        from companion.pipeline import seamless_distance_feather_blend
 
         for i in range(from_index, len(self.modification_layers)):
             layer = self.modification_layers[i]
@@ -1019,7 +1020,7 @@ class MainWindow(QMainWindow):
         composite = self.base_image.copy()
         img_w, img_h = composite.size
 
-        from companion.utils.blending import seamless_distance_feather_blend
+        from companion.pipeline import seamless_distance_feather_blend
 
         for i in range(limit):
             layer = self.modification_layers[i]
@@ -2053,7 +2054,7 @@ def main():
     parser.add_argument("--input", "-i", type=str, default=None, help="Path to input photo exported from Lightroom")
     parser.add_argument("--image", type=str, default=None, help="Alias for --input")
     parser.add_argument("--output", "-o", type=str, default=None, help="Path to write output photo")
-    parser.add_argument("--prompt", "-p", type=str, default=None, help="Optional text prompt for Firefly generative fill")
+    parser.add_argument("--prompt", "-p", type=str, default=None, help="Optional text; only adds a deterministic colour tint of a few levels (no prompt-driven generation)")
     parser.add_argument("--headless", action="store_true", help="Run without GUI in automated test mode")
     parser.add_argument("--live", action="store_true", help="Start companion in persistent Live Bridge mode")
     parser.add_argument("--test-mask-rect", type=str, default=None, help="Apply rectangular test mask X,Y,W,H in headless mode")

@@ -27,7 +27,7 @@ Integrated directly into Adobe Lightroom Classic via a native Lua plugin and a h
 ### Key Highlights:
 - **🎯 Intelligent Object-Aware Erasing:** Upgraded subject detector automatically locks to the contours of any object (buildings, cabins, signs, poles, vehicles, animals, people) even for distant, small, or low-contrast elements without clipping rooflines, eaves, or posts.
 - **📚 Non-Destructive Modification Layers:** Every erase operation is tracked in a sidebar layer stack. Toggle visibility, re-edit masks, or delete any layer with a single click of its dedicated `✕` button.
-- **✨ Firefly-Grade Generative Variations:** Generate candidate variations with prompt conditioning or run instant LaMa GAN spot healing.
+- **✨ Generative AI Variations:** LaMa inpainting with slight seeded variations (pick from several candidates), or run instant single-pass LaMa spot healing. The optional prompt only adds a deterministic colour tint of a few levels.
 - **⚡ Seamless Live Window:** Stays open while you browse photos in Lightroom; edits auto-stack into your catalog upon save.
 
 ---
@@ -142,7 +142,7 @@ You can also use Efface Magique as a standalone desktop photo eraser:
 
 | Engine Mode | Technology | Best For |
 | :--- | :--- | :--- |
-| **✨ Firefly AI** *(Default)* | Multi-seed localized diffusion with noise matching & contextual cropping | Complex object removal, people, background reconstruction, texture synthesis |
+| **✨ Firefly AI** *(Default)* | LaMa inpainting with slight seeded variations, noise matching & contextual cropping | Complex object removal, people, background reconstruction, texture synthesis |
 | **⚡ Fast Spot** | Fast Fourier GAN (Simple-LaMa) | Small spots, sensor dust, blemishes, thin power wires |
 
 ### Color & Photographic Quality
@@ -190,12 +190,11 @@ efface-magique-lr/
 │   ├── app.py                        # PyQt6 Main Window, toolbar, & layer cards
 │   ├── canvas.py                     # High-res canvas with brush, zoom, & pan
 │   ├── layers.py                     # Non-destructive layer model & thumbnails
-│   ├── model_engine.py               # AI inpainting pipelines (Firefly & Fast Spot)
+│   ├── model_engine.py               # LaMa inpainting engine (Generative AI variations & Fast)
 │   ├── pipeline.py                   # Contextual cropping, blending, & grain matching
 │   ├── live_bridge.py                # Non-blocking IPC TCP bridge server
 │   ├── utils/
-│   │   ├── subject_detector.py       # Multi-cluster object-aware subject isolation
-│   │   └── blending.py               # Photographic blending facades
+│   │   └── subject_detector.py       # Multi-cluster object-aware subject isolation
 │   └── assets/                       # Branding logos & UI icons
 │       ├── logo.png                  # 440x440 App logo
 │       ├── logo.ico                  # Multi-resolution Windows application icon

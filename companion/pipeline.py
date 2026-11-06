@@ -258,7 +258,7 @@ def synthesize_and_match_sensor_grain(
     grainy_crop = crop_np + (grain * feathered_mask)
     grainy_crop = np.clip(grainy_crop, 0, 255).astype(np.uint8)
 
-    return Image.fromarray(grainy_crop, mode="RGB")
+    return Image.fromarray(grainy_crop)
 
 
 def harmonic_boundary_harmonization(
@@ -469,7 +469,7 @@ def seamless_distance_feather_blend(
 
     binary_mask = (mask_arr > 10).astype(np.uint8)
     if np.count_nonzero(binary_mask) == 0:
-        return Image.fromarray(np.clip(orig_np, 0, 255).astype(np.uint8), mode="RGB")
+        return Image.fromarray(np.clip(orig_np, 0, 255).astype(np.uint8))
 
     dist_inside = cv2.distanceTransform(binary_mask, cv2.DIST_L2, 5)
 
@@ -494,7 +494,7 @@ def seamless_distance_feather_blend(
     # Outside mask: bit-exact copy from original (no rounding error)
     blended_np[~mask_bool] = np.clip(orig_np[~mask_bool], 0, 255).astype(np.uint8)
 
-    return Image.fromarray(blended_np, mode="RGB")
+    return Image.fromarray(blended_np)
 
 
 def feathered_sigmoid_blend(

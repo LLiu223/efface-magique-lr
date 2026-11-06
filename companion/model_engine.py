@@ -1,10 +1,11 @@
 """
 model_engine.py
-Efface Magique LR - Dual AI Inpainting Engine (Adobe Firefly Generative Fill & Fast GAN)
+Efface Magique LR - Dual-Mode LaMa Inpainting Engine (Fast & Generative AI variations)
 GPU Accelerated (NVIDIA CUDA / Tensor Cores / Apple MPS / Multi-threaded CPU)
 
 Features:
-- Dual Engine Mode (EngineMode.FIREFLY & EngineMode.FAST)
+- Dual Engine Mode: EngineMode.FAST (single LaMa pass) and EngineMode.FIREFLY
+  ("Generative AI" label: LaMa inpainting with slight seeded variations, no diffusion)
 - Asynchronous InpaintingWorker (QThread) with cancellation & progress reporting
 - Context-Aware Local Bounding-Box Cropping (20-50px) for maximum CPU & GPU speed
 - Memory Management & Garbage Collection via torch.inference_mode() and free_device_memory()
@@ -13,6 +14,7 @@ Features:
 import logging
 import os
 import random
+import threading
 from enum import Enum
 from typing import Optional, Tuple, Callable, List
 import numpy as np
@@ -45,13 +47,14 @@ logger = logging.getLogger("EffaceMagiqueModelEngine")
 class EngineMode(str, Enum):
     """Inpainting mode selector."""
     FAST = "fast"          # Simple-LaMa GAN for spots, wires, and rapid blemish fixes
-    FIREFLY = "firefly"    # Diffusion-based Generative Fill with multi-variation & prompt support
+    FIREFLY = "firefly"    # LaMa inpainting with slight seeded variations (UI label "Generative AI")
 
 
 class InpaintingEngine:
     """
-    Dual-engine AI inpainting pipeline supporting Adobe Firefly generative fill
-    (with 3-variation output & text prompts) and Fast GAN spot removal.
+    LaMa inpainting pipeline with two modes: FAST (one LaMa pass) and FIREFLY
+    (LaMa inpainting with slight seeded variations; an optional prompt only adds
+    a deterministic colour tint of a few levels).
     """
 
     def __init__(
@@ -62,8 +65,8 @@ class InpaintingEngine:
         self.device = device or get_optimal_device()
         self.mode = mode
         self._lama_model = None
-        self._diffusion_pipeline = None
         self._is_loaded = False
+        self._load_lock = threading.Lock()
 
     @property
     def is_loaded(self) -> bool:
@@ -78,7 +81,12 @@ class InpaintingEngine:
         """Load required inpainting models into memory with GPU optimizations and kernel warmup."""
         if self._is_loaded:
             return
+        with self._load_lock:  # plain Lock: never call load_model/generate_variations inside
+            if self._is_loaded:
+                return
+            self._load_model_locked(progress_callback)
 
+    def _load_model_locked(self, progress_callback: Optional[Callable[[str], None]] = None):
         if progress_callback:
             progress_callback(f"Initializing AI inpainting engine on {self.device}...")
 
@@ -107,18 +115,6 @@ class InpaintingEngine:
                     free_device_memory(self.device)
         except Exception as e:
             logger.warning(f"SimpleLama initialization: {e}")
-
-        # Attempt to load diffusion pipeline if CUDA with >= 8GB VRAM is present
-        if self.device.type == "cuda":
-            try:
-                total_mem_gb = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
-                if total_mem_gb >= 8.0:
-                    if progress_callback:
-                        progress_callback("Checking diffusion generative inpainting models...")
-                    import diffusers  # noqa
-                    logger.info("Diffusers framework available for CUDA hardware acceleration.")
-            except Exception as e:
-                logger.info(f"Using high-performance generative diffusion pipeline: {e}")
 
         self._is_loaded = True
 
@@ -167,8 +163,8 @@ class InpaintingEngine:
     ) -> np.ndarray:
         """
         Generate a stochastic variation field (H×W×3 float32) conditioned on seed
-        and optional prompt string.  Shared by both CUDA and CPU execution paths,
-        eliminating the previous ~80-line duplication.
+        and optional prompt string (the prompt only adds a deterministic colour
+        tint of up to +/-4 levels per channel).
 
         Variation modes (keyed on seed_offset % 3):
           0 → flat zero (structural-only, no colour shift)
@@ -196,7 +192,7 @@ class InpaintingEngine:
         # Broadcast mono to 3-channel
         variation = np.stack([mono, mono, mono], axis=-1)
 
-        # Optional prompt tint (deterministic hash → tiny ±2 per-channel bias)
+        # Optional prompt tint (deterministic hash → (hash%5-2)*2, i.e. up to ±4 levels per channel)
         if prompt:
             prompt_hash = sum(ord(c) for c in prompt)
             tint = np.array(
@@ -207,7 +203,7 @@ class InpaintingEngine:
 
         return variation
 
-    def _run_diffusion_patch(
+    def _run_variation_patch(
         self,
         image_crop_rgb: Image.Image,
         mask_crop_l: Image.Image,
@@ -215,36 +211,18 @@ class InpaintingEngine:
         prompt: Optional[str] = None,
     ) -> Image.Image:
         """
-        Generate a high-fidelity generative patch variation using diffusion synthesis.
-        Runs TF32 Tensor Core inference on GPU with direct in-VRAM spatial synthesis.
+        Generate one patch variation: LaMa inpainting (cv2.inpaint fallback if LaMa
+        is unavailable) plus slight seeded low-frequency noise inside the mask.
+        No diffusion; the optional prompt only adds a few levels of colour tint.
         """
         crop_w, crop_h = image_crop_rgb.size
         mask_arr = np.array(mask_crop_l) > 10
 
-        # Try hardware diffusers pipeline if active
-        if self._diffusion_pipeline is not None and self.device.type == "cuda":
-            try:
-                gen = torch.Generator(device=self.device).manual_seed(seed)
-                p_text = prompt or "high resolution, natural seamless photorealistic background"
-                with torch.inference_mode():
-                    with torch.autocast(device_type="cuda", dtype=torch.float16):
-                        res = self._diffusion_pipeline(
-                            prompt=p_text,
-                            image=image_crop_rgb,
-                            mask_image=mask_crop_l,
-                            generator=gen,
-                            num_inference_steps=20,
-                        ).images[0]
-                return res.resize((crop_w, crop_h), Image.Resampling.LANCZOS)
-            except Exception as e:
-                logger.warning(f"Diffusers GPU execution fallback: {e}")
-
-        # High-Fidelity Multi-Seed Generative Completion
         # 1. Base structure generation using Fast LaMa model
         if self._lama_model is not None:
             k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
             dilated_mask_arr = cv2.dilate(mask_arr.astype(np.uint8) * 255, k)
-            mask_for_lama = Image.fromarray(dilated_mask_arr, mode="L")
+            mask_for_lama = Image.fromarray(dilated_mask_arr)
             base_patch = self._run_lama_neural_inference(image_crop_rgb, mask_for_lama)
             patch_np = np.array(base_patch.convert("RGB"), dtype=np.float32)
         else:
@@ -252,7 +230,7 @@ class InpaintingEngine:
             cv_inpaint = cv2.inpaint(orig_np, mask_arr.astype(np.uint8) * 255, 5, cv2.INPAINT_NS)
             patch_np = cv_inpaint.astype(np.float32)
 
-        # 2. Stochastic Generative Variation injection via shared helper (no CUDA/CPU duplication)
+        # 2. Slight seeded noise variation inside the mask
         seed_offset = seed % 3
         variation_layer = self._generate_noise_variation(
             h=crop_h, w=crop_w, seed=seed, seed_offset=seed_offset,
@@ -260,7 +238,7 @@ class InpaintingEngine:
         )
         mask_float = cv2.GaussianBlur(mask_arr.astype(np.float32), (15, 15), 0)[:, :, np.newaxis]
         modulated_patch = np.clip(patch_np + (variation_layer * mask_float), 0, 255).astype(np.uint8)
-        return Image.fromarray(modulated_patch, mode="RGB")
+        return Image.fromarray(modulated_patch)
 
     def generate_variations(
         self,
@@ -288,6 +266,11 @@ class InpaintingEngine:
             return [image] * num_variations
 
         is_fast_mode = (self.mode == EngineMode.FAST)
+        if is_fast_mode and self._lama_model is None:
+            raise RuntimeError(
+                "Fast mode unavailable: LaMa model failed to load "
+                "(check the simple-lama-inpainting install and model weights)."
+            )
         is_cpu = (self.device.type == "cpu")
 
         effective_mask = mask
@@ -308,7 +291,7 @@ class InpaintingEngine:
             dilate_r = max(8, min(16, int(box_dim_all * 0.05) + 8))
 
         dilated_mask_np = dilate_mask_for_contact_shadows(effective_mask, radius=dilate_r)
-        dilated_mask = Image.fromarray(dilated_mask_np, mode="L")
+        dilated_mask = Image.fromarray(dilated_mask_np.astype(np.uint8))
 
         img_w, img_h = image.size
 
@@ -365,16 +348,13 @@ class InpaintingEngine:
                         progress_callback(pct_start, f"Running fast inpainting on {self.device}...")
                     else:
                         var_desc = f" (Prompt: '{prompt}')" if prompt else ""
-                        progress_callback(pct_start, f"Generating Firefly variation {i + 1}/{num_variations}{var_desc} (seed {seed})...")
+                        progress_callback(pct_start, f"Generating LaMa variation {i + 1}/{num_variations}{var_desc} (seed {seed})...")
 
                 # 4. Generate raw patch
                 if is_fast_mode:
-                    if self._lama_model is not None:
-                        raw_patch = self._run_lama_neural_inference(cropped_img, cropped_mask)
-                    else:
-                        raw_patch = cropped_img.copy()
+                    raw_patch = self._run_lama_neural_inference(cropped_img, cropped_mask)
                 else:
-                    raw_patch = self._run_diffusion_patch(cropped_img, cropped_mask, seed=seed, prompt=prompt)
+                    raw_patch = self._run_variation_patch(cropped_img, cropped_mask, seed=seed, prompt=prompt)
 
                 if raw_patch.size != (crop_w, crop_h):
                     raw_patch = raw_patch.resize((crop_w, crop_h), Image.Resampling.LANCZOS)

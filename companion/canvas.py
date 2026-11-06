@@ -361,7 +361,7 @@ class ImageCanvas(QGraphicsView):
         ptr.setsize(alpha_qimage.sizeInBytes())
         raw_mask = Image.frombuffer("L", (w, h), ptr, "raw", "L", bytes_per_line, 1)
         mask_np = (np.asarray(raw_mask) > 10).astype(np.uint8) * 255
-        return Image.fromarray(mask_np, mode="L")
+        return Image.fromarray(mask_np)
 
     def has_mask(self) -> bool:
         """Check if any area has been painted on the mask."""

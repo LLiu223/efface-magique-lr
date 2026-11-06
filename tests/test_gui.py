@@ -34,7 +34,7 @@ def sample_pil_image():
     arr[:, :, 0] = 120
     arr[:, :, 1] = 150
     arr[:, :, 2] = 200
-    return Image.fromarray(arr, mode="RGB")
+    return Image.fromarray(arr)
 
 
 def test_coordinate_transformation_math(qtbot, sample_pil_image):

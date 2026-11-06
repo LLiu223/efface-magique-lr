@@ -14,7 +14,7 @@ from PIL import Image
 from PyQt6.QtGui import QImage, QPixmap, QColor, QPainter, QBrush, QPen
 from PyQt6.QtCore import Qt
 
-from companion.inpainting_engine import EngineMode
+from companion.model_engine import EngineMode
 from companion.config import CONFIG
 
 
