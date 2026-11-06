@@ -15,57 +15,7 @@ local LrProgressScope = import 'LrProgressScope'
 local LrTasks = import 'LrTasks'
 
 local PluginUtils = require 'PluginUtils'
-
-local function extractJsonField(jsonStr, field)
-    if not jsonStr or not field then return nil end
-    local pattern = '"' .. field .. '"%s*:%s*"([^"]+)"'
-    local val = jsonStr:match(pattern)
-    if val then return val end
-    local numPattern = '"' .. field .. '"%s*:%s*(%d+)'
-    return jsonStr:match(numPattern)
-end
-
-local function parsePendingImports(jsonStr)
-    local imports = {}
-    if not jsonStr then return imports end
-
-    -- Greedy: paths may contain ']'. Relies on "imports" being the LAST key in the response.
-    local arrayContent = jsonStr:match('"imports"%s*:%s*%[(.*)%]')
-    if not arrayContent or arrayContent:match('^%s*$') then
-        return imports
-    end
-
-    -- Hide braces inside quoted strings ('"' is illegal in Windows paths, so strings are "[^"]*"),
-    -- leaving only structural braces for the item split.
-    local masked = arrayContent:gsub('"[^"]*"', function(s)
-        return (s:gsub('{', '\1'):gsub('}', '\2'))
-    end)
-
-    for maskedItem in masked:gmatch('{([^}]+)}') do
-        local itemStr = maskedItem:gsub('\1', '{'):gsub('\2', '}')
-        local path = extractJsonField(itemStr, "path")
-        local origPath = extractJsonField(itemStr, "original_path")
-        local photoId = extractJsonField(itemStr, "photo_id")
-        if path then
-            -- Unescape backslashes if escaped in JSON
-            path = (path:gsub('\\\\', '\\'))
-            if origPath then
-                origPath = (origPath:gsub('\\\\', '\\'))
-            end
-            table.insert(imports, {
-                path = path,
-                original_path = origPath,
-                photo_id = photoId,
-            })
-        end
-    end
-    return imports
-end
-
--- Escape a string for a JSON string literal: '\' first, then '"'.
-local function jsonEscape(s)
-    return (tostring(s):gsub('\\', '\\\\'):gsub('"', '\\"'))
-end
+local JsonUtil = require 'JsonUtil'
 
 local function runLiveBridge()
     local catalog = LrApplication.activeCatalog()
@@ -211,7 +161,7 @@ local function runLiveBridge()
                         local selectUrl = string.format("http://127.0.0.1:%d/api/select", port)
                         local jsonBody = string.format(
                             '{"path": "%s", "photo_id": "%s", "original_path": "%s", "title": "%s"}',
-                            jsonEscape(exportPath), jsonEscape(targetId), jsonEscape(origPath), jsonEscape(baseName)
+                            JsonUtil.jsonEscape(exportPath), JsonUtil.jsonEscape(targetId), JsonUtil.jsonEscape(origPath), JsonUtil.jsonEscape(baseName)
                         )
 
                         -- false stands in for a missing edit time so the table entry still exists
@@ -269,7 +219,7 @@ local function runLiveBridge()
         elseif importsResp then
             disconnectedCount = 0
             if string.find(importsResp, '"imports"') then
-                local items = parsePendingImports(importsResp)
+                local items = JsonUtil.parsePendingImports(importsResp)
                 for _, item in ipairs(items) do
                     local editedPath = item.path
                     if editedPath and LrFileUtils.exists(editedPath) == "file" then
@@ -322,7 +272,7 @@ local function runLiveBridge()
 
                         -- Acknowledge (also on failure, so the item is not retried every poll)
                         local doneUrl = string.format("http://127.0.0.1:%d/api/import_done", port)
-                        local jsonDoneBody = string.format('{"path": "%s"}', jsonEscape(editedPath))
+                        local jsonDoneBody = string.format('{"path": "%s"}', JsonUtil.jsonEscape(editedPath))
                         LrHttp.post(doneUrl, jsonDoneBody, headers)
                     end
                 end
