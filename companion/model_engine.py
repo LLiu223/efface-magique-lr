@@ -334,8 +334,9 @@ class InpaintingEngine:
         else:
             effective_feather = max(10, min(16, int(feather_radius)))
 
-        # Convert once outside the loop — avoids 1 full-resolution copy per variation
-        base_rgb = image.convert("RGB")
+        # Convert once outside the loop; an RGB image is used as-is (convert would copy it).
+        # Safe because each variation below pastes into its own base_rgb.copy().
+        base_rgb = image if image.mode == "RGB" else image.convert("RGB")
 
         try:
             for i, seed in enumerate(seeds):
