@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>Factory</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--ink:#1c2128;--mute:#6b7280;--line:#e3e6ea;--pass:#1a7f37;--chg:#c2410c;--pend:#9ca3af;--human:#b42318}
+@media(prefers-color-scheme:dark){:root{--bg:#14171c;--card:#1e232b;--ink:#e6e9ee;--mute:#8b94a3;--line:#2d343f;--pass:#3fb950;--chg:#f0883e;--pend:#6b7280;--human:#f85149}}
+*{box-sizing:border-box}body{margin:0;font:14px/1.4 system-ui,sans-serif;background:var(--bg);color:var(--ink)}
+header{padding:14px 20px;font-weight:600;display:flex;justify-content:space-between}header span{color:var(--mute);font-weight:400}
+main{display:grid;grid-template-columns:repeat(6,minmax(150px,1fr));gap:10px;padding:0 20px 20px;overflow-x:auto}
+.col{background:transparent;min-width:150px}.col h2{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--mute);margin:0 0 8px}
+.col.needs-human h2{color:var(--human)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:10px;margin-bottom:8px;cursor:pointer}
+.card:hover,.card:focus-visible{border-color:var(--mute);outline:none}
+.card.needs-human{border:2px solid var(--human);box-shadow:0 0 0 3px color-mix(in srgb,var(--human) 20%,transparent)}
+.card b{display:block}.card small{color:var(--mute)}
+.round{display:flex;gap:4px;margin-top:6px;align-items:center}.round i{font:normal 10px sans-serif;color:var(--mute);width:14px}
+.chip{flex:1;text-align:center;font-size:10px;padding:2px 0;border-radius:4px;border:1px solid var(--pend);color:var(--pend)}
+.chip.PASS{background:var(--pass);border-color:var(--pass);color:#fff}.chip.CHANGES{background:var(--chg);border-color:var(--chg);color:#fff}
+dialog{width:min(820px,92vw);max-height:85vh;border:1px solid var(--line);border-radius:10px;background:var(--card);color:var(--ink);padding:0}
+dialog::backdrop{background:#0006}.tabs{display:flex;gap:4px;flex-wrap:wrap;padding:10px;border-bottom:1px solid var(--line)}
+.tabs button{border:1px solid var(--line);background:none;color:var(--ink);border-radius:6px;padding:4px 10px;cursor:pointer}.tabs button.on{background:var(--ink);color:var(--card)}
+pre{margin:0;padding:14px;white-space:pre-wrap;overflow:auto;max-height:65vh;font:13px/1.5 ui-monospace,monospace}
+</style></head><body>
+<header>Software factory <span id="status">loading…</span></header>
+<main id="board"></main>
+<dialog id="dlg"><div class="tabs" id="tabs"></div><pre id="doc"></pre></dialog>
+<script>
+const STAGES=[["spec","Spec"],["build","Build"],["review","Review"],["approve","Approve"],["merged","Merged"],["needs-human","Needs human"]];
+const REV=["security","ux","ui","code"];
+const $=id=>document.getElementById(id), esc=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+let jobs=[], last="";
+
+const chips=(r,n)=>`<div class="round"><i>R${n}</i>${REV.map(k=>`<span class="chip ${esc(r?.[k]||"pending")}" title="${k}: ${esc(r?.[k]||"pending")}">${k}</span>`).join("")}</div>`;
+function card(j){
+  const rounds=[...(j.history||[]).map((r,i)=>chips(r,i+1)),
+    ...(j.reviews&&(j.round||0)>0?[chips(j.reviews,j.round)]:[])];
+  return `<div class="card ${j.stage==="needs-human"?"needs-human":""}" tabindex="0" data-id="${esc(j.id)}"><b>${esc(j.id)}</b><small>${esc(j.title||j.branch||"")}</small>${rounds.join("")}</div>`;
+}
+function render(){
+  $("board").innerHTML=STAGES.map(([s,l])=>`<section class="col ${s}"><h2>${l} (${jobs.filter(j=>j.stage===s).length})</h2>${jobs.filter(j=>j.stage===s).map(card).join("")}</section>`).join("");
+}
+async function poll(){
+  try{
+    const t=await (await fetch("board.json",{cache:"no-store"})).text();
+    if(t!==last){last=t;jobs=JSON.parse(t).jobs||[];render()}
+    $("status").textContent="live · "+new Date().toLocaleTimeString();
+  }catch(e){$("status").textContent="board.json unreadable — serve with: python3 -m http.server (in factory/)"}
+}
+async function open(id){
+  const j=jobs.find(x=>x.id===id), base="jobs/"+id+"/", files=["spec.md","build.md"];
+  for(let r=1;r<=(j.round||0);r++)REV.forEach(k=>files.push(`round-${r}/review-${k}.md`));
+  files.push("rework.md","decision.md");
+  const docs=(await Promise.all(files.map(async f=>{const r=await fetch(base+f,{cache:"no-store"});return r.ok?[f,await r.text()]:null}))).filter(Boolean);
+  $("tabs").innerHTML="";
+  const show=(f,t,b)=>{$("doc").textContent=t;[...$("tabs").children].forEach(x=>x.classList.toggle("on",x===b))};
+  docs.forEach(([f,t])=>{const b=document.createElement("button");b.textContent=f.replace("review-","").replace(".md","");b.title=f;b.onclick=()=>show(f,t,b);$("tabs").append(b)});
+  if(docs.length)$("tabs").children[0].click();else $("doc").textContent="No files yet.";
+  $("dlg").showModal();
+}
+$("board").onclick=e=>{const c=e.target.closest(".card");if(c)open(c.dataset.id)};
+$("board").onkeydown=e=>{if(e.key==="Enter"){const c=e.target.closest(".card");if(c)open(c.dataset.id)}};
+$("dlg").onclick=e=>{if(e.target===$("dlg"))$("dlg").close()};
+poll();setInterval(poll,2000);
+</script></body></html>

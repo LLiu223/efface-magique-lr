@@ -28,3 +28,7 @@ Thumbs.db
 .idea/
 .vscode/
 *.log
+
+# Factory job state
+factory/board.json
+factory/jobs/
