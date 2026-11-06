@@ -175,6 +175,8 @@ class MainWindow(QMainWindow):
         self._layers_synced = False
         # Latest Lightroom selection received while inpainting was running
         self._pending_select: Optional[dict] = None
+        # True while the discard prompt is open (its nested event loop keeps delivering selections)
+        self._confirming_switch = False
 
         # Metadata preservation
         self.original_icc_profile = None
@@ -1484,19 +1486,28 @@ class MainWindow(QMainWindow):
         )
         if file_path and self._confirm_discard_layers():
             self.load_image_file(file_path)
+        # Selections that arrived during the prompt are superseded by this explicit choice
+        self._pending_select = None
 
     def _confirm_discard_layers(self) -> bool:
         """Return True if the current photo may be replaced (no unsynced layers, or user agreed)."""
         if not self.modification_layers or self._layers_synced:
             return True
         n = len(self.modification_layers)
-        answer = QMessageBox.question(
-            self,
-            "Unsaved Layers",
-            f"Discard {n} unsaved layers?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
+        # Companion may sit behind Lightroom; bring it forward so the prompt is seen
+        self.raise_()
+        self.activateWindow()
+        self._confirming_switch = True
+        try:
+            answer = QMessageBox.question(
+                self,
+                "Unsaved Layers",
+                f"Discard {n} unsaved layer{'' if n == 1 else 's'}?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+        finally:
+            self._confirming_switch = False
         if answer == QMessageBox.StandardButton.Yes:
             return True
         self.statusBar().showMessage("Kept current photo; switch cancelled. Sync still targets this photo.", 6000)
@@ -1850,14 +1861,29 @@ class MainWindow(QMainWindow):
             logger.warning(f"Live selection path missing or invalid: {new_path}")
             return
 
+        if self._confirming_switch:
+            # Prompt already open: remember only the newest selection, never stack dialogs
+            self._pending_select = payload
+            return
+
         if self.worker is not None:
             logger.info(f"Inpainting active; delaying switch to {new_path}")
             self._pending_select = payload
             self.statusBar().showMessage("Lightroom selection changed; switching once inpainting finishes...", 4000)
             return
 
-        if not self._confirm_discard_layers():
+        # Re-selecting the loaded photo changes nothing; don't prompt or throw away its layers
+        if self.modification_layers and self.input_path and os.path.abspath(new_path) == os.path.abspath(self.input_path):
             return
+
+        confirmed = self._confirm_discard_layers()
+        newer, self._pending_select = self._pending_select, None
+        if not confirmed:
+            return
+        if newer is not None:
+            # User agreed to switch; follow Lightroom's latest selection, not the stale one
+            payload = newer
+            new_path = payload.get("path")
 
         self.current_photo_id = payload.get("photo_id")
         self.current_original_path = payload.get("original_path")

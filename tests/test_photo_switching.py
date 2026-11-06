@@ -19,7 +19,7 @@ from companion.inpainting_engine import EngineMode
 @pytest.fixture
 def photos(tmp_path):
     paths = []
-    for name, color in (("A", (200, 0, 0)), ("B", (0, 200, 0))):
+    for name, color in (("A", (200, 0, 0)), ("B", (0, 200, 0)), ("C", (0, 0, 200))):
         p = str(tmp_path / f"{name}.tif")
         Image.new("RGB", (80, 60), color).save(p)
         paths.append(p)
@@ -45,15 +45,18 @@ def ask(monkeypatch):
     class Ask:
         answer = QMessageBox.StandardButton.No
         calls = []
+        during = None  # optional callable run while the "dialog" is open
     def fake(parent, title, text, *a, **k):
         Ask.calls.append(text)
+        if Ask.during:
+            Ask.during()
         return Ask.answer
     monkeypatch.setattr(QMessageBox, "question", fake)
     return Ask
 
 
 def test_each_photo_gets_its_own_output_path(qtbot, photos):
-    a, b = photos
+    a, b, *_ = photos
     window = MainWindow()
     qtbot.addWidget(window)
     window.load_image_file(a)
@@ -72,7 +75,7 @@ def test_constructor_output_path_survives_initial_load(qtbot, photos, tmp_path):
 
 
 def test_selection_during_inpainting_is_applied_after_worker_finishes(qtbot, photos):
-    a, b = photos
+    a, b, *_ = photos
     window = MainWindow(input_path=a)
     qtbot.addWidget(window)
     assert window._pending_select is None
@@ -91,7 +94,7 @@ def test_selection_during_inpainting_is_applied_after_worker_finishes(qtbot, pho
 
 
 def test_no_keeps_current_photo_and_drops_payload(qtbot, photos, ask):
-    a, b = photos
+    a, b, *_ = photos
     window = MainWindow(input_path=a)
     qtbot.addWidget(window)
     window.current_photo_id = "1"
@@ -102,7 +105,7 @@ def test_no_keeps_current_photo_and_drops_payload(qtbot, photos, ask):
     window._on_live_photo_selected({"path": b, "photo_id": "2"})
     window._on_worker_thread_finished()
 
-    assert ask.calls == ["Discard 1 unsaved layers?"]
+    assert ask.calls == ["Discard 1 unsaved layer?"]
     assert window.input_path == a
     assert window.output_path == out
     assert window.current_photo_id == "1"
@@ -111,7 +114,7 @@ def test_no_keeps_current_photo_and_drops_payload(qtbot, photos, ask):
 
 
 def test_yes_loads_new_photo(qtbot, photos, ask):
-    a, b = photos
+    a, b, *_ = photos
     ask.answer = QMessageBox.StandardButton.Yes
     window = MainWindow(input_path=a)
     qtbot.addWidget(window)
@@ -124,7 +127,7 @@ def test_yes_loads_new_photo(qtbot, photos, ask):
 
 
 def test_no_prompt_without_layers(qtbot, photos, ask):
-    a, b = photos
+    a, b, *_ = photos
     window = MainWindow(input_path=a)
     qtbot.addWidget(window)
     window._on_live_photo_selected({"path": b})
@@ -133,7 +136,7 @@ def test_no_prompt_without_layers(qtbot, photos, ask):
 
 
 def test_no_prompt_right_after_sync(qtbot, photos, ask, tmp_path):
-    a, b = photos
+    a, b, *_ = photos
     window = MainWindow(input_path=a, output_path=str(tmp_path / "out.tif"))
     qtbot.addWidget(window)
     _add_layer(window)
@@ -148,7 +151,7 @@ def test_no_prompt_right_after_sync(qtbot, photos, ask, tmp_path):
 
 def test_open_file_asks_and_no_keeps_photo(qtbot, photos, ask, monkeypatch):
     from PyQt6.QtWidgets import QFileDialog
-    a, b = photos
+    a, b, *_ = photos
     window = MainWindow(input_path=a)
     qtbot.addWidget(window)
     _add_layer(window)
@@ -156,3 +159,46 @@ def test_open_file_asks_and_no_keeps_photo(qtbot, photos, ask, monkeypatch):
     window._on_open_file()
     assert len(ask.calls) == 1
     assert window.input_path == a
+
+
+@pytest.mark.parametrize("yes", [True, False])
+def test_selections_during_prompt_do_not_stack(qtbot, photos, ask, yes):
+    a, b, c = photos
+    ask.answer = QMessageBox.StandardButton.Yes if yes else QMessageBox.StandardButton.No
+    window = MainWindow(input_path=a)
+    qtbot.addWidget(window)
+    raised = []
+    window.raise_ = lambda: raised.append(True)
+    _add_layer(window)
+    _add_layer(window)
+    ask.during = lambda: (window._on_live_photo_selected({"path": b, "photo_id": "2"}),
+                          window._on_live_photo_selected({"path": c, "photo_id": "3"}))
+    window._on_live_photo_selected({"path": b, "photo_id": "2"})
+    assert ask.calls == ["Discard 2 unsaved layers?"]
+    assert raised
+    assert window._pending_select is None
+    assert window._confirming_switch is False
+    if yes:
+        assert window.input_path == c and window.current_photo_id == "3"
+    else:
+        assert window.input_path == a and len(window.modification_layers) == 2
+
+
+def test_reselecting_current_photo_keeps_layers_without_prompt(qtbot, photos, ask):
+    a, *_ = photos
+    window = MainWindow(input_path=a)
+    qtbot.addWidget(window)
+    _add_layer(window)
+    window._on_live_photo_selected({"path": a, "photo_id": "1"})
+    assert ask.calls == []
+    assert len(window.modification_layers) == 1
+
+
+def test_new_layer_marks_layers_unsynced(qtbot, photos):
+    a, *_ = photos
+    window = MainWindow(input_path=a)
+    qtbot.addWidget(window)
+    window._layers_synced = True
+    window._on_inpainting_finished([Image.new("RGB", (80, 60), (9, 9, 9))])
+    assert len(window.modification_layers) == 1
+    assert window._layers_synced is False
