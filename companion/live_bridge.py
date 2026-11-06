@@ -22,6 +22,7 @@ logger = logging.getLogger("LiveBridge")
 _CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT = os.path.dirname(_CURRENT_DIR)
 DEFAULT_BRIDGE_PORT = 51739
+MAX_BODY_BYTES = 64 * 1024
 BRIDGE_INFO_FILENAME = os.path.join(_PROJECT_ROOT, ".tmp", "live_bridge.json")
 
 
@@ -39,24 +40,22 @@ class LiveBridgeRequestHandler(BaseHTTPRequestHandler):
 
     def _send_json_response(self, status_code: int, data: Dict[str, Any]):
         try:
-            body = json.dumps(data).encode("utf-8")
+            # Raw UTF-8 (no \u escapes) so the Lua pattern parser gets real path bytes
+            body = json.dumps(data, ensure_ascii=False).encode("utf-8")
             self.send_response(status_code)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-            self.send_header("Access-Control-Allow-Headers", "Content-Type")
             self.end_headers()
             self.wfile.write(body)
         except (BrokenPipeError, ConnectionResetError):
             pass
 
-    def do_OPTIONS(self):
-        self.send_response(200)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
-        self.end_headers()
+    def _reject_untrusted(self) -> bool:
+        """403 browser-origin requests (cross-site) and wrong Host (DNS rebinding). True if rejected."""
+        if "Origin" in self.headers or self.headers.get("Host") != f"127.0.0.1:{self.server.server_port}":
+            self._send_json_response(403, {"error": "Forbidden"})
+            return True
+        return False
 
     def _get_bridge_server(self) -> Optional["LiveBridgeServer"]:
         server = getattr(self, "server", None)
@@ -68,6 +67,8 @@ class LiveBridgeRequestHandler(BaseHTTPRequestHandler):
         return bridge
 
     def do_GET(self):
+        if self._reject_untrusted():
+            return
         bridge_server = self._get_bridge_server()
         if bridge_server is None:
             self._send_json_response(503, {"error": "Server stopping or unavailable"})
@@ -95,12 +96,23 @@ class LiveBridgeRequestHandler(BaseHTTPRequestHandler):
         self._send_json_response(404, {"error": "Endpoint not found"})
 
     def do_POST(self):
+        if self._reject_untrusted():
+            return
         bridge_server = self._get_bridge_server()
         if bridge_server is None:
             self._send_json_response(503, {"error": "Server stopping or unavailable"})
             return
 
-        content_length = int(self.headers.get("Content-Length", 0))
+        try:
+            content_length = int(self.headers.get("Content-Length", 0))
+        except ValueError:
+            content_length = -1
+        if content_length < 0:
+            self._send_json_response(400, {"error": "Invalid Content-Length"})
+            return
+        if content_length > MAX_BODY_BYTES:
+            self._send_json_response(413, {"error": "Request body too large"})
+            return
         post_data = self.rfile.read(content_length) if content_length > 0 else b"{}"
 
         try:
