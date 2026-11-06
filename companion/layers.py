@@ -5,13 +5,12 @@ Models individual inpainting and erase operations as independent, re-editable la
 """
 
 import time
-import uuid
 from dataclasses import dataclass, field
 from typing import Optional, List, Tuple
 import numpy as np
 from PIL import Image
 
-from PyQt6.QtGui import QImage, QPixmap, QColor, QPainter, QBrush, QPen
+from PyQt6.QtGui import QImage, QPixmap, QColor, QPainter, QPen
 from PyQt6.QtCore import Qt
 
 from companion.model_engine import EngineMode

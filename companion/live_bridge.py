@@ -6,9 +6,7 @@ with the Python AI Companion app for instantaneous, zero-latency image synchroni
 """
 
 import os
-import sys
 import json
-import socket
 import logging
 import threading
 from typing import Optional, Dict, Any, List

@@ -12,14 +12,12 @@ Features:
 """
 
 import logging
-import os
 import random
 import threading
 from enum import Enum
-from typing import Optional, Tuple, Callable, List
+from typing import Optional, Callable, List
 import numpy as np
 import torch
-import torch.nn.functional as F
 from PIL import Image
 import cv2
 from PyQt6.QtCore import QThread, pyqtSignal
@@ -28,7 +26,6 @@ from companion.config import CONFIG
 from companion.device import (
     get_optimal_device,
     setup_device_optimizations,
-    get_device_telemetry,
     free_device_memory,
 )
 from companion.pipeline import (

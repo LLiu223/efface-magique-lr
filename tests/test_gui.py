@@ -14,7 +14,7 @@ import sys
 import tempfile
 import numpy as np
 from PIL import Image
-from PyQt6.QtCore import Qt, QPoint, QPointF
+from PyQt6.QtCore import Qt, QPointF
 from PyQt6.QtGui import QKeyEvent, QMouseEvent
 import pytest
 

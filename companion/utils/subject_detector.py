@@ -12,7 +12,7 @@ Provides:
 
 import logging
 import threading
-from typing import Optional, Union, Tuple
+from typing import Optional, Union
 import numpy as np
 import cv2
 from PIL import Image

@@ -10,7 +10,7 @@ PyQt6 Canvas supporting:
 - Full Undo / Redo history for brush strokes and inpainting steps
 """
 
-from typing import Optional, List, Tuple
+from typing import Optional, List
 import numpy as np
 from PyQt6.QtCore import Qt, QPoint, QPointF, QRect, QRectF, QTimer, pyqtSignal, QSize
 from PyQt6.QtGui import (
@@ -24,7 +24,6 @@ from PyQt6.QtGui import (
     QWheelEvent,
     QMouseEvent,
     QKeyEvent,
-    QPainterPath,
     QRadialGradient,
 )
 from PyQt6.QtWidgets import (

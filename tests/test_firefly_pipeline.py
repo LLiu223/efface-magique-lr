@@ -18,7 +18,6 @@ import sys
 import unittest
 import tempfile
 import numpy as np
-import torch
 from PIL import Image, ImageDraw
 
 # Ensure project root is in sys.path

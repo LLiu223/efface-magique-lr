@@ -43,7 +43,6 @@ class TestSubjectDetector(unittest.TestCase):
         draw.rectangle([100, 80, 200, 220], fill=255)
 
         loose_pixels = np.count_nonzero(np.array(loose_zone) > 0)
-        expected_subject_pixels = 40 * 80  # 3200 pixels
 
         refined_mask = extract_subject_in_zone(scene_pil, loose_zone)
         refined_arr = np.array(refined_mask)
@@ -166,7 +165,6 @@ class TestSubjectDetector(unittest.TestCase):
         A very small brush zone (fewer pixels than CONFIG.SUBJECT_DETECT_MIN_ZONE_PX)
         must not crash and must return a valid non-empty or empty mask gracefully.
         """
-        from companion.config import CONFIG
         scene = Image.new("RGB", (200, 200), (80, 90, 100))
         # Paint exactly 5 pixels — below the minimum zone threshold
         tiny_zone = Image.new("L", (200, 200), 0)

@@ -20,7 +20,6 @@ Covers:
 import os
 import sys
 import json
-import time
 import http.client
 import urllib.request
 import urllib.error

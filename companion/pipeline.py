@@ -12,12 +12,11 @@ Provides photographic inpainting image utilities:
 """
 
 import logging
-from typing import Tuple, Dict, Any, Union, Optional
+from typing import Tuple, Dict, Union, Optional
 import numpy as np
 import cv2
 from PIL import Image
 
-from companion.config import CONFIG
 
 logger = logging.getLogger("EffaceMagiquePipeline")
 
