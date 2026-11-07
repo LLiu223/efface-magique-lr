@@ -9,11 +9,14 @@ import os
 import json
 import logging
 import threading
+import time
 from typing import Optional, Dict, Any, List
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
 
 from PyQt6.QtCore import QObject, pyqtSignal
+
+from companion import __version__
 
 logger = logging.getLogger("LiveBridge")
 
@@ -53,6 +56,9 @@ class LiveBridgeRequestHandler(BaseHTTPRequestHandler):
         if "Origin" in self.headers or self.headers.get("Host") != f"127.0.0.1:{self.server.server_port}":
             self._send_json_response(403, {"error": "Forbidden"})
             return True
+        bridge = getattr(self.server, "bridge_server", None)
+        if bridge is not None:
+            bridge.last_request_time = time.monotonic()
         return False
 
     def _get_bridge_server(self) -> Optional["LiveBridgeServer"]:
@@ -76,7 +82,7 @@ class LiveBridgeRequestHandler(BaseHTTPRequestHandler):
             self._send_json_response(200, {
                 "status": "ok",
                 "app": "EffaceMagique",
-                "version": "1.0",
+                "version": __version__,
                 "pid": os.getpid(),
                 "active_image": bridge_server.active_image_path,
             })
@@ -195,6 +201,14 @@ class LiveBridgeServer(QObject):
         self._pending_imports: List[Dict[str, Any]] = []
         self._lock = threading.Lock()
         self.is_running = False
+        # time.monotonic() of the last request that passed _reject_untrusted
+        self.last_request_time: Optional[float] = None
+
+    @property
+    def is_connected(self) -> bool:
+        """True if Lightroom sent an accepted request within the last 5 s."""
+        t = self.last_request_time
+        return t is not None and time.monotonic() - t < 5.0
 
     def start(self) -> int:
         """Start the background HTTP server and write metadata to .tmp/live_bridge.json."""

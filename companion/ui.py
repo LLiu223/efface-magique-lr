@@ -32,7 +32,11 @@ from PyQt6.QtWidgets import (
     QDialog,
     QTabWidget,
     QTextBrowser,
+    QApplication,
 )
+
+from companion import __version__
+from companion.diagnostics import build_diagnostics
 
 # Application Brand Assets
 _CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -371,12 +375,15 @@ class HelpGuideDialog(QDialog):
             header.addWidget(logo_lbl)
 
         header_text = QVBoxLayout()
-        title = QLabel("Efface Magique LR (AI Generative Eraser)")
+        title = QLabel("Efface Magique LR (LaMa Variations Eraser)")
         title.setStyleSheet("font-size: 18px; font-weight: bold; color: #ffffff;")
         subtitle = QLabel("Local, private AI inpainting companion for Adobe Lightroom Classic")
         subtitle.setStyleSheet("font-size: 12px; color: #0078d4; font-weight: 500;")
         header_text.addWidget(title)
         header_text.addWidget(subtitle)
+        self.version_label = QLabel(f"Version {__version__}")
+        self.version_label.setStyleSheet("font-size: 11px; color: #888888;")
+        header_text.addWidget(self.version_label)
         header.addLayout(header_text)
         header.addStretch(1)
         layout.addLayout(header)
@@ -564,6 +571,11 @@ class HelpGuideDialog(QDialog):
         btn_readme.clicked.connect(self._on_open_readme)
         bottom_row.addWidget(btn_readme)
 
+        self.btn_copy_diagnostics = QPushButton("📋 Copy diagnostics")
+        self.btn_copy_diagnostics.setToolTip("Copy versions, device and bridge status for a bug report (no file paths)")
+        self.btn_copy_diagnostics.clicked.connect(self._on_copy_diagnostics)
+        bottom_row.addWidget(self.btn_copy_diagnostics)
+
         bottom_row.addStretch(1)
 
         btn_close = QPushButton("Close")
@@ -586,6 +598,11 @@ class HelpGuideDialog(QDialog):
             )
         except Exception as e:
             QMessageBox.critical(self, "Packaging Error", f"Failed to create release ZIP:\n{e}")
+
+    def _on_copy_diagnostics(self):
+        provider = getattr(self.parent(), "diagnostics_text", None)
+        text = provider() if callable(provider) else build_diagnostics({"app_version": __version__})
+        QApplication.clipboard().setText(text)
 
     def _on_open_readme(self):
         readme_path = os.path.join(_PROJECT_ROOT, "README.md")

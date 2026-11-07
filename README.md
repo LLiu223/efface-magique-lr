@@ -25,7 +25,7 @@
 **Erase tourists, power lines and dust from Lightroom Classic photos with local LaMa inpainting. Nothing leaves your machine.**
 
 ### Features
-- **✨ Generative AI Variations:** LaMa inpainting with 3 slightly different seeded candidates to pick from. The optional prompt only adds a deterministic colour tint of a few levels.
+- **✨ LaMa Variations:** LaMa inpainting with 3 slightly different seeded candidates to pick from. The optional prompt only adds a deterministic colour tint of a few levels.
 - **⚡ Fast Spot Removal:** a single LaMa pass for dust, blemishes and thin wires.
 - **🎯 Object-Aware Erasing (Subject):** the subject detector tightens a rough brush mask to the object's contour inside the painted zone.
 - **📚 Non-Destructive Modification Layers:** every erase is a layer in the sidebar. Toggle it, re-edit its mask, or delete it with its `✕` button.
@@ -160,7 +160,7 @@ You can also use Efface Magique as a standalone desktop photo eraser:
 
 | Engine Mode | Technology | Best For |
 | :--- | :--- | :--- |
-| **✨ Generative AI** *(Default)* | LaMa inpainting with slight seeded variations, noise matching & contextual cropping | Complex object removal, people, background reconstruction, texture synthesis |
+| **✨ LaMa Variations** *(Default)* | LaMa inpainting with slight seeded variations, noise matching & contextual cropping | Complex object removal, people, background reconstruction, texture synthesis |
 | **⚡ Fast Spot Removal** | Fast Fourier GAN (Simple-LaMa) | Small spots, sensor dust, blemishes, thin power wires |
 
 ### Color & Photographic Quality
@@ -214,7 +214,7 @@ efface-magique-lr/
 │   ├── app.py                        # PyQt6 Main Window, toolbar, & layer cards
 │   ├── canvas.py                     # High-res canvas with brush, zoom, & pan
 │   ├── layers.py                     # Non-destructive layer model & thumbnails
-│   ├── model_engine.py               # LaMa inpainting engine (Generative AI variations & Fast)
+│   ├── model_engine.py               # LaMa inpainting engine (LaMa Variations & Fast)
 │   ├── pipeline.py                   # Contextual cropping, blending, & grain matching
 │   ├── live_bridge.py                # Localhost (127.0.0.1) HTTP bridge server
 │   ├── utils/

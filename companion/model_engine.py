@@ -63,6 +63,8 @@ class InpaintingEngine:
         self.mode = mode
         self._lama_model = None
         self._is_loaded = False
+        # Why the LaMa model failed to load (None when loaded or not tried yet)
+        self.load_error: Optional[str] = None
         self._load_lock = threading.Lock()
 
     @property
@@ -111,6 +113,7 @@ class InpaintingEngine:
                     # Always free dummy tensors so they don't linger until next GC cycle
                     free_device_memory(self.device)
         except Exception as e:
+            self.load_error = f"{type(e).__name__}: {e}"
             logger.warning(f"SimpleLama initialization: {e}")
 
         self._is_loaded = True

@@ -1,11 +1,11 @@
 """
 app.py
 Efface Magique LR - Adobe Lightroom Classic AI Companion Application
-Dual-Mode LaMa Inpainting Interface (Generative AI variations & Fast)
+Dual-Mode LaMa Inpainting Interface (LaMa Variations & Fast)
 
 Key Capabilities:
 - Dual Inpainting Engine:
-  * ✨ Generative AI mode (LaMa inpainting with slight seeded variations, 3 candidates;
+  * ✨ LaMa Variations mode (LaMa inpainting with slight seeded variations, 3 candidates;
     the optional prompt only adds a deterministic colour tint of a few levels)
   * ⚡ Fast Mode (Simple-LaMa GAN for spots, wires, and quick fixes)
 - Variations Carousel Panel with real-time viewport updates & "More Variations" regeneration
@@ -87,6 +87,8 @@ from companion.model_engine import (
     InpaintingWorker,
 )
 from companion.layers import ModificationLayer, create_layer_thumbnail
+from companion import __version__
+from companion.diagnostics import build_diagnostics
 from companion.live_bridge import LiveBridgeServer
 from companion.utils.tiff16 import read_rgb16, write_tiff16, merge_into_16bit
 
@@ -152,6 +154,9 @@ class ImageLoaderWorker(QThread):
 
 
 class MainWindow(QMainWindow):
+    # Emitted from the prewarm thread; AutoConnection queues it onto the GUI thread
+    modelLoadFailed = pyqtSignal(str)
+
     def __init__(
         self,
         input_path: Optional[str] = None,
@@ -181,6 +186,8 @@ class MainWindow(QMainWindow):
         self._pending_select: Optional[dict] = None
         # True while the discard prompt is open (its nested event loop keeps delivering selections)
         self._confirming_switch = False
+        # Last user-visible error message, shown in Copy diagnostics
+        self.last_error: Optional[str] = None
 
         # Metadata preservation
         self.original_icc_profile = None
@@ -204,7 +211,7 @@ class MainWindow(QMainWindow):
         self.active_layer_index: Optional[int] = None
         self.layer_card_widgets: dict = {}
 
-        self.setWindowTitle("Efface Magique LR - Generative AI Eraser")
+        self.setWindowTitle("Efface Magique LR - LaMa Variations Eraser")
         if os.path.isfile(_LOGO_PATH):
             self.setWindowIcon(QIcon(_LOGO_PATH))
         self.resize(1400, 920)
@@ -215,11 +222,6 @@ class MainWindow(QMainWindow):
         setup_device_optimizations(device)
         self.engine = InpaintingEngine(device=device, mode=EngineMode.FIREFLY)
         self.worker: Optional[InpaintingWorker] = None
-
-        # Asynchronously pre-warm inpainting models in background daemon thread
-        import threading
-        self._prewarm_thread = threading.Thread(target=self._prewarm_engine, daemon=True)
-        self._prewarm_thread.start()
 
         # Start high-performance local Live IPC Bridge
         self.live_bridge = LiveBridgeServer(preferred_port=bridge_port, parent=self)
@@ -261,6 +263,12 @@ class MainWindow(QMainWindow):
         self._create_statusbar()
         self._connect_signals()
 
+        # Asynchronously pre-warm inpainting models in background daemon thread (after the UI exists)
+        import threading
+        self.modelLoadFailed.connect(self._on_model_load_failed)
+        self._prewarm_thread = threading.Thread(target=self._prewarm_engine, daemon=True)
+        self._prewarm_thread.start()
+
         # Global hotkeys
         QShortcut(QKeySequence("Ctrl+0"), self, self.canvas.fit_to_screen)
         QShortcut(QKeySequence("Ctrl+1"), self, self.canvas.zoom_to_actual_size)
@@ -288,9 +296,63 @@ class MainWindow(QMainWindow):
                 self.engine.load_model()
         except Exception as e:
             logger.warning(f"Background engine warmup non-fatal exception: {e}")
+            if self.engine.load_error is None:
+                self.engine.load_error = str(e)
+        if self.engine.load_error is not None:
+            try:
+                self.modelLoadFailed.emit(self.engine.load_error)
+            except RuntimeError:
+                pass  # window already destroyed
+
+    def _on_model_load_failed(self, err: str):
+        """GUI thread: non-blocking, persistent status bar warning (no modal)."""
+        self.last_error = f"LaMa model failed to load: {err}"
+        msg = ("⚠ LaMa model failed to load: weights missing or install broken. "
+               "Erasing will not work in Fast mode.")
+        self.model_warning_label.setText(msg)
+        self.model_warning_label.setToolTip(err)
+        self.model_warning_label.setVisible(True)
+        self.statusBar().showMessage(msg)
+
+    def diagnostics_info(self) -> dict:
+        """Collect values for build_diagnostics (versions, device, bridge, errors only)."""
+        import platform
+        import PIL
+        import torch
+        from PyQt6.QtCore import PYQT_VERSION_STR
+        dev = self.engine.device
+        gpu_name = None
+        if dev.type == "cuda":
+            try:
+                gpu_name = torch.cuda.get_device_name(dev)
+            except Exception:
+                pass
+        if not self.engine.is_loaded:
+            lama = "not yet loaded"
+        elif self.engine._lama_model is not None:
+            lama = "loaded"
+        else:
+            lama = f"failed ({self.engine.load_error})" if self.engine.load_error else "failed"
+        bridge = getattr(self, "live_bridge", None)
+        return {
+            "app_version": __version__,
+            "python": platform.python_version(),
+            "torch": torch.__version__,
+            "pillow": PIL.__version__,
+            "pyqt6": PYQT_VERSION_STR,
+            "device": dev.type,
+            "gpu_name": gpu_name,
+            "lama_model": lama,
+            "bridge_port": getattr(self, "live_bridge_port", None),
+            "bridge_connected": bridge.is_connected if bridge is not None else None,
+            "last_error": self.last_error,
+        }
+
+    def diagnostics_text(self) -> str:
+        return build_diagnostics(self.diagnostics_info())
 
     def _create_carousel_panel(self) -> QFrame:
-        """Create the bottom carousel panel for Firefly candidate variations."""
+        """Create the bottom carousel panel for LaMa candidate variations."""
         panel = QFrame(self)
         panel.setStyleSheet("""
             QFrame {
@@ -303,7 +365,7 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(12, 6, 12, 6)
         layout.setSpacing(12)
 
-        lbl = QLabel("<b>Generative Variations:</b>")
+        lbl = QLabel("<b>LaMa Variations:</b>")
         lbl.setStyleSheet("color: #0078d4; font-size: 12px; font-weight: bold;")
         layout.addWidget(lbl)
 
@@ -592,7 +654,7 @@ class MainWindow(QMainWindow):
         name_lbl.setStyleSheet(f"color: {name_color}; font-size: 11px;")
         info_layout.addWidget(name_lbl)
 
-        mode_str = "Fast Spot" if layer.engine_mode == EngineMode.FAST else "Generative AI"
+        mode_str = "Fast Spot" if layer.engine_mode == EngineMode.FAST else "LaMa Variations"
         detail_lbl = QLabel(f"{mode_str}")
         detail_lbl.setStyleSheet("color: #888888; font-size: 10px;")
         info_layout.addWidget(detail_lbl)
@@ -1121,7 +1183,7 @@ class MainWindow(QMainWindow):
             self.logo_label = QLabel()
             pix = QPixmap(_LOGO_PATH).scaled(24, 24, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
             self.logo_label.setPixmap(pix)
-            self.logo_label.setToolTip("Efface Magique LR - AI Generative Eraser")
+            self.logo_label.setToolTip(f"Efface Magique LR v{__version__} - LaMa Variations Eraser")
             self.logo_label.setStyleSheet("padding-right: 4px;")
             layout.addWidget(self.logo_label)
 
@@ -1135,7 +1197,7 @@ class MainWindow(QMainWindow):
 
         # Engine Mode Switcher (clean naming without emojis)
         self.combo_engine = QComboBox()
-        self.combo_engine.addItem("Generative AI", EngineMode.FIREFLY)
+        self.combo_engine.addItem("LaMa Variations", EngineMode.FIREFLY)
         self.combo_engine.addItem("Fast Spot Removal", EngineMode.FAST)
         self.combo_engine.currentIndexChanged.connect(self._on_engine_changed)
         layout.addWidget(self.combo_engine)
@@ -1293,6 +1355,12 @@ class MainWindow(QMainWindow):
         self.dev_label = QLabel(f" {get_device_telemetry(self.engine.device)} ")
         self.dev_label.setStyleSheet("color: #0078d4; font-weight: bold; font-size: 11px;")
         statusbar.addPermanentWidget(self.dev_label)
+
+        # Persistent LaMa load-failure warning (hidden unless the prewarm fails)
+        self.model_warning_label = QLabel("")
+        self.model_warning_label.setStyleSheet("color: #f59e0b; font-weight: bold; font-size: 11px; margin-left: 8px;")
+        self.model_warning_label.setVisible(False)
+        statusbar.addPermanentWidget(self.model_warning_label)
 
     def _connect_signals(self):
         self.size_slider.valueChanged.connect(self.canvas.set_brush_radius)
@@ -1489,6 +1557,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Loaded {file_path}", 5000)
         except Exception as e:
             logger.exception("Failed to open image")
+            self.last_error = f"Could not load image: {e}"
             QMessageBox.critical(self, "Error Opening Image", f"Could not load image:\n{e}")
 
     def _on_open_file(self):
@@ -1588,7 +1657,7 @@ class MainWindow(QMainWindow):
             self._render_loading_carousel()
             self.carousel_panel.setVisible(True)
 
-        self.statusBar().showMessage("Initializing generative inpainting pipeline...")
+        self.statusBar().showMessage("Initializing LaMa inpainting pipeline...")
 
         self.last_base_image = current_img.copy()
         self.last_used_mask = mask_img.copy()
@@ -1852,6 +1921,7 @@ class MainWindow(QMainWindow):
             self._on_run_inpainting()
 
     def _on_inpainting_error(self, err_msg: str):
+        self.last_error = f"Inpainting error: {err_msg}"
         free_device_memory(self.engine.device)
         self.progress_bar.setVisible(False)
         self.btn_erase.setEnabled(True)
@@ -2010,6 +2080,7 @@ class MainWindow(QMainWindow):
             return self.output_path
         except Exception as e:
             logger.exception("Failed to save image")
+            self.last_error = f"Could not save file: {e}"
             QMessageBox.critical(self, "Error Saving Image", f"Could not save file:\n{e}")
             return None
 
@@ -2076,7 +2147,7 @@ class MainWindow(QMainWindow):
 # -----------------------------------------------------------------------------
 
 def main():
-    parser = argparse.ArgumentParser(description="Efface Magique LR - AI Generative Eraser Companion")
+    parser = argparse.ArgumentParser(description="Efface Magique LR - LaMa AI Eraser Companion")
     parser.add_argument("--input", "-i", type=str, default=None, help="Path to input photo exported from Lightroom")
     parser.add_argument("--image", type=str, default=None, help="Alias for --input")
     parser.add_argument("--output", "-o", type=str, default=None, help="Path to write output photo")

@@ -7,8 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-11-06
+
 ### Added
 
+- Version 1.1.0 (`companion.__version__`), shown in the Help dialog header and the logo tooltip. `/api/ping` returns it. (011)
+- "Copy diagnostics" button in the Help dialog: app, Python, torch, Pillow and PyQt6 versions, device, LaMa model state, bridge port, bridge connected and last error, as plain text (`companion/diagnostics.py`). No paths or env vars. (011)
+- A non-blocking status bar warning when the LaMa model fails to load at startup (`InpaintingEngine.load_error`). (011)
 - 16-bit TIFF round trip: when the input is a 16-bit RGB TIFF saved as TIFF, pixels the edit did not change keep full 16-bit precision. The erased area is computed in 8-bit and merged back, and the preview is 8-bit. A stdlib deflate TIFF writer (`companion/utils/tiff16.py`) keeps the ICC profile and DPI and writes through a temp file plus `os.replace`. (006)
 - GitHub Actions CI (`.github/workflows/ci.yml`): `ruff check .` and headless pytest on Ubuntu with CPU-only torch and Lua 5.1. (007)
 - `ruff.toml` with a conservative rule set (`E4`, `E7`, `E9`, `F`). (007)
@@ -42,6 +47,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The "Generative AI" engine mode is labelled "LaMa Variations" in the UI, window title, layer cards, carousel and Help dialog. The `firefly` enum value is unchanged. (011)
 - The "Generative AI" mode is described as what it is: LaMa inpainting with slight seeded variations, where the optional prompt only adds a small colour tint. (004)
 - Documented the 8-bit processing limit. (005)
 - The plugin JSON helpers moved from `LiveBridge.lua` to `JsonUtil.lua`, which has no Lightroom SDK dependency. (007)
