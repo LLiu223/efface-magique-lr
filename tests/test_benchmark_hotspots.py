@@ -1,4 +1,5 @@
 """Old-vs-new byte-identity checks for the job 009 hotspot fixes."""
+from types import SimpleNamespace
 
 import os
 import sys
@@ -69,8 +70,8 @@ def _engine(mode):
     e = InpaintingEngine(device=torch.device("cpu"), mode=mode)
     e._is_loaded = True
     if mode == EngineMode.FAST:  # deterministic stand-in for LaMa
-        e._lama_model = lambda i, mk: Image.fromarray(
-            cv2.inpaint(np.asarray(i), np.asarray(mk), 3, cv2.INPAINT_TELEA))
+        e._model = SimpleNamespace(inpaint=lambda i, mk, seed, prompt: Image.fromarray(
+            cv2.inpaint(np.asarray(i), np.asarray(mk), 3, cv2.INPAINT_TELEA)))
     return e
 
 

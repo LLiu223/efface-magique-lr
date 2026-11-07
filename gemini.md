@@ -10,9 +10,9 @@
 |                                      ADOBE LIGHTROOM CLASSIC                                      |
 |                                                                                                   |
 | 1. User selects target photo in Library or Develop module.                                        |
-| 2. User invokes: File > Plug-in Extras > "⚡ AI Generative Eraser" (Live Window).                   |
+| 2. User invokes: File > Plug-in Extras > "⚡ AI Generative Eraser" (Live Window).                 |
 | 3. LiveBridge.lua:                                                                                |
-|    - Observes photo selection, debounces exports, and communicates with Companion via IPC bridge.  |
+|    - Observes photo selection, debounces exports, and communicates with Companion via IPC bridge. |
 |    - Exports 16-bit TIFF with embedded color profile (kept in memory as 16-bit by companion).     |
 |    - Sends selection event to local companion app via HTTP IPC API.                               |
 | 4. On companion save & sync:                                                                      |
@@ -22,19 +22,19 @@
                                                   | Process invocation (CLI arguments)
                                                   v
 +---------------------------------------------------------------------------------------------------+
-|                        PYTHON COMPANION APP (PyQt6 - Firefly Experience)                          |
+|                                    PYTHON COMPANION APP (PyQt6)                                   |
 |                                                                                                   |
 | - High-performance hardware-accelerated canvas supporting 24MP-60MP raw/tiff exports.             |
 | - Dual Inpainting Engine:                                                                         |
-|   * ✨ Generative AI Mode: LaMa inpainting with slight seeded variations (3 candidates, distinct  |
+|   * ✨ LaMa Variations: LaMa inpainting with slight seeded variations (3 candidates, distinct     |
 |     seeds). The optional prompt only adds a deterministic colour tint of a few levels.            |
 |   * ⚡ Fast Mode: Simple-LaMa GAN for instantaneous spot, dust, and wire removal.                 |
 | - Variations Carousel: Clickable thumbnail cards at bottom to instantly preview & switch          |
 |   between generated variations, plus "🔄 More Variations" button with seed re-roll.               |
 | - High-Fidelity Photographic Blending Pipeline:                                                   |
 |   1. Intelligent context-aware crop & padding with >= 35% margin (default 85%).                   |
-|   2. Camera sensor noise profiling (Laplacian variance & per-channel residuals).                   |
-|   3. Synthetic sensor ISO grain matching to eliminate plastic smoothing.                         |
+|   2. Camera sensor noise profiling (Laplacian variance & per-channel residuals).                  |
+|   3. Synthetic sensor ISO grain matching to eliminate plastic smoothing.                          |
 |   4. Seamless sigmoid / outer-feather alpha blending (zero untouched pixel bleed).                |
 | - Brush mask tools: Auto-Erase on stroke release, adjustable radius ([ and ]), eraser mode.       |
 | - Hold-to-Compare: Hold \ (Backslash) or Spacebar for instant Before/After comparison.            |
@@ -47,6 +47,71 @@
 
 ---
 
+### Inpainting Models (registry)
+The pipeline (crop, dilation, grain, feather blend, layers) is independent of the network that fills the hole.
+That network is an `InpaintModel` (`companion/models/base.py`) looked up by name in
+`companion/models/registry.py`; LaMa (`companion/models/lama.py`, name `"lama"`) is the first and default entry.
+The **Model** dropdown next to the Fast/Generative dropdown lists every registered model (unavailable ones are
+greyed out with a tooltip); the choice is saved in `QSettings` (`model/name`) and restored at startup (unknown or
+unavailable names fall back to `lama`). `InpaintingEngine.set_model(name)` unloads the old model and frees device
+memory under the load lock before the new one loads lazily, so only one model is ever resident in VRAM.
+The dropdown is locked while an erase runs. The bridge accepts an optional `"model"` string in `POST /api/select`
+(absent keeps the current choice; non-string, unknown or unavailable names get `400 {"error": ...}`).
+
+How to add a model:
+```python
+# companion/models/my_model.py, then add `from companion.models import my_model` to companion/models/__init__.py
+import importlib.util
+from PIL import Image
+from companion.models.base import InpaintModel
+from companion.models.registry import register
+
+@register
+class MyModel(InpaintModel):
+    name = "my_model"          # stable id (settings, bridge)
+    label = "My Model"         # dropdown text
+    uses_prompt = False
+    steps = None
+
+    @classmethod
+    def is_available(cls):     # cheap check only: never load weights here
+        return importlib.util.find_spec("my_model_pkg") is not None
+
+    def load(self, device, progress_callback=None):
+        import my_model_pkg    # lazy import keeps startup fast
+        self._net = my_model_pkg.load(device)
+
+    def unload(self):
+        self._net = None       # drop references; the engine then frees device memory
+
+    def inpaint(self, crop, mask, seed, prompt):
+        return self._net(crop, mask).convert("RGB").resize(crop.size, Image.Resampling.LANCZOS)
+```
+
+### Assistant (optional, `companion/agent/`)
+Type a request such as "remove the person on the left" in the **Assistant** box in the top bar and press **Ask**.
+A LangChain agent (`langchain.agents.create_agent`) works only through five tools and never replaces the engine:
+
+```
+Assistant box -> AgentWorker (QThread, harness.py: max steps / token budget / timeout / cancel / allow-list / 1 retry)
+              -> tools.py: list_models, select_model, set_prompt, detect_regions, inpaint_region
+              -> registry.get + InpaintingEngine.set_model / get_segmentation_model / InpaintingEngine.generate_variations
+              -> proposal preview -> user clicks Apply -> the normal Erase layer path (_on_inpainting_finished)
+```
+
+- Install with `pip install -r requirements-agent.txt` (pinned versions; `requirements.txt` is unchanged). Without
+  it the app runs as before and the assistant fields are disabled with the tooltip "install requirements-agent.txt".
+- Providers: `ollama` (default, `http://localhost:11434`), `anthropic`, `openai`, `gemini`. Keys are read only from
+  `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`; they are never written to settings, logs or the usage DB.
+- `detect_regions` can only locate the 20 VOC classes of the segmentation weights (person, car, bottle, dog, chair...),
+  so "remove the bin" usually ends with "nothing matching was found"; paint over such objects by hand.
+- Nothing is added to the layers until you click **Apply**; **Discard** drops the preview, **Stop** cancels.
+- **Usage** opens the usage log (SQLite in the app data folder: tokens, latency, estimated cost per call, CSV export,
+  Clear) and the assistant settings (Ollama URL, token budget, opt-in "store prompt text").
+- **Privacy:** images are never sent to an LLM in v1, nor are file names or EXIF; only your request text, the model
+  list and region labels/positions. Ollama on localhost keeps that text on this computer (a non-localhost Ollama URL
+  shows a warning). Anthropic, OpenAI and Gemini are cloud services: the text and region labels leave the device.
+
 ## 2. Technology Stack
 
 - **Lightroom Classic Plugin**:
@@ -56,7 +121,7 @@
   - Python 3.10+ (Tested on 3.11 / 3.12)
   - **GUI Toolkit**: PyQt6 (High-DPI aware, OpenGL viewport canvas, dark studio aesthetic)
   - **Dual Inference Engine**:
-    * Generative AI mode: LaMa inpainting with slight seeded variations (prompt only adds a few levels of colour tint)
+    * LaMa Variations mode (UI label, formerly "Generative AI"): LaMa inpainting with slight seeded variations (prompt only adds a few levels of colour tint)
     * Simple-LaMa (Fast Fourier Convolutions) for rapid spot healing
   - **GPU Hardware Acceleration & Optimizations**:
     * NVIDIA CUDA GPU acceleration with cuDNN auto-tuning (`torch.backends.cudnn.benchmark = True`)
@@ -103,7 +168,9 @@ efface-magique-lr/
 │   ├── __main__.py                      # Entry point for python -m companion
 │   ├── app.py                           # PyQt6 Main Window, toolbars, prompt bar, carousel, headless CLI
 │   ├── canvas.py                        # Interactive high-res canvas, brush, auto-fit, hold-to-compare (\)
-│   ├── model_engine.py                  # LaMa engine (EngineMode.FIREFLY & FAST) + seeded variations
+│   ├── model_engine.py                  # Engine around the active registry model (EngineMode.FIREFLY & FAST) + seeded variations
+│   ├── models/                          # InpaintModel ABC (base.py), registry.py, lama.py (default "lama")
+│   ├── agent/                           # Optional assistant: llm.py, tools.py, harness.py, usage.py, usage_dialog.py
 │   ├── pipeline.py                      # Photographic pipeline (crop, noise, grain, sigmoid blending)
 │   ├── live_bridge.py                   # High-performance local HTTP IPC bridge (port discovery, REST endpoints)
 │   └── utils/

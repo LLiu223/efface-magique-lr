@@ -22,7 +22,7 @@ def _image_and_mask():
 def test_fast_mode_without_lama_raises():
     engine = InpaintingEngine(device=torch.device("cpu"), mode=EngineMode.FAST)
     engine._is_loaded = True
-    engine._lama_model = None
+    engine._model = None
     img, mask = _image_and_mask()
     with pytest.raises(RuntimeError, match="Fast mode unavailable"):
         engine.generate_variations(img, mask, num_variations=1)
@@ -55,4 +55,4 @@ def test_concurrent_load_model_builds_lama_once(monkeypatch):
 
     assert len(constructions) == 1
     assert engine.is_loaded
-    assert isinstance(engine._lama_model, FakeSimpleLama)
+    assert isinstance(engine._model._model, FakeSimpleLama)

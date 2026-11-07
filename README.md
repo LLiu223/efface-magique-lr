@@ -25,7 +25,7 @@
 **Erase tourists, power lines and dust from Lightroom Classic photos with local LaMa inpainting. Nothing leaves your machine.**
 
 ### Features
-- **✨ Generative AI Variations:** LaMa inpainting with 3 slightly different seeded candidates to pick from. The optional prompt only adds a deterministic colour tint of a few levels.
+- **✨ LaMa Variations:** LaMa inpainting with 3 slightly different seeded candidates to pick from. The optional prompt only adds a deterministic colour tint of a few levels.
 - **⚡ Fast Spot Removal:** a single LaMa pass for dust, blemishes and thin wires.
 - **🎯 Object-Aware Erasing (Subject):** the subject detector tightens a rough brush mask to the object's contour inside the painted zone.
 - **📚 Non-Destructive Modification Layers:** every erase is a layer in the sidebar. Toggle it, re-edit its mask, or delete it with its `✕` button.
@@ -160,8 +160,49 @@ You can also use Efface Magique as a standalone desktop photo eraser:
 
 | Engine Mode | Technology | Best For |
 | :--- | :--- | :--- |
-| **✨ Generative AI** *(Default)* | LaMa inpainting with slight seeded variations, noise matching & contextual cropping | Complex object removal, people, background reconstruction, texture synthesis |
+| **✨ LaMa Variations** *(Default)* | LaMa inpainting with slight seeded variations, noise matching & contextual cropping | Complex object removal, people, background reconstruction, texture synthesis |
 | **⚡ Fast Spot Removal** | Fast Fourier GAN (Simple-LaMa) | Small spots, sensor dust, blemishes, thin power wires |
+
+### Inpainting Models (registry)
+The pipeline (crop, dilation, grain, feather blend, layers) is independent of the network that fills the hole.
+That network is an `InpaintModel` (`companion/models/base.py`) looked up by name in
+`companion/models/registry.py`; LaMa (`companion/models/lama.py`, name `"lama"`) is the first and default entry.
+The **Model** dropdown next to the Fast/Generative dropdown lists every registered model (unavailable ones are
+greyed out with a tooltip); the choice is saved in `QSettings` (`model/name`) and restored at startup (unknown or
+unavailable names fall back to `lama`). `InpaintingEngine.set_model(name)` unloads the old model and frees device
+memory under the load lock before the new one loads lazily, so only one model is ever resident in VRAM.
+The dropdown is locked while an erase runs. The bridge accepts an optional `"model"` string in `POST /api/select`
+(absent keeps the current choice; non-string, unknown or unavailable names get `400 {"error": ...}`).
+
+How to add a model:
+```python
+# companion/models/my_model.py, then add `from companion.models import my_model` to companion/models/__init__.py
+import importlib.util
+from PIL import Image
+from companion.models.base import InpaintModel
+from companion.models.registry import register
+
+@register
+class MyModel(InpaintModel):
+    name = "my_model"          # stable id (settings, bridge)
+    label = "My Model"         # dropdown text
+    uses_prompt = False
+    steps = None
+
+    @classmethod
+    def is_available(cls):     # cheap check only: never load weights here
+        return importlib.util.find_spec("my_model_pkg") is not None
+
+    def load(self, device, progress_callback=None):
+        import my_model_pkg    # lazy import keeps startup fast
+        self._net = my_model_pkg.load(device)
+
+    def unload(self):
+        self._net = None       # drop references; the engine then frees device memory
+
+    def inpaint(self, crop, mask, seed, prompt):
+        return self._net(crop, mask).convert("RGB").resize(crop.size, Image.Resampling.LANCZOS)
+```
 
 ### Color & Photographic Quality
 - **Color Profile Preservation:** ProPhoto RGB and Adobe RGB ICC profiles and DPI are kept on save (EXIF is not rewritten).
@@ -184,6 +225,31 @@ You can also use Efface Magique as a standalone desktop photo eraser:
 
 ---
 
+### Assistant (optional, `companion/agent/`)
+Type a request such as "remove the person on the left" in the **Assistant** box in the top bar and press **Ask**.
+A LangChain agent (`langchain.agents.create_agent`) works only through five tools and never replaces the engine:
+
+```
+Assistant box -> AgentWorker (QThread, harness.py: max steps / token budget / timeout / cancel / allow-list / 1 retry)
+              -> tools.py: list_models, select_model, set_prompt, detect_regions, inpaint_region
+              -> registry.get + InpaintingEngine.set_model / get_segmentation_model / InpaintingEngine.generate_variations
+              -> proposal preview -> user clicks Apply -> the normal Erase layer path (_on_inpainting_finished)
+```
+
+- Install with `pip install -r requirements-agent.txt` (pinned versions; `requirements.txt` is unchanged). Without
+  it the app runs as before and the assistant fields are disabled with the tooltip "install requirements-agent.txt".
+- Providers: `ollama` (default, `http://localhost:11434`), `anthropic`, `openai`, `gemini`. Keys are read only from
+  `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`; they are never written to settings, logs or the usage DB.
+- `detect_regions` can only locate the 20 VOC classes of the segmentation weights (person, car, bottle, dog, chair...),
+  so "remove the bin" usually ends with "nothing matching was found"; paint over such objects by hand.
+- Nothing is added to the layers until you click **Apply**; **Discard** drops the preview, **Stop** cancels.
+- **Usage** opens the usage log (SQLite in the app data folder: tokens, latency, estimated cost per call, CSV export,
+  Clear) and the assistant settings (Ollama URL, token budget, opt-in "store prompt text").
+- **Privacy:** images are never sent to an LLM in v1, nor are file names or EXIF; only your request text, the model
+  list and region labels/positions. Ollama on localhost keeps that text on this computer (a non-localhost Ollama URL
+  shows a warning). Anthropic, OpenAI and Gemini are cloud services: the text and region labels leave the device.
+  LangSmith tracing is always off for assistant requests, even if `LANGSMITH_TRACING` or `LANGCHAIN_TRACING_V2` is set.
+
 ## 📁 Repository Structure
 
 ```
@@ -195,6 +261,7 @@ efface-magique-lr/
 ├── companion.bat                     # Windows launcher for companion app
 ├── companion.sh                      # Unix launcher for companion app
 ├── requirements.txt                  # Python dependencies
+├── requirements-agent.txt            # Optional assistant (LangChain) dependencies, pinned
 ├── README.md                         # Documentation & user guide
 ├── SECURITY.md                       # Bridge threat model & vulnerability reporting
 ├── CHANGELOG.md                      # Release notes (Keep a Changelog)
@@ -214,7 +281,8 @@ efface-magique-lr/
 │   ├── app.py                        # PyQt6 Main Window, toolbar, & layer cards
 │   ├── canvas.py                     # High-res canvas with brush, zoom, & pan
 │   ├── layers.py                     # Non-destructive layer model & thumbnails
-│   ├── model_engine.py               # LaMa inpainting engine (Generative AI variations & Fast)
+│   ├── model_engine.py               # Inpainting engine around the active model (Generative AI variations & Fast)
+│   ├── models/                       # InpaintModel interface, registry, LaMa (default model)
 │   ├── pipeline.py                   # Contextual cropping, blending, & grain matching
 │   ├── live_bridge.py                # Localhost (127.0.0.1) HTTP bridge server
 │   ├── utils/
@@ -239,6 +307,10 @@ python run_tests.py
 ```
 
 The Lua tests in `tests/lua/` need a plain `lua` or `luajit` interpreter on your `PATH`; the Python test suite runs them when one is found.
+
+The assistant tests (`tests/test_agent_*.py`) use a scripted fake chat model (no network, no keys) and skip when
+`requirements-agent.txt` is not installed. To run the whole suite as if it were not installed:
+`PYTHONPATH=tests python -m pytest -p agent_blocker tests -q`.
 
 ---
 

@@ -1,11 +1,13 @@
 """
 model_engine.py
-Efface Magique LR - Dual-Mode LaMa Inpainting Engine (Fast & Generative AI variations)
+Efface Magique LR - Dual-Mode Inpainting Engine (Fast & Generative AI variations)
 GPU Accelerated (NVIDIA CUDA / Tensor Cores / Apple MPS / Multi-threaded CPU)
 
 Features:
-- Dual Engine Mode: EngineMode.FAST (single LaMa pass) and EngineMode.FIREFLY
-  ("Generative AI" label: LaMa inpainting with slight seeded variations, no diffusion)
+- Pluggable inpainting model chosen from companion.models.registry (default "lama");
+  only one model is resident at a time (set_model unloads before the next one loads)
+- Dual Engine Mode: EngineMode.FAST (single model pass) and EngineMode.FIREFLY
+  ("Generative AI" label: model inpainting with slight seeded variations, no diffusion)
 - Asynchronous InpaintingWorker (QThread) with cancellation & progress reporting
 - Context-Aware Local Bounding-Box Cropping (20-50px) for maximum CPU & GPU speed
 - Memory Management & Garbage Collection via torch.inference_mode() and free_device_memory()
@@ -37,21 +39,22 @@ from companion.pipeline import (
     dilate_mask_for_contact_shadows,
 )
 from companion.utils.subject_detector import extract_subject_in_zone
+from companion.models import registry, InpaintModel, DEFAULT_MODEL
 
 logger = logging.getLogger("EffaceMagiqueModelEngine")
 
 
 class EngineMode(str, Enum):
     """Inpainting mode selector."""
-    FAST = "fast"          # Simple-LaMa GAN for spots, wires, and rapid blemish fixes
-    FIREFLY = "firefly"    # LaMa inpainting with slight seeded variations (UI label "Generative AI")
+    FAST = "fast"          # Single model pass for spots, wires, and rapid blemish fixes
+    FIREFLY = "firefly"    # Model inpainting with slight seeded variations (UI label "Generative AI")
 
 
 class InpaintingEngine:
     """
-    LaMa inpainting pipeline with two modes: FAST (one LaMa pass) and FIREFLY
-    (LaMa inpainting with slight seeded variations; an optional prompt only adds
-    a deterministic colour tint of a few levels).
+    Inpainting pipeline around the active registry model (default "lama") with two
+    modes: FAST (one model pass) and FIREFLY (model inpainting with slight seeded
+    variations; an optional prompt only adds a deterministic colour tint of a few levels).
     """
 
     def __init__(
@@ -61,13 +64,50 @@ class InpaintingEngine:
     ):
         self.device = device or get_optimal_device()
         self.mode = mode
-        self._lama_model = None
+        self._model_cls = registry.get(DEFAULT_MODEL)
+        self._model: Optional[InpaintModel] = None  # loaded instance; None if not loaded or load failed
         self._is_loaded = False
+        # Why the LaMa model failed to load (None when loaded or not tried yet)
+        self.load_error: Optional[str] = None
         self._load_lock = threading.Lock()
+        self.last_unload_error: Optional[str] = None  # set by set_model when unload() raised
 
     @property
     def is_loaded(self) -> bool:
         return self._is_loaded
+
+    @property
+    def model_name(self) -> str:
+        return self._model_cls.name
+
+    def set_model(self, name: str, blocking: bool = True) -> bool:
+        """Switch the active model. Unloads and frees the old one first; the new one loads lazily.
+
+        With blocking=False, returns False without switching if a load holds the lock.
+        A failing unload() is logged and stored in last_unload_error; the switch still completes.
+        """
+        new_cls = registry.get(name)  # raises KeyError before anything is unloaded
+        if not self._load_lock.acquire(blocking=blocking):  # plain Lock: never call set_model while holding it
+            return False
+        try:
+            self.last_unload_error = None
+            if new_cls is self._model_cls:
+                return True
+            if self._model is not None:
+                try:
+                    self._model.unload()
+                except Exception as e:
+                    logger.exception(f"Unloading {self._model_cls.label} ({self.model_name}) failed")
+                    self.last_unload_error = f"unloading {self._model_cls.label} failed: {e}"
+                self._model = None
+            free_device_memory(self.device)  # best effort: a failed unload may still leak VRAM
+            self._model_cls = new_cls
+            self._is_loaded = False
+            self.load_error = None
+        finally:
+            self._load_lock.release()
+        logger.info(f"Inpainting model switched to {name}.")
+        return True
 
     def set_mode(self, mode: EngineMode):
         """Switch between Fast GAN and Firefly Generative modes."""
@@ -89,65 +129,16 @@ class InpaintingEngine:
 
         setup_device_optimizations(self.device)
 
-        # Load Fast LaMa model
+        model = self._model_cls()
         try:
-            from simple_lama_inpainting import SimpleLama
-            self._lama_model = SimpleLama(device=self.device)
-            logger.info(f"Fast Simple-LaMa inpainting model loaded on {self.device}.")
-
-            # Warmup pass on GPU to compile CUDA kernels ahead of user brush strokes
-            if self.device.type == "cuda":
-                try:
-                    if progress_callback:
-                        progress_callback("Warming up GPU Tensor Cores & compiling kernels...")
-                    dummy_img = Image.new("RGB", (256, 256), (128, 128, 128))
-                    dummy_mask = Image.new("L", (256, 256), 255)
-                    with torch.inference_mode():
-                        self._lama_model(dummy_img, dummy_mask)
-                    logger.info("GPU inference pipeline pre-warmed successfully.")
-                except Exception as e:
-                    logger.warning(f"GPU warmup non-fatal exception: {e}")
-                finally:
-                    # Always free dummy tensors so they don't linger until next GC cycle
-                    free_device_memory(self.device)
+            model.load(self.device, progress_callback)
+            self._model = model
         except Exception as e:
-            logger.warning(f"SimpleLama initialization: {e}")
+            self.load_error = f"{type(e).__name__}: {e}"
+            logger.warning(f"{model.label} ({model.name}) initialization: {e}")
+            self._model = None
 
         self._is_loaded = True
-
-    def _run_lama_neural_inference(
-        self,
-        image_crop: Image.Image,
-        mask_for_lama: Image.Image,
-        max_dim: Optional[int] = None,
-    ) -> Image.Image:
-        """
-        Execute Simple-LaMa neural inference in a single unified high-resolution pass with LANCZOS resampling.
-        Provides 100% global scene continuity without vertical or horizontal tile seam artifacts.
-        """
-        crop_w, crop_h = image_crop.size
-
-        if max_dim is None:
-            max_dim = CONFIG.GPU_MAX_INFERENCE_DIM if self.device.type == "cuda" else CONFIG.CPU_MAX_INFERENCE_DIM
-
-        scale = min(1.0, max_dim / max(crop_w, crop_h))
-
-        if scale < 1.0:
-            infer_w = int(crop_w * scale)
-            infer_h = int(crop_h * scale)
-            infer_img = image_crop.resize((infer_w, infer_h), Image.Resampling.LANCZOS)
-            infer_mask = mask_for_lama.resize((infer_w, infer_h), Image.Resampling.NEAREST)
-        else:
-            infer_img = image_crop
-            infer_mask = mask_for_lama
-
-        with torch.inference_mode():
-            raw_result = self._lama_model(infer_img, infer_mask)
-
-        if scale < 1.0 or raw_result.size != (crop_w, crop_h):
-            raw_result = raw_result.resize((crop_w, crop_h), Image.Resampling.LANCZOS)
-
-        return raw_result
 
     @staticmethod
     def _generate_noise_variation(
@@ -208,19 +199,19 @@ class InpaintingEngine:
         prompt: Optional[str] = None,
     ) -> Image.Image:
         """
-        Generate one patch variation: LaMa inpainting (cv2.inpaint fallback if LaMa
-        is unavailable) plus slight seeded low-frequency noise inside the mask.
+        Generate one patch variation: active-model inpainting (cv2.inpaint fallback if
+        the model failed to load) plus slight seeded low-frequency noise inside the mask.
         No diffusion; the optional prompt only adds a few levels of colour tint.
         """
         crop_w, crop_h = image_crop_rgb.size
         mask_arr = np.array(mask_crop_l) > 10
 
-        # 1. Base structure generation using Fast LaMa model
-        if self._lama_model is not None:
+        # 1. Base structure generation using the active model
+        if self._model is not None:
             k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
             dilated_mask_arr = cv2.dilate(mask_arr.astype(np.uint8) * 255, k)
-            mask_for_lama = Image.fromarray(dilated_mask_arr)
-            base_patch = self._run_lama_neural_inference(image_crop_rgb, mask_for_lama)
+            mask_for_model = Image.fromarray(dilated_mask_arr)
+            base_patch = self._model.inpaint(image_crop_rgb, mask_for_model, seed, prompt)
             patch_np = np.array(base_patch.convert("RGB"), dtype=np.float32)
         else:
             orig_np = np.array(image_crop_rgb.convert("RGB"))
@@ -263,10 +254,10 @@ class InpaintingEngine:
             return [image] * num_variations
 
         is_fast_mode = (self.mode == EngineMode.FAST)
-        if is_fast_mode and self._lama_model is None:
+        if is_fast_mode and self._model is None:
             raise RuntimeError(
-                "Fast mode unavailable: LaMa model failed to load "
-                "(check the simple-lama-inpainting install and model weights)."
+                f"Fast mode unavailable: {self._model_cls.label} model ({self.model_name!r}) failed to load "
+                "(check its install and model weights)."
             )
         is_cpu = (self.device.type == "cpu")
 
@@ -346,11 +337,11 @@ class InpaintingEngine:
                         progress_callback(pct_start, f"Running fast inpainting on {self.device}...")
                     else:
                         var_desc = f" (Prompt: '{prompt}')" if prompt else ""
-                        progress_callback(pct_start, f"Generating LaMa variation {i + 1}/{num_variations}{var_desc} (seed {seed})...")
+                        progress_callback(pct_start, f"Generating {self._model_cls.label} variation {i + 1}/{num_variations}{var_desc} (seed {seed})...")
 
                 # 4. Generate raw patch
                 if is_fast_mode:
-                    raw_patch = self._run_lama_neural_inference(cropped_img, cropped_mask)
+                    raw_patch = self._model.inpaint(cropped_img, cropped_mask, seed, prompt)
                 else:
                     raw_patch = self._run_variation_patch(cropped_img, cropped_mask, seed=seed, prompt=prompt)
 

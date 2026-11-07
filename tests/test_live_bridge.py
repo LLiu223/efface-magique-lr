@@ -36,6 +36,7 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
+import companion
 from companion.live_bridge import LiveBridgeServer, BRIDGE_INFO_FILENAME
 from companion.app import MainWindow, HelpGuideDialog, _LOGO_PATH, _LOGO_ICO_PATH, _CHECKMARK_PATH, DARK_STYLE
 from package_release import create_release_zip
@@ -106,7 +107,7 @@ class TestLiveBridgeServer:
             assert status == 200
             assert data["status"] == "ok"
             assert data["app"] == "EffaceMagique"
-            assert data["version"] == "1.0"
+            assert data["version"] == companion.__version__
             assert data["pid"] == os.getpid()
             assert data["active_image"] is None
         finally:
@@ -281,6 +282,16 @@ class TestLiveBridgeHardening:
         status, _, _ = _raw_request(server.port, "POST", "/api/select", {"Content-Length": value})
         assert status == 400
 
+    @pytest.mark.parametrize("path", ["/api/select", "/api/import_done"])
+    @pytest.mark.parametrize("body", [b"[]", b'"x"', b"1", b"null"])
+    def test_non_object_json_body_rejected(self, qtbot, server, path, body):
+        emitted = []
+        server.photo_selected.connect(emitted.append)
+        status, _, raw = _raw_request(server.port, "POST", path, {"Content-Type": "application/json"}, body)
+        assert status == 400 and "error" in json.loads(raw)
+        qtbot.wait(50)
+        assert emitted == []
+
     def test_notify_lightroom_closing_still_accepted(self, qtbot, server):
         # urllib caller used by the companion itself must pass the guards
         status, data = _http_post(f"http://127.0.0.1:{server.port}/api/companion_closed", {})
@@ -358,7 +369,7 @@ class TestMainWindowLiveIntegration:
         window.close()
 
     def test_sync_to_lightroom_saves_and_keeps_window_open(self, qtbot, temp_image):
-        """_on_sync_to_lightroom saves 16-bit TIFF and queues import without closing MainWindow."""
+        """_on_sync_to_lightroom saves the TIFF (8-bit here, the fixture is 8-bit) and queues import without closing MainWindow."""
         with tempfile.NamedTemporaryFile(suffix=".tif", delete=False) as f:
             out_path = f.name
 
