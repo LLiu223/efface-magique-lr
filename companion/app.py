@@ -91,6 +91,11 @@ from companion.models import registry as model_registry, DEFAULT_MODEL
 from companion.layers import ModificationLayer, create_layer_thumbnail
 from companion.live_bridge import LiveBridgeServer
 from companion.utils.tiff16 import read_rgb16, write_tiff16, merge_into_16bit
+from companion.config import CONFIG
+from companion import agent as agent_pkg
+from companion.agent.harness import AgentWorker
+from companion.agent.llm import PROVIDERS as AGENT_PROVIDERS, is_local_url
+from companion.agent.tools import AgentSession
 
 # Configure logging to console and file
 _log_file = os.path.join(_PROJECT_ROOT, "companion.log")
@@ -224,6 +229,12 @@ class MainWindow(QMainWindow):
         self.modification_layers: List[ModificationLayer] = []
         self.active_layer_index: Optional[int] = None
         self.layer_card_widgets: dict = {}
+
+        # Optional assistant: pending proposal (nothing is committed until Apply)
+        self._agent_proposal = None
+        self._agent_prev_display: Optional[Image.Image] = None
+        self._agent_state_key = None
+        self._usage_store = None
 
         self.setWindowTitle("Efface Magique LR - Generative AI Eraser")
         if os.path.isfile(_LOGO_PATH):
@@ -1285,6 +1296,9 @@ class MainWindow(QMainWindow):
         self.btn_layers_toggle.toggled.connect(self._toggle_layers_panel)
         layout.addWidget(self.btn_layers_toggle)
 
+        add_vsep()
+        self._create_assistant_widgets(layout)
+
         # Spacer pushes action buttons smoothly to the right
         layout.addStretch(1)
 
@@ -1306,6 +1320,46 @@ class MainWindow(QMainWindow):
         self.btn_save = self.btn_sync
 
         return bar
+
+    def _create_assistant_widgets(self, layout: QHBoxLayout):
+        """Assistant input + provider/model fields; disabled when requirements-agent.txt is missing."""
+        self.agent_input = QLineEdit()
+        self.agent_input.setPlaceholderText("Assistant: e.g. remove the person on the left")
+        self.agent_input.setMinimumWidth(200)
+        self.agent_input.returnPressed.connect(self._on_agent_ask)
+        self.combo_agent_provider = QComboBox()
+        self.combo_agent_provider.addItems(AGENT_PROVIDERS)
+        saved = self._settings.value(agent_pkg.KEY_PROVIDER, agent_pkg.DEFAULT_PROVIDER, type=str)
+        self.combo_agent_provider.setCurrentIndex(max(0, self.combo_agent_provider.findText(saved)))
+        self.combo_agent_provider.currentTextChanged.connect(lambda t: self._settings.setValue(agent_pkg.KEY_PROVIDER, t))
+        self.ed_agent_model = QLineEdit(self._settings.value(agent_pkg.KEY_MODEL, agent_pkg.DEFAULT_AGENT_MODEL, type=str))
+        self.ed_agent_model.setFixedWidth(110)
+        self.ed_agent_model.setToolTip("Assistant LLM model name (e.g. llama3.1, claude-sonnet-4-5, gpt-4o-mini, gemini-2.5-flash)")
+        self.ed_agent_model.textChanged.connect(lambda t: self._settings.setValue(agent_pkg.KEY_MODEL, t.strip()))
+        self.btn_agent_ask = QPushButton("Ask")
+        self.btn_agent_ask.clicked.connect(self._on_agent_ask)
+        self.btn_agent_cancel = QPushButton("Stop")
+        self.btn_agent_cancel.setToolTip("Cancel the assistant request")
+        self.btn_agent_cancel.clicked.connect(self._on_agent_cancel)
+        self.btn_agent_apply = QPushButton("Apply")
+        self.btn_agent_apply.setObjectName("primaryAction")
+        self.btn_agent_apply.setToolTip("Commit the assistant's proposal as a layer")
+        self.btn_agent_apply.clicked.connect(self._on_agent_apply)
+        self.btn_agent_discard = QPushButton("Discard")
+        self.btn_agent_discard.clicked.connect(self._on_agent_discard)
+        self.btn_agent_usage = QPushButton("Usage")
+        self.btn_agent_usage.setToolTip("Assistant usage: tokens, cost, settings")
+        self.btn_agent_usage.clicked.connect(self._on_show_agent_usage)
+        for w in (self.agent_input, self.combo_agent_provider, self.ed_agent_model, self.btn_agent_ask,
+                  self.btn_agent_cancel, self.btn_agent_apply, self.btn_agent_discard, self.btn_agent_usage):
+            layout.addWidget(w)
+        for w in (self.btn_agent_cancel, self.btn_agent_apply, self.btn_agent_discard):
+            w.setVisible(False)
+        self.agent_enabled = agent_pkg.agent_available()
+        if not self.agent_enabled:
+            for w in (self.agent_input, self.combo_agent_provider, self.ed_agent_model, self.btn_agent_ask):
+                w.setEnabled(False)
+                w.setToolTip(agent_pkg.MISSING_TOOLTIP)
 
     def _create_statusbar(self):
         statusbar = QStatusBar(self)
@@ -1368,6 +1422,7 @@ class MainWindow(QMainWindow):
 
     def _on_reset_all(self):
         """Reset canvas to original unedited photo and clear all variations and modification layers."""
+        self._drop_agent_proposal()
         self.canvas.reset_all()
         self.modification_layers.clear()
         self.active_layer_index = None
@@ -1461,6 +1516,10 @@ class MainWindow(QMainWindow):
         if self.canvas.has_mask() and self.worker is None:
             self.statusBar().showMessage("Mask painted. Click '✨ Erase Object' (or press Enter) to run AI removal.", 4000)
 
+    def _on_show_agent_usage(self):
+        from companion.agent.usage_dialog import UsageDialog
+        UsageDialog(self._agent_usage_store(), self._settings, self).exec()
+
     def _on_show_lr_help(self):
         """Display the complete interactive User Guide, Installation, Shortcuts, & Download dialog."""
         dialog = HelpGuideDialog(self)
@@ -1494,6 +1553,7 @@ class MainWindow(QMainWindow):
     def load_image_file(self, file_path: str):
         """Open and display an image file, preserving original ICC profile and EXIF metadata."""
         self.base_image16 = None
+        self._drop_agent_proposal()  # a proposal belongs to the previous photo
         try:
             pil_img = Image.open(file_path)
             # Cache color profile and metadata
@@ -1594,6 +1654,14 @@ class MainWindow(QMainWindow):
 
     def _on_run_inpainting(self):
         """Trigger AI inpainting in a background worker thread."""
+        if self.agent_input.hasFocus():
+            # Enter in the assistant box is a question, not an erase
+            self._on_agent_ask()
+            return
+        if self.worker is not None:
+            return  # single worker slot (inpainting or assistant)
+        if self._agent_proposal is not None:
+            self._on_agent_discard()
         current_img = self.canvas.get_current_image()
         mask_img = self.canvas.get_mask_image()
 
@@ -1617,28 +1685,166 @@ class MainWindow(QMainWindow):
             self.base_image = current_img.copy().convert("RGB")
             self._base_pixmap = getattr(self, "_base_pixmap", None) or QPixmap.fromImage(pil_to_qimage(self.base_image))
 
+        self._start_inpainting_pipeline(self._erase_input_image(), mask_img)
+
+    def _erase_input_image(self) -> Image.Image:
+        """Image an erase works on: composite below the active layer, or of all visible layers for a new one."""
         if self.active_layer_index is not None and 0 <= self.active_layer_index < len(self.modification_layers):
             # Updating an existing layer! Input image is composite of layers before this one
             if self.active_layer_index == 0:
-                input_img = self.base_image
-            else:
-                prev_layer = self.modification_layers[self.active_layer_index - 1]
-                input_img = prev_layer.composite_cache or self._get_composite_image(up_to_index=self.active_layer_index - 1)
-        else:
-            # New layer on top of all visible layers:
-            # Fast check: if layers exist, top layer has composite_cache, and all layers are visible, use it directly!
-            if (
-                self.modification_layers
-                and all(l.visible for l in self.modification_layers)
-                and self.modification_layers[-1].composite_cache is not None
-            ):
-                input_img = self.modification_layers[-1].composite_cache
-            elif not self.modification_layers:
-                input_img = self.base_image
-            else:
-                input_img = self._get_composite_image()
+                return self.base_image
+            prev_layer = self.modification_layers[self.active_layer_index - 1]
+            return prev_layer.composite_cache or self._get_composite_image(up_to_index=self.active_layer_index - 1)
+        # New layer on top of all visible layers:
+        # Fast check: if layers exist, top layer has composite_cache, and all layers are visible, use it directly!
+        if (
+            self.modification_layers
+            and all(l.visible for l in self.modification_layers)
+            and self.modification_layers[-1].composite_cache is not None
+        ):
+            return self.modification_layers[-1].composite_cache
+        if not self.modification_layers:
+            return self.base_image
+        return self._get_composite_image()
 
-        self._start_inpainting_pipeline(input_img, mask_img)
+    # -------------------------------------------------------------------------
+    # Optional assistant (companion/agent): ask -> proposal preview -> Apply/Discard
+    # -------------------------------------------------------------------------
+
+    def _layer_state_key(self):
+        """Everything a proposal's input image depends on; Apply is refused if it changed."""
+        return (
+            id(self.base_image),
+            self.active_layer_index,
+            tuple((l.layer_id, l.visible, id(l.inpainted_image)) for l in self.modification_layers),
+        )
+
+    def _agent_usage_store(self):
+        if self._usage_store is None:
+            from companion.agent.usage import UsageStore
+            self._usage_store = UsageStore()
+        return self._usage_store
+
+    def _on_agent_ask(self):
+        if not self.agent_enabled:
+            return
+        text = self.agent_input.text().strip()
+        if not text:
+            return
+        if self.worker is not None:
+            self.statusBar().showMessage("Busy; ask again once the current job finishes.", 4000)
+            return
+        if self.base_image is None:
+            QMessageBox.information(self, "Assistant", "Load a photo first.")
+            return
+        if self._agent_proposal is not None:
+            self._on_agent_discard()
+
+        from companion.agent.usage import make_usage_callback
+
+        provider = self.combo_agent_provider.currentText()
+        model = self.ed_agent_model.text().strip()
+        url = self._settings.value(agent_pkg.KEY_OLLAMA_URL, "", type=str).strip() or None
+        budget = self._settings.value(agent_pkg.KEY_TOKEN_BUDGET, CONFIG.AGENT_TOKEN_BUDGET, type=int)
+        store_prompts = self._settings.value(agent_pkg.KEY_STORE_PROMPTS, False, type=bool)
+        store = self._agent_usage_store()
+        if provider == "ollama" and url and not is_local_url(url):
+            self.statusBar().showMessage("Warning: the Ollama host is not localhost; your request leaves this computer.", 6000)
+
+        # Only the request text and region labels reach the model: no image, file name or EXIF
+        session = AgentSession(engine=self.engine, image=self._erase_input_image().copy())
+        self._agent_state_key = self._layer_state_key()
+        self.worker = AgentWorker(
+            self._agent_llm_factory(provider, model, url),
+            lambda: make_usage_callback(store, provider, model, store_prompts=store_prompts),
+            session, text, token_budget=budget,
+        )
+        self.worker.progress.connect(lambda msg: self.statusBar().showMessage(f"Assistant: {msg}"))
+        self.worker.resultReady.connect(self._on_agent_result)
+        self.worker.finished.connect(self._on_agent_thread_finished)
+        self.worker.finished.connect(self._on_worker_thread_finished)
+        self._set_run_controls_enabled(False)
+        self.btn_agent_ask.setEnabled(False)
+        self.btn_agent_cancel.setVisible(True)
+        self.statusBar().showMessage("Assistant: Thinking...")
+        self.worker.start()
+
+    def _agent_llm_factory(self, provider: str, model: str, url: Optional[str]):
+        """Called on the worker thread (LangChain imports are slow). Tests replace this."""
+        from companion.agent.llm import make_llm
+        return lambda: make_llm(provider, model, base_url=url, timeout=CONFIG.AGENT_TIMEOUT_S)
+
+    def _on_agent_cancel(self):
+        if isinstance(self.worker, AgentWorker):
+            self.worker.cancel()
+            self.statusBar().showMessage("Assistant: cancelling after the current step...")
+
+    def _on_agent_thread_finished(self):
+        self._set_run_controls_enabled(True)
+        self.btn_agent_ask.setEnabled(self.agent_enabled)
+        self.btn_agent_cancel.setVisible(False)
+
+    def _sync_model_combo(self):
+        """The agent may have switched the engine model; mirror it without overwriting the saved choice."""
+        idx = self.combo_model.findData(self.engine.model_name)
+        if idx >= 0 and idx != self.combo_model.currentIndex():
+            self.combo_model.blockSignals(True)
+            self.combo_model.setCurrentIndex(idx)
+            self.combo_model.blockSignals(False)
+
+    def _on_agent_result(self, result):
+        self._sync_model_combo()
+        if not result.ok:
+            self.statusBar().showMessage(f"Assistant stopped: {result.reason}", 8000)
+            QMessageBox.information(self, "Assistant", result.reason)
+            return
+        proposal = result.proposal
+        if proposal is None or not proposal.variations:
+            msg = result.text or "Nothing matching was found. Only VOC objects (person, car, bottle, dog...) can be located."
+            self.statusBar().showMessage(f"Assistant: {msg}", 8000)
+            QMessageBox.information(self, "Assistant", msg)
+            return
+        if self._layer_state_key() != self._agent_state_key:
+            self.statusBar().showMessage("Assistant proposal dropped: the photo or layers changed meanwhile.", 6000)
+            return
+        self._agent_proposal = proposal
+        self._agent_prev_display = self.canvas.get_current_image()
+        self.canvas.set_preview_image(proposal.variations[0])
+        self.btn_agent_apply.setVisible(True)
+        self.btn_agent_discard.setVisible(True)
+        note = f" {result.text}" if result.text else ""
+        self.statusBar().showMessage(f"Assistant proposal (preview): {proposal.describe()}. Click Apply to commit or Discard.{note}")
+
+    def _drop_agent_proposal(self):
+        self._agent_proposal = None
+        self._agent_prev_display = None
+        self.btn_agent_apply.setVisible(False)
+        self.btn_agent_discard.setVisible(False)
+
+    def _on_agent_discard(self):
+        prev = self._agent_prev_display
+        if prev is not None and self._layer_state_key() == self._agent_state_key:
+            self.canvas.set_display_image(prev)
+        self._drop_agent_proposal()
+        self.statusBar().showMessage("Assistant proposal discarded.", 3000)
+
+    def _on_agent_apply(self):
+        """Commit the proposal through the same layer path as Erase (_on_inpainting_finished)."""
+        p = self._agent_proposal
+        if p is None or self.worker is not None:
+            return
+        if self._layer_state_key() != self._agent_state_key:
+            self._on_agent_discard()
+            QMessageBox.information(self, "Assistant", "The photo or layers changed since the proposal; ask again.")
+            return
+        if self._agent_prev_display is not None:
+            self.canvas.set_display_image(self._agent_prev_display)
+        self._drop_agent_proposal()
+        self.canvas.set_mask_image(p.mask)
+        self.last_base_image = p.base_image.copy()
+        self.last_used_mask = p.mask.copy()
+        self._generation_start_time = time.time()
+        self._on_inpainting_finished(p.variations)
 
     def _start_inpainting_pipeline(self, current_img: Image.Image, mask_img: Image.Image, seed: Optional[int] = None):
         """Launch worker thread for single-pass or multi-variation generation."""
@@ -1909,6 +2115,8 @@ class MainWindow(QMainWindow):
 
     def _on_generate_more_variations(self):
         """Generate 3 more candidate variations with a fresh seed."""
+        if self.worker is not None:
+            return  # single worker slot (inpainting or assistant)
         if self.last_base_image and self.last_used_mask:
             import random
             fresh_seed = random.randint(1000, 999999)
@@ -2111,6 +2319,8 @@ class MainWindow(QMainWindow):
             # 1. Give an active worker thread a moment to finish (os._exit in main() kills it otherwise)
             if hasattr(self, "worker") and self.worker is not None:
                 try:
+                    if isinstance(self.worker, AgentWorker):
+                        self.worker.cancel()
                     self.worker.wait(300)
                     # Keep the reference while running so Python never GCs a live QThread
                     if not self.worker.isRunning():

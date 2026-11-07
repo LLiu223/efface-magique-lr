@@ -225,6 +225,30 @@ class MyModel(InpaintModel):
 
 ---
 
+### Assistant (optional, `companion/agent/`)
+Type a request such as "remove the person on the left" in the **Assistant** box in the top bar and press **Ask**.
+A LangChain agent (`langchain.agents.create_agent`) works only through five tools and never replaces the engine:
+
+```
+Assistant box -> AgentWorker (QThread, harness.py: max steps / token budget / timeout / cancel / allow-list / 1 retry)
+              -> tools.py: list_models, select_model, set_prompt, detect_regions, inpaint_region
+              -> registry.get + InpaintingEngine.set_model / get_segmentation_model / InpaintingEngine.generate_variations
+              -> proposal preview -> user clicks Apply -> the normal Erase layer path (_on_inpainting_finished)
+```
+
+- Install with `pip install -r requirements-agent.txt` (pinned versions; `requirements.txt` is unchanged). Without
+  it the app runs as before and the assistant fields are disabled with the tooltip "install requirements-agent.txt".
+- Providers: `ollama` (default, `http://localhost:11434`), `anthropic`, `openai`, `gemini`. Keys are read only from
+  `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`; they are never written to settings, logs or the usage DB.
+- `detect_regions` can only locate the 20 VOC classes of the segmentation weights (person, car, bottle, dog, chair...),
+  so "remove the bin" usually ends with "nothing matching was found"; paint over such objects by hand.
+- Nothing is added to the layers until you click **Apply**; **Discard** drops the preview, **Stop** cancels.
+- **Usage** opens the usage log (SQLite in the app data folder: tokens, latency, estimated cost per call, CSV export,
+  Clear) and the assistant settings (Ollama URL, token budget, opt-in "store prompt text").
+- **Privacy:** images are never sent to an LLM in v1, nor are file names or EXIF; only your request text, the model
+  list and region labels/positions. Ollama on localhost keeps that text on this computer (a non-localhost Ollama URL
+  shows a warning). Anthropic, OpenAI and Gemini are cloud services: the text and region labels leave the device.
+
 ## 📁 Repository Structure
 
 ```
@@ -236,6 +260,7 @@ efface-magique-lr/
 ├── companion.bat                     # Windows launcher for companion app
 ├── companion.sh                      # Unix launcher for companion app
 ├── requirements.txt                  # Python dependencies
+├── requirements-agent.txt            # Optional assistant (LangChain) dependencies, pinned
 ├── README.md                         # Documentation & user guide
 ├── SECURITY.md                       # Bridge threat model & vulnerability reporting
 ├── CHANGELOG.md                      # Release notes (Keep a Changelog)
@@ -281,6 +306,10 @@ python run_tests.py
 ```
 
 The Lua tests in `tests/lua/` need a plain `lua` or `luajit` interpreter on your `PATH`; the Python test suite runs them when one is found.
+
+The assistant tests (`tests/test_agent_*.py`) use a scripted fake chat model (no network, no keys) and skip when
+`requirements-agent.txt` is not installed. To run the whole suite as if it were not installed:
+`PYTHONPATH=tests python -m pytest -p agent_blocker tests -q`.
 
 ---
 
