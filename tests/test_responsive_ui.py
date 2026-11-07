@@ -74,6 +74,26 @@ def test_top_bar_fits_at_size(qtbot, ini, size):
     _assert_not_clipped(w)
 
 
+def _centre_y(w, widget):
+    return widget.mapTo(w.top_bar, widget.rect().center()).y()
+
+
+@pytest.mark.parametrize("size", [(1366, 768), (2560, 1440)])
+def test_controls_are_vertically_centred_in_their_row(qtbot, ini, size):
+    w = _show(qtbot, size)
+    file_group, options_group = w.top_bar_groups[0], w.top_bar_groups[1]
+    ref = _centre_y(w, w.btn_open)
+    for other in (w.combo_engine, w.combo_model, w.txt_prompt):
+        assert abs(_centre_y(w, other) - ref) <= 1, other
+    if options_group.y() == file_group.y():  # same flow row (on Windows at 100 %; offscreen fonts wrap it)
+        for other in (w.chk_detect_subject, w.chk_grain, w.size_slider, w.size_label):
+            assert abs(_centre_y(w, other) - ref) <= 1, (other, _centre_y(w, other), ref)
+    # Within a group, whatever its row: checkbox vs slider vs label, badge vs Pin
+    assert abs(_centre_y(w, w.chk_detect_subject) - _centre_y(w, w.size_slider)) <= 1
+    assert abs(_centre_y(w, w.size_label) - _centre_y(w, w.chk_grain)) <= 1
+    assert abs(_centre_y(w, w.live_badge) - _centre_y(w, w.btn_pin)) <= 1
+
+
 def test_runtime_assistant_buttons_rewrap(qtbot, ini):
     w = _show(qtbot, (960, 540))
     for b in (w.btn_agent_cancel, w.btn_agent_apply, w.btn_agent_discard):

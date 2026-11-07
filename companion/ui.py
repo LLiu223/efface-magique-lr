@@ -291,19 +291,29 @@ class FlowLayout(QLayout):
         m = self.contentsMargins()
         r = rect.adjusted(m.left(), m.top(), -m.right(), -m.bottom())
         x, y, line_height = r.x(), r.y(), 0
+        row = []  # (item, x, w, h) of the current row, placed once its height is known
+
+        def flush():
+            # Centre each item vertically in its row, like QHBoxLayout does
+            if not test_only:
+                for item, ix, iw, ih in row:
+                    item.setGeometry(QRect(QPoint(ix, y + (line_height - ih) // 2), QSize(iw, ih)))
+            row.clear()
+
         for item in self._items:
             if item.isEmpty():  # hidden widgets take no room
                 continue
             hint = item.sizeHint()
             if x + hint.width() > r.right() + 1 and line_height > 0:
+                flush()
                 x, y, line_height = r.x(), y + line_height + self.spacing(), 0
             # An item wider than the whole row gets the row width (a nested FlowLayout wraps inside it)
             w = min(hint.width(), max(item.minimumSize().width(), r.right() + 1 - x))
             h = item.heightForWidth(w) if item.hasHeightForWidth() else hint.height()
-            if not test_only:
-                item.setGeometry(QRect(QPoint(x, y), QSize(w, h)))
+            row.append((item, x, w, h))
             x += w + self.spacing()
             line_height = max(line_height, h)
+        flush()
         return y + line_height - rect.y() + m.bottom()
 
 
