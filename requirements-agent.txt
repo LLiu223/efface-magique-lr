@@ -1,0 +1,9 @@
+# Efface Magique LR - optional assistant (companion/agent). Not needed to run the app.
+# Pinned: the LangChain agent APIs change often (uses langchain.agents.create_agent).
+langchain==1.4.9
+langchain-core==1.7.6
+langgraph==1.2.20
+langchain-ollama==1.1.0
+langchain-anthropic==1.7.10
+langchain-openai==1.7.4
+langchain-google-genai==4.4.3

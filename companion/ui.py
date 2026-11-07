@@ -461,6 +461,19 @@ class HelpGuideDialog(QDialog):
                 <li>Click <b>📥 Save &amp; Sync to Lightroom</b> (<code>Ctrl + S</code>) — the image is saved as a TIFF (untouched pixels keep full 16-bit precision; the erased area is computed in 8-bit and merged back; preview is 8-bit) and auto-stacked into your Lightroom catalog!</li>
                 <li>Click <b>📌 Pin</b> (<code>Ctrl + T</code>) to keep the companion floating on top of Lightroom while you work.</li>
             </ol>
+
+            <h3 style="color: #60a5fa;">Assistant (optional)</h3>
+            <p>Install <code>requirements-agent.txt</code>, pick a provider (ollama, anthropic, openai, gemini) and a model
+            name, then type a request such as <i>remove the person on the left</i> and press <b>Ask</b>.
+            The assistant detects objects, proposes an erase and shows a preview; nothing is added to your layers
+            until you click <b>Apply</b> (<b>Discard</b> throws it away, <b>Stop</b> cancels a running request).</p>
+            <p><b>Limit:</b> only these object classes can be located: person, car, bus, bicycle, motorbike, aeroplane,
+            boat, train, bottle, chair, sofa, diningtable, pottedplant, tvmonitor, bird, cat, dog, horse, sheep, cow.
+            Anything else (a bin, a sign, a wire) is usually <b>not found</b>; paint over it with the brush instead.</p>
+            <p><b>Privacy:</b> only your request text and region labels are sent to the model; images, file names and
+            EXIF are never sent. Ollama on localhost stays on this computer; Anthropic, OpenAI and Gemini are cloud
+            services. API keys are read only from ANTHROPIC_API_KEY, OPENAI_API_KEY and GOOGLE_API_KEY.
+            <b>Usage</b> shows tokens and cost per call.</p>
         """)
         self.tabs.addTab(tab_usage, "✨ How to Use")
 
