@@ -32,3 +32,8 @@ Thumbs.db
 # Factory job state
 factory/board.json
 factory/jobs/
+
+# Fine-tune artefacts (tools/finetune); tuned models live outside git
+models/finetuned/
+*.pt
+*.ckpt

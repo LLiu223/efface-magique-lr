@@ -1,0 +1,27 @@
+# Offline fine-tune toolchain (tools/finetune). NOT part of the app: install into a separate venv.
+# Training runs in the pinned upstream advimman/lama checkout (Python 3.8, its torch/Lightning/Hydra pins);
+# see README.md. These are upstream's requirements.txt pins at commit 786f5936b27fb3dacd2b1ad799e4de968ea697e7
+# plus what tools/finetune itself uses. Upstream also lists tensorflow and wldhx.yadisk-direct; neither is
+# needed for bin/train.py (they serve upstream eval/download scripts), so they are left out.
+torch==1.8.0
+torchvision==0.9.0
+pytorch-lightning==1.2.9
+hydra-core==1.1.0
+kornia==0.5.0
+albumentations==0.5.2
+easydict==1.9.0
+scikit-image==0.17.2
+scikit-learn==0.24.2
+opencv-python
+pandas
+tqdm
+pyyaml
+tabulate
+packaging
+webdataset
+joblib
+matplotlib
+# tools/finetune
+lpips==0.1.4
+numpy
+Pillow

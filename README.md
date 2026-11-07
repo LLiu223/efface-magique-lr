@@ -204,6 +204,42 @@ class MyModel(InpaintModel):
         return self._net(crop, mask).convert("RGB").resize(crop.size, Image.Resampling.LANCZOS)
 ```
 
+### Fine-tune on your own photos
+Optional and fully offline. The toolchain lives in `tools/finetune/` with its own `requirements.txt` and
+[README](tools/finetune/README.md) (one-time setup, per-script notes); the app never imports it.
+
+1. One-time setup (the only network use): clone https://github.com/advimman/lama at commit
+   `786f5936b27fb3dacd2b1ad799e4de968ea697e7`, download the pretrained checkpoint
+   https://huggingface.co/smartywu/big-lama/resolve/05cb2be7f8dbe6ca7c6e78f4fc827a4b2baaa4a9/big-lama.zip
+   (SHA-256 `f1b358ca24093b93a106183b98a3dea6e8ed09f3b43ea7251eb2c81e7b4575f6`), and install
+   `tools/finetune/requirements.txt` into a separate venv. After setup nothing uses the network and there is no
+   telemetry; your photos never leave the machine.
+2. Run, from the repo root:
+```bash
+python -m tools.finetune.curate ~/Pictures/picks curated            # add --dry-run to see the report only
+python -m tools.finetune.train --lama-dir lama --big-lama big-lama --data curated --work work --name mine --dry-run
+python -m tools.finetune.train --lama-dir lama --big-lama big-lama --data curated --work work --name mine
+python -m tools.finetune.export work/mine/models/last.ckpt work/mine/export --lama-dir lama --manifest curated/manifest.json --name mine
+python -m tools.finetune.eval --baseline ~/.cache/torch/hub/checkpoints/big-lama.pt --candidate work/mine/export/model.pt \
+       --data curated/test --out work/mine/eval --device cpu
+# only if the report ends with ADOPT:
+cp -r work/mine/export models/finetuned/mine
+```
+3. Restart the app: the **Model** dropdown shows **LaMa (tuned: mine)**. `LaMa` stays the default; a broken or
+   incomplete folder is greyed out with the reason. Folder names must match `[A-Za-z0-9_-]+`.
+
+**Time and VRAM (estimates, not measured here):** training needs an NVIDIA GPU with about **12 GB** VRAM at the
+defaults (batch 4, 256 px crops); with 8 GB try `--batch-size 2 --crop 192 --min-vram-gb 8`. Expect roughly
+10-30 minutes for 1,000 photos x 3 epochs on a current 12 GB card. Eval also runs on CPU, at several seconds per
+1024 px image.
+
+**Verdict:** eval prints ADOPT only if in-mask LPIPS improves by at least 2 %, in-mask PSNR drops by at most 0.2 dB
+and the candidate wins on more than half of the held-out photos; otherwise KEEP BASELINE.
+**The eval verdict, not the loss, decides.** A low training loss on a few hundred photos often just means the model
+memorised them: a small set can overfit, so trust the held-out report and the contact sheet.
+
+**Roll back:** delete `models/finetuned/<name>/` and restart. The base `big-lama.pt` is never modified.
+
 ### Color & Photographic Quality
 - **Color Profile Preservation:** ProPhoto RGB and Adobe RGB ICC profiles and DPI are kept on save (EXIF is not rewritten).
 - **16-bit TIFF Round Trip:** For a 16-bit RGB TIFF saved as TIFF, untouched pixels keep full 16-bit precision; the erased area is computed in 8-bit and merged back; preview is 8-bit. 8-bit inputs and PNG/JPEG output stay 8-bit.
@@ -240,6 +276,10 @@ efface-magique-lr/
 ├── SECURITY.md                       # Bridge threat model & vulnerability reporting
 ├── CHANGELOG.md                      # Release notes (Keep a Changelog)
 │
+├── tools/
+│   ├── benchmark.py                  # Erase-pipeline benchmark
+│   └── finetune/                     # Offline LaMa fine-tune toolchain (own requirements.txt)
+│
 ├── docs/
 │   └── architecture.md               # Data flow, threading model, hand-off files
 │
@@ -256,7 +296,7 @@ efface-magique-lr/
 │   ├── canvas.py                     # High-res canvas with brush, zoom, & pan
 │   ├── layers.py                     # Non-destructive layer model & thumbnails
 │   ├── model_engine.py               # Inpainting engine around the active model (Generative AI variations & Fast)
-│   ├── models/                       # InpaintModel interface, registry, LaMa (default model)
+│   ├── models/                       # InpaintModel interface, registry, LaMa (default model), tuned LaMa discovery
 │   ├── pipeline.py                   # Contextual cropping, blending, & grain matching
 │   ├── live_bridge.py                # Localhost (127.0.0.1) HTTP bridge server
 │   ├── utils/
