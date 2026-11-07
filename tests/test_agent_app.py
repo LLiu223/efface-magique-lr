@@ -226,3 +226,13 @@ def test_assistant_prompt_shows_in_field_and_reaches_prompt_models(env, monkeypa
     w.txt_prompt.setText("grass")
     env.ask(*PROPOSE)  # no set_prompt: the field's text seeds the assistant and stays as is
     assert prompts[-1] == "grass" and w.txt_prompt.text() == "grass"
+
+
+def test_ollama_connect_error_explains_what_to_do(env):
+    from companion.agent.harness import AgentResult
+    w = env.window
+    w.combo_agent_provider.setCurrentText("ollama")
+    w.ed_agent_model.setText("llama3.1")
+    w._on_agent_result(AgentResult(ok=False, reason="Assistant error: ConnectError: [WinError 10061] refused"))
+    msg = env.messages[-1]
+    assert "Can't reach Ollama" in msg and "ollama pull llama3.1" in msg and "ConnectError" in msg

@@ -2152,8 +2152,14 @@ class MainWindow(QMainWindow):
         if session is not None and "set_prompt" in session.calls:
             self.txt_prompt.setText(session.prompt or "")
         if not result.ok:
-            self.statusBar().showMessage(f"Assistant stopped: {result.reason}", 8000)
-            QMessageBox.information(self, "Assistant", result.reason)
+            reason = result.reason
+            if "ConnectError" in reason and self.combo_agent_provider.currentText() == "ollama":
+                url = self._settings.value(agent_pkg.KEY_OLLAMA_URL, "") or "http://localhost:11434"
+                reason = (f"Can't reach Ollama at {url}.\n\nInstall Ollama from ollama.com, make sure it is "
+                          f"running, and download the model once with:\n  ollama pull {self.ed_agent_model.text().strip()}"
+                          f"\n\n({result.reason})")
+            self.statusBar().showMessage(f"Assistant stopped: {reason.splitlines()[0]}", 8000)
+            QMessageBox.information(self, "Assistant", reason)
             return
         proposal = result.proposal
         if proposal is None or not proposal.variations:
