@@ -39,7 +39,7 @@ if _PROJECT_ROOT not in sys.path:
 from companion.live_bridge import LiveBridgeServer, BRIDGE_INFO_FILENAME
 from companion.app import MainWindow, HelpGuideDialog, _LOGO_PATH, _LOGO_ICO_PATH, _CHECKMARK_PATH, DARK_STYLE
 from package_release import create_release_zip
-from tests.test_plugin import lua_parse_pending_imports
+from tests.test_plugin import lua_parse_pending_imports, lua_import_guard_validate
 
 
 @pytest.fixture
@@ -393,6 +393,32 @@ class TestMainWindowLiveIntegration:
                     os.remove(out_path)
                 except Exception:
                     pass
+
+    def test_live_selection_sync_queues_item_the_plugin_guard_accepts(self, qtbot, tmp_path, monkeypatch):
+        """A live .tmp/live_42.tif selection, synced, is queued unchanged and passes the ImportGuard port."""
+        import companion.app as app_mod
+        monkeypatch.setattr(app_mod, "_PROJECT_ROOT", str(tmp_path))
+        tmp_dir = os.path.join(str(tmp_path), ".tmp")
+        os.makedirs(tmp_dir)
+        live_path = os.path.join(tmp_dir, "live_42.tif")
+        Image.fromarray(np.full((120, 160, 3), 180, dtype=np.uint8)).save(live_path, compression="tiff_deflate")
+        original = r"D:\Photos\Trip 2026\IMG_0042.CR3"
+
+        window = MainWindow(live_mode=True, bridge_port=0)
+        qtbot.addWidget(window)
+        window.show()
+        window._on_live_photo_selected({"path": live_path, "photo_id": "42",
+                                        "original_path": original, "title": "IMG_0042"})
+        assert window.output_path == live_path
+        window._on_sync_to_lightroom()
+
+        pending = window.live_bridge.get_pending_imports()
+        assert pending == [{"path": live_path, "original_path": original, "photo_id": "42"}]
+
+        # Through the wire format and the plugin's parser, then the guard with the plugin's own record
+        parsed = lua_parse_pending_imports(json.dumps({"status": "ok", "count": 1, "imports": pending}))
+        assert lua_import_guard_validate(parsed[0], tmp_dir, {"42": original}) == (live_path, original)
+        window.close()
 
     def test_save_and_sync_button_ui_and_no_exit_button(self, qtbot, temp_image):
         """Top bar has 'Save & Sync to Lightroom' button, has no Exit button, and clicking it saves and syncs."""
