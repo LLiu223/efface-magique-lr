@@ -1129,7 +1129,13 @@ class MainWindow(QMainWindow):
     def _apply_layer_op(self, op: str, index: int, layer: ModificationLayer, undo: bool):
         """Apply (undo=False) or revert (undo=True) one history entry, then recomposite from index."""
         layers = self.modification_layers
-        if op == "toggle":
+        if op == "reset":  # layer is (layers before the reset, their active layer index)
+            saved, active = layer
+            if undo:
+                layers[:] = saved
+            else:
+                self._reset_layers_state()
+        elif op == "toggle":
             layer.visible = not layer.visible
         elif (op == "add") == undo:  # undo add / redo delete
             del layers[index]
@@ -1152,7 +1158,13 @@ class MainWindow(QMainWindow):
 
         self._refresh_layers_ui()
         self._update_history_buttons()
-        self.statusBar().showMessage(f"{'Undid' if undo else 'Redid'} {op} of {layer.name}.", 3000)
+        if op == "reset":
+            if undo and active is not None:
+                self._select_layer(active)
+            what = "Reset All"
+        else:
+            what = f"{op} of {layer.name}"
+        self.statusBar().showMessage(f"{'Undid' if undo else 'Redid'} {what}.", 3000)
         self._autosave()
 
     # -------------------------------------------------------------------------
@@ -1683,7 +1695,18 @@ class MainWindow(QMainWindow):
         self.shortcut_help.activated.connect(self._on_show_lr_help)
 
     def _on_reset_all(self):
-        """Reset canvas to original unedited photo and clear all variations and modification layers."""
+        """Reset canvas to original unedited photo and clear all variations and modification layers (undoable)."""
+        if self.modification_layers:
+            self._push_layer_op("reset", 0, (list(self.modification_layers), self.active_layer_index))
+        self._reset_layers_state()
+        if hasattr(self, "layer_cards_layout"):
+            self._refresh_layers_ui()
+        self.statusBar().showMessage("Reset canvas and variations to original unedited photo.", 4000)
+        # No layers left: this drops the on-disk copy like deleting the last layer; undo writes it back
+        self._autosave()
+
+    def _reset_layers_state(self):
+        """Back to the unedited photo: no layers, no variations, no mask. History is left alone."""
         self._drop_agent_proposal()
         self.canvas.reset_all()
         self.modification_layers.clear()
@@ -1694,12 +1717,6 @@ class MainWindow(QMainWindow):
         self.carousel_panel.setVisible(False)
         self.last_base_image = None
         self.last_used_mask = None
-        self._clear_layer_history()
-        # Reset is an explicit discard of every layer
-        self._clear_recovery()
-        if hasattr(self, "layer_cards_layout"):
-            self._refresh_layers_ui()
-        self.statusBar().showMessage("Reset canvas and variations to original unedited photo.", 4000)
 
     def _on_open_output_folder(self):
         """Reveal active photo or containing folder in Windows File Explorer / OS file manager."""
@@ -1851,7 +1868,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             logger.warning(f"Error cleaning temporary files: {e}")
 
-    def load_image_file(self, file_path: str):
+    def load_image_file(self, file_path: str, offer_recovery: bool = True):
         """Open and display an image file, preserving original ICC profile and EXIF metadata."""
         self.base_image16 = None
         self._drop_agent_proposal()  # a proposal belongs to the previous photo
@@ -1906,7 +1923,8 @@ class MainWindow(QMainWindow):
 
             self.setWindowTitle(f"Efface Magique LR — {os.path.basename(file_path)} ({w}x{h})")
             self.statusBar().showMessage(f"Loaded {file_path}", 5000)
-            self._offer_recovery()
+            if offer_recovery:
+                self._offer_recovery()
         except Exception as e:
             logger.exception("Failed to open image")
             self.last_error = f"Could not load image: {e}"
@@ -1924,11 +1942,12 @@ class MainWindow(QMainWindow):
             "Images (*.tif *.tiff *.png *.jpg *.jpeg *.dng *.psd);;All Files (*.*)"
         )
         if file_path and self._confirm_discard_layers():
-            self.load_image_file(file_path)
+            self.load_image_file(file_path, offer_recovery=False)
             if self.input_path == file_path:
                 # Not a Lightroom selection: Sync must not stack this edit onto the previous LR photo
                 self.current_photo_id = None
                 self.current_original_path = None
+                self._offer_recovery()  # only now is the recovery key this file, not the previous LR photo
         # Selections that arrived during the prompt are superseded by this explicit choice
         self._pending_select = None
 

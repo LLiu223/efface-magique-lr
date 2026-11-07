@@ -146,6 +146,46 @@ def test_round_trip_restores_layers(qtbot, photos, ask):
     assert len(w2.layer_card_widgets) == 2
 
 
+def test_undone_reset_all_is_recoverable(qtbot, photos, ask):
+    a, _ = photos
+    w1 = MainWindow(input_path=a)
+    qtbot.addWidget(w1)
+    add_layer(w1, (10, 10, 40, 40), (255, 0, 0))
+    add_layer(w1, (30, 30, 90, 70), (0, 255, 0))
+    w1._on_reset_all()
+    assert not os.path.exists(rdir(w1))  # autosave of the empty stack: nothing to recover
+    w1._on_undo()  # autosaves the restored layers
+    assert os.path.isfile(os.path.join(rdir(w1), "manifest.json"))
+    expected = np.asarray(w1._recompute_composite_stack(0))
+
+    w2 = MainWindow(input_path=a)  # crash, then a new session on the same photo
+    qtbot.addWidget(w2)
+    assert ask.calls == ["Restore 2 unsaved layers from a previous session?"]
+    assert len(w2.modification_layers) == 2
+    assert np.array_equal(np.asarray(w2.canvas.get_current_image().convert("RGB")), expected)
+
+
+def test_open_file_never_uses_previous_lightroom_photo_recovery(qtbot, photos, ask, monkeypatch):
+    a, b = photos
+    w0 = MainWindow(input_path=a)
+    qtbot.addWidget(w0)
+    w0.current_photo_id = "lr-1"
+    add_layer(w0, (10, 10, 40, 40), (255, 0, 0))  # recovery filed under the LR photo id
+    lr_dir = rdir(w0)
+
+    w = MainWindow(input_path=a)
+    qtbot.addWidget(w)
+    w.current_photo_id = "lr-1"  # the previous Lightroom selection
+    ask.calls.clear()
+    monkeypatch.setattr(app_mod.QFileDialog, "getOpenFileName", lambda *x, **k: (b, ""))
+    w._on_open_file()
+    assert ask.calls == [] and w.modification_layers == []  # same size, but not offered on the disk file
+    assert w.current_photo_id is None
+    add_layer(w, (10, 10, 40, 40), (0, 255, 0))
+    assert rdir(w) != lr_dir and os.path.isfile(os.path.join(rdir(w), "manifest.json"))
+    assert os.path.isfile(os.path.join(lr_dir, "manifest.json"))
+
+
 def test_answering_no_deletes_recovery(qtbot, photos, ask):
     a, _ = photos
     w1 = MainWindow(input_path=a)

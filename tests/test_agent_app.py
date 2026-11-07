@@ -87,6 +87,10 @@ def test_proposal_preview_does_not_touch_layers_until_apply(env):
     assert layer.inpainted_image.getpixel((5, 5)) == GREEN
     assert layer.mask.getpixel((100, 40)) == 255 and layer.mask.getpixel((10, 40)) == 0
     assert w.btn_agent_apply.isHidden() and before is not None
+    w._on_undo()  # an applied proposal is a new layer like any other
+    assert w.modification_layers == []
+    w._on_redo()
+    assert w.modification_layers == [layer]
 
 
 def test_discard_leaves_layers_and_display_unchanged(env):

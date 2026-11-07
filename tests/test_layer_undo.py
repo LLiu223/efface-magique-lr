@@ -139,13 +139,86 @@ def test_ctrl_z_undoes_stroke_before_layer(window):
     assert len(window.modification_layers) == 1
 
 
-def test_load_and_reset_clear_history(window):
+def test_load_clears_history(window):
     add_layer(window, (10, 10, 40, 40), (255, 0, 0))
     window._on_reset_all()
-    assert window._layer_undo == [] and window._layer_redo == []
     add_layer(window, (10, 10, 40, 40), (255, 0, 0))
     window.load_image_file(window.input_path)
     assert window._layer_undo == [] and window._layer_redo == []
+
+
+def test_undo_redo_reset_all(window):
+    a = add_layer(window, (10, 10, 40, 40), (255, 0, 0))
+    b = add_layer(window, (30, 30, 90, 70), (0, 255, 0))
+    c = add_layer(window, (60, 5, 110, 50), (0, 0, 255))
+    window._toggle_layer_visibility(1)
+    window._select_layer(2)
+    expected = np.asarray(window._recompute_composite_stack(0))
+    undo_before = list(window._layer_undo)
+
+    window._on_reset_all()
+    assert window.modification_layers == [] and window.active_layer_index is None
+    assert window.current_variations == [] and window.carousel_panel.isHidden()
+    assert window._layer_undo[:-1] == undo_before and window._layer_undo[-1][0] == "reset"
+    assert np.array_equal(np.asarray(window.canvas.get_current_image().convert("RGB")),
+                          np.asarray(window.base_image))
+
+    window._on_undo()
+    layers = window.modification_layers
+    assert len(layers) == 3 and all(x is y for x, y in zip(layers, (a, b, c)))
+    assert [l.visible for l in layers] == [True, False, True]
+    assert window.active_layer_index == 2
+    window._on_new_layer_clicked()  # leave edit mode: the canvas then shows the full stack
+    assert np.array_equal(np.asarray(window.canvas.get_current_image().convert("RGB")), expected)
+    assert_matches_fresh_composite(window)
+
+    window._on_redo()
+    assert window.modification_layers == [] and window.active_layer_index is None
+    assert np.array_equal(np.asarray(window.canvas.get_current_image().convert("RGB")),
+                          np.asarray(window.base_image))
+    window._on_undo()
+    assert window.modification_layers == [a, b, c] and window.active_layer_index == 2
+    window._on_new_layer_clicked()
+    assert_matches_fresh_composite(window)
+    window._on_undo()  # the toggle before the reset is still in history
+    assert b.visible is True
+
+
+def test_reset_all_then_new_op_clears_redo(window):
+    add_layer(window, (10, 10, 40, 40), (255, 0, 0))
+    window._on_reset_all()
+    window._on_undo()
+    window._on_reset_all()  # a reset is a new op
+    assert window._layer_redo == []
+    window._on_undo()
+    assert window._layer_redo
+    add_layer(window, (60, 40, 100, 80), (0, 255, 0))
+    assert window._layer_redo == [] and not window.btn_layer_redo.isEnabled()
+    window._on_reset_all()
+    window._on_reset_all()  # nothing left to reset: no empty entry
+    assert [op for op, _, _ in window._layer_undo][-1] == "reset"
+    assert [op for op, _, _ in window._layer_undo] == ["add", "add", "reset"]
+
+
+def test_depth_cap_counts_reset_as_one_entry(window, monkeypatch):
+    monkeypatch.setattr(app_mod, "CONFIG", dataclasses.replace(app_mod.CONFIG, LAYER_HISTORY_DEPTH=3))
+    first = add_layer(window, (10, 10, 40, 40), (255, 0, 0))
+    add_layer(window, (60, 40, 100, 80), (0, 255, 0))
+    window._on_reset_all()
+    assert [op for op, _, _ in window._layer_undo] == ["add", "add", "reset"]
+    window._on_undo()
+    window._on_redo()
+    add_layer(window, (10, 10, 40, 40), (0, 0, 255))  # pushes the first add out
+    assert [op for op, _, _ in window._layer_undo] == ["add", "reset", "add"]
+    for _ in range(2):  # pushes the reset out; its layers are then freed
+        window._toggle_layer_visibility(0)
+    assert [op for op, _, _ in window._layer_undo] == ["add", "toggle", "toggle"]
+    ref = weakref.ref(first)
+    del first
+    window.current_variations = []
+    window.last_base_image = None
+    gc.collect()
+    assert ref() is None
 
 
 def test_reerase_and_variation_pick_clear_redo(window):
