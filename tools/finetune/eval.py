@@ -131,6 +131,8 @@ METRICS = ("psnr", "ssim", "lpips")
 def evaluate(a):
     import torch
     device = torch.device(a.device)
+    if device.type == "cuda" and not torch.cuda.is_available():
+        raise SystemExit("No CUDA GPU available: rerun with --device cpu (slower, same results).")
     files = sorted(p for p in Path(a.data).iterdir() if p.suffix.lower() in EXTS)
     if not files:
         raise SystemExit(f"No images in {a.data}")

@@ -107,6 +107,18 @@ def test_real_run_fails_early_without_gpu(setup_dirs, monkeypatch, capsys):
     assert "No CUDA GPU" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize("name", ["", "café", "١٢", "a.b", "a/b", "ok\n"])
+def test_name_uses_registry_charset(setup_dirs, name):
+    errors, _ = train.validate(train.build_parser().parse_args(setup_dirs + ["--name", name]))
+    assert any("--name" in e for e in errors)
+
+
+def test_invalid_manifest_is_a_clean_error(setup_dirs, tmp_path):
+    (tmp_path / "curated" / "manifest.json").write_text("{not json")
+    p, _ = _dry_run(setup_dirs)
+    assert p.returncode == 2 and "manifest.json is unreadable" in p.stderr and "Traceback" not in p.stderr
+
+
 @pytest.mark.parametrize("name", ["curate", "masks", "train", "export", "eval"])
 def test_help(name):
     p = subprocess.run([sys.executable, "-m", f"tools.finetune.{name}", "--help"], cwd=_ROOT,

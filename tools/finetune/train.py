@@ -12,6 +12,7 @@ import argparse
 import json
 import math
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -70,16 +71,23 @@ def build_command(a, n_train: int):
 
 
 def validate(a):
-    errors = []
+    """(errors, number of train images; 0 when the manifest is unusable)."""
+    errors, n_train = [], 0
     if not (Path(a.lama_dir) / "bin" / "train.py").is_file():
         errors.append(f"--lama-dir {a.lama_dir}: bin/train.py not found (clone advimman/lama at the pinned commit)")
     if not (Path(a.big_lama) / "models" / "best.ckpt").is_file():
         errors.append(f"--big-lama {a.big_lama}: models/best.ckpt not found (unzip big-lama.zip)")
     if not (Path(a.data) / "manifest.json").is_file():
         errors.append(f"--data {a.data}: manifest.json not found (run tools.finetune.curate first)")
-    if not all(c.isalnum() or c in "_-" for c in a.name):
+    else:
+        try:
+            n_train = int(train_count(a))
+        except (OSError, ValueError, KeyError, TypeError) as e:
+            errors.append(f"--data {a.data}: manifest.json is unreadable or not from curate ({e!r})")
+    # same rule as companion/models/tuned.py _NAME_RE, so the run name stays a discoverable folder name
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", a.name):
         errors.append(f"--name {a.name!r}: use only [A-Za-z0-9_-] (it becomes the models/finetuned folder)")
-    return errors
+    return errors, n_train
 
 
 def check_gpu(min_gb: float):
@@ -166,10 +174,9 @@ def build_parser():
 
 def main(argv=None):
     a = build_parser().parse_args(argv)
-    errors = validate(a)
+    errors, n_train = validate(a)
     for e in errors:
         print(f"ERROR: {e}", file=sys.stderr)
-    n_train = 0 if errors and not (Path(a.data) / "manifest.json").is_file() else train_count(a)
     argv_, env = build_command(a, n_train)
     print("cd " + shlex.quote(str(Path(a.lama_dir).resolve())))
     print(" ".join(f"{k}={shlex.quote(v)}" for k, v in env.items()) + " " + " ".join(shlex.quote(x) for x in argv_))
