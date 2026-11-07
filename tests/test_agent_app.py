@@ -204,3 +204,25 @@ def test_provider_and_model_saved_in_settings(qtbot, tmp_path, monkeypatch):
     qtbot.addWidget(w2)
     assert w2.combo_agent_provider.currentText() == "anthropic"
     assert w2.ed_agent_model.text() == "claude-sonnet-4-5"
+
+
+def test_assistant_prompt_shows_in_field_and_reaches_prompt_models(env, monkeypatch):
+    w = env.window
+    prompts = []
+
+    def fake_generate(image, mask, num_variations=1, prompt=None, **kw):
+        prompts.append(prompt)
+        return [Image.new("RGB", image.size, GREEN) for _ in range(num_variations)]
+
+    monkeypatch.setattr(w.engine, "generate_variations", fake_generate)
+    w.engine.set_model("sd_inpaint")  # uses_prompt; generation is faked, so no weights needed
+    w._update_prompt_enabled()
+    w.txt_prompt.setText("typed by user")
+    env.ask(call("set_prompt", {"text": "a wooden fence"}, 0), *PROPOSE)
+    assert prompts == ["a wooden fence"]
+    assert w.txt_prompt.text() == "a wooden fence" and w.txt_prompt.isEnabled()
+
+    w._on_agent_discard()
+    w.txt_prompt.setText("grass")
+    env.ask(*PROPOSE)  # no set_prompt: the field's text seeds the assistant and stays as is
+    assert prompts[-1] == "grass" and w.txt_prompt.text() == "grass"

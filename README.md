@@ -174,6 +174,34 @@ memory under the load lock before the new one loads lazily, so only one model is
 The dropdown is locked while an erase runs. The bridge accepts an optional `"model"` string in `POST /api/select`
 (absent keeps the current choice; non-string, unknown or unavailable names get `400 {"error": ...}`).
 
+| Name (`name`) | Weights | Speed | Prompt | Licence | Install |
+|---|---|---|---|---|---|
+| LaMa (`lama`, default) | ~200 MB (package cache) | fast | no | Apache-2.0 | `requirements.txt` |
+| MI-GAN (`migan`) | 28 MB ONNX, `models/migan_pipeline_v2.onnx` | fastest, also on CPU | no | MIT (code and weights) | install.bat optional step + `requirements-migan.txt` |
+| Stable Diffusion (`sd_inpaint`) | ~2.1 GB fp16 safetensors, `models/sd_inpaint/` | slow: seconds on GPU, minutes on CPU | yes (prompt field) | CreativeML OpenRAIL-M | install.bat optional step + `requirements-sd.txt` |
+
+Optional weights live in the repo-root `models/` folder (`CONFIG.MODELS_DIR`, gitignored, never packaged).
+install.bat asks y/N per model (default N) and installs only that model's pinned requirements file
+(`requirements-migan.txt`: onnxruntime; `requirements-sd.txt`: diffusers, transformers, accelerate). If that pip
+install fails, the model's weights are not downloaded. Downloads are pinned (HF revision), saved as `<file>.part`,
+checked against their SHA256 and only then moved to the final name, so an interrupted download never shows up as
+an installed model.
+Models whose package or weights are missing stay greyed out in the Model dropdown with a tooltip saying what to install.
+The prompt field next to the Model dropdown is enabled only for models with `uses_prompt` (Stable Diffusion).
+A prompt the assistant sets with its `set_prompt` tool shows up in that field, and the field's text is the
+starting prompt for the assistant.
+Stable Diffusion runs with `local_files_only=True` and the diffusers safety checker disabled.
+
+**Stable Diffusion licence:** the optional SD inpainting weights are CreativeML OpenRAIL-M; use restrictions apply (see the model card at huggingface.co/stable-diffusion-v1-5/stable-diffusion-inpainting).
+
+**Safety checker is off (owner decision).** SD only fills the small region you brushed in your own photo, on your own
+computer. The diffusers safety checker replaces any output it flags with a black image, and false positives on
+ordinary photo patches would paste a black square into the photo. Turning it off also saves a 608 MB download. The
+OpenRAIL-M use restrictions still apply. To turn it back on: add `safety_checker/config.json` and
+`safety_checker/model.fp16.safetensors` (with their SHA256 at the pinned revision) to the SD step in install.bat and
+to `WEIGHT_FILES` in `companion/models/sd_inpaint.py`, then remove `safety_checker=None` and
+`requires_safety_checker=False` from its `from_pretrained` call.
+
 How to add a model:
 ```python
 # companion/models/my_model.py, then add `from companion.models import my_model` to companion/models/__init__.py
@@ -262,6 +290,8 @@ efface-magique-lr/
 ├── companion.sh                      # Unix launcher for companion app
 ├── requirements.txt                  # Python dependencies
 ├── requirements-agent.txt            # Optional assistant (LangChain) dependencies, pinned
+├── requirements-migan.txt            # Optional MI-GAN dependency (onnxruntime), pinned
+├── requirements-sd.txt               # Optional Stable Diffusion dependencies (diffusers, transformers, accelerate), pinned
 ├── README.md                         # Documentation & user guide
 ├── SECURITY.md                       # Bridge threat model & vulnerability reporting
 ├── CHANGELOG.md                      # Release notes (Keep a Changelog)
@@ -282,7 +312,7 @@ efface-magique-lr/
 │   ├── canvas.py                     # High-res canvas with brush, zoom, & pan
 │   ├── layers.py                     # Non-destructive layer model & thumbnails
 │   ├── model_engine.py               # Inpainting engine around the active model (Generative AI variations & Fast)
-│   ├── models/                       # InpaintModel interface, registry, LaMa (default model)
+│   ├── models/                       # InpaintModel interface, registry, LaMa (default), MI-GAN, Stable Diffusion
 │   ├── pipeline.py                   # Contextual cropping, blending, & grain matching
 │   ├── live_bridge.py                # Localhost (127.0.0.1) HTTP bridge server
 │   ├── utils/

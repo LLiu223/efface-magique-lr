@@ -1457,6 +1457,17 @@ class MainWindow(QMainWindow):
         self.combo_model.currentIndexChanged.connect(self._on_model_changed)
         layout.addWidget(self.combo_model)
 
+        # Prompt for models with uses_prompt (Stable Diffusion); disabled for the others
+        self.txt_prompt = QLineEdit()
+        self.txt_prompt.setPlaceholderText("Prompt (optional)")
+        self.txt_prompt.setAccessibleName("Prompt")
+        self.txt_prompt.setToolTip(
+            "Text prompt. Only used by Stable Diffusion; greyed out for the other models because they ignore prompts."
+        )
+        self.txt_prompt.setMaximumWidth(220)
+        self._update_prompt_enabled()
+        layout.addWidget(self.txt_prompt)
+
         # Detect Subject (Object-Aware) toggle
         self.chk_detect_subject = QCheckBox("Subject")
         self.chk_detect_subject.setChecked(False)
@@ -1763,11 +1774,13 @@ class MainWindow(QMainWindow):
         if self.engine.set_model(name, blocking=False):
             self._pending_model = None
             self._show_model_status(index)
+            self._update_prompt_enabled(self.combo_model.isEnabled())  # stays locked if a run is in progress
             return
         # Warm-up holds the load lock: never wait on it from the GUI thread; apply once it ends.
         # Erase stays locked meanwhile so nothing runs on the old model.
         self._pending_model = name
         self.btn_erase.setEnabled(False)
+        self._update_prompt_enabled(self.combo_model.isEnabled())
         self.statusBar().showMessage(f"Switching to {self.combo_model.itemText(index)} after warm-up...")
 
     def _apply_pending_model(self):
@@ -1799,10 +1812,18 @@ class MainWindow(QMainWindow):
         else:
             self.statusBar().showMessage(msg, 3000)
 
+    def _active_model_uses_prompt(self) -> bool:
+        # A deferred switch counts already, so the field matches the dropdown during warm-up.
+        return model_registry.get(self._pending_model or self.engine.model_name).uses_prompt
+
+    def _update_prompt_enabled(self, enabled: bool = True):
+        self.txt_prompt.setEnabled(enabled and self._active_model_uses_prompt())
+
     def _set_run_controls_enabled(self, enabled: bool):
-        """Erase button and Model dropdown are locked together for the whole worker run."""
+        """Erase button, Model dropdown and prompt field are locked together for the whole worker run."""
         self.btn_erase.setEnabled(enabled)
         self.combo_model.setEnabled(enabled)
+        self._update_prompt_enabled(enabled)
 
     def _apply_bridge_model(self, payload: dict):
         """Apply the optional (bridge-validated) 'model' of a selection payload; absent keeps the current one."""
@@ -2078,7 +2099,9 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Warning: the Ollama host is not localhost; your request leaves this computer.", 6000)
 
         # Only the request text and region labels reach the model: no image, file name or EXIF
-        session = AgentSession(engine=self.engine, image=self._erase_input_image().copy())
+        # The prompt field seeds the session; a set_prompt from the assistant flows back in _on_agent_result
+        session = AgentSession(engine=self.engine, image=self._erase_input_image().copy(),
+                               prompt=self.txt_prompt.text().strip() or None)
         self._agent_state_key = self._layer_state_key()
         self.worker = AgentWorker(
             self._agent_llm_factory(provider, model, url),
@@ -2086,7 +2109,7 @@ class MainWindow(QMainWindow):
             session, text, token_budget=budget,
         )
         self.worker.progress.connect(lambda msg: self.statusBar().showMessage(f"Assistant: {msg}"))
-        self.worker.resultReady.connect(self._on_agent_result)
+        self.worker.resultReady.connect(lambda result: self._on_agent_result(result, session))
         self.worker.finished.connect(self._on_agent_thread_finished)
         self.worker.finished.connect(self._on_worker_thread_finished)
         self._set_run_controls_enabled(False)
@@ -2118,8 +2141,10 @@ class MainWindow(QMainWindow):
             self.combo_model.setCurrentIndex(idx)
             self.combo_model.blockSignals(False)
 
-    def _on_agent_result(self, result):
+    def _on_agent_result(self, result, session=None):
         self._sync_model_combo()
+        if session is not None and "set_prompt" in session.calls:
+            self.txt_prompt.setText(session.prompt or "")
         if not result.ok:
             self.statusBar().showMessage(f"Assistant stopped: {result.reason}", 8000)
             QMessageBox.information(self, "Assistant", result.reason)
@@ -2192,7 +2217,7 @@ class MainWindow(QMainWindow):
         self.last_base_image = current_img.copy()
         self.last_used_mask = mask_img.copy()
 
-        prompt_text = None
+        prompt_text = (self.txt_prompt.text().strip() or None) if self._active_model_uses_prompt() else None
         num_vars = 3 if self.engine.mode == EngineMode.FIREFLY else 1
 
         detect_subj = self.chk_detect_subject.isChecked() if (hasattr(self, "chk_detect_subject") and self.chk_detect_subject.isEnabled()) else False

@@ -6,6 +6,7 @@ Defines global tuning parameters, inference resolution bounds for CPU vs GPU,
 context padding thresholds, and canvas render throttling rates.
 """
 
+import os
 from dataclasses import dataclass
 
 
@@ -57,6 +58,10 @@ class AppConfig:
     # Layer thumbnail canvas size (width, height) in pixels
     THUMBNAIL_WIDTH: int = 56
     THUMBNAIL_HEIGHT: int = 42
+
+    # Optional model weights (MI-GAN, Stable Diffusion) downloaded by install.bat. Repo-root
+    # "models/" (gitignored), outside companion/ so the release zip never ships weights.
+    MODELS_DIR: str = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "models")
 
     # Optional assistant (companion/agent) defaults; user choices live in QSettings
     AGENT_MAX_STEPS: int = 8                 # model calls per request

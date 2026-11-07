@@ -9,6 +9,9 @@ env/
 dist/
 build/
 
+# Optional model weights (install.bat downloads them here)
+/models/
+
 # Lightroom Temporary Files & Workspaces
 .tmp/
 .recovery/

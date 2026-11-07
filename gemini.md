@@ -58,6 +58,24 @@ memory under the load lock before the new one loads lazily, so only one model is
 The dropdown is locked while an erase runs. The bridge accepts an optional `"model"` string in `POST /api/select`
 (absent keeps the current choice; non-string, unknown or unavailable names get `400 {"error": ...}`).
 
+| Name (`name`) | Weights | Speed | Prompt | Licence | Install |
+|---|---|---|---|---|---|
+| LaMa (`lama`, default) | ~200 MB (package cache) | fast | no | Apache-2.0 | `requirements.txt` |
+| MI-GAN (`migan`) | 28 MB ONNX, `models/migan_pipeline_v2.onnx` | fastest, also on CPU | no | MIT (code and weights) | install.bat optional step + `requirements-migan.txt` |
+| Stable Diffusion (`sd_inpaint`) | ~2.1 GB fp16 safetensors, `models/sd_inpaint/` | slow: seconds on GPU, minutes on CPU | yes (prompt field) | CreativeML OpenRAIL-M | install.bat optional step + `requirements-sd.txt` |
+
+Optional weights live in the repo-root `models/` folder (`CONFIG.MODELS_DIR`, gitignored, never packaged).
+install.bat asks y/N per model (default N) and installs only that model's pinned requirements file
+(`requirements-migan.txt`: onnxruntime; `requirements-sd.txt`: diffusers, transformers, accelerate). If that pip
+install fails, the model's weights are not downloaded. Downloads are pinned (HF revision), saved as `<file>.part`,
+checked against their SHA256 and only then moved to the final name, so an interrupted download never shows up as
+an installed model.
+Models whose package or weights are missing stay greyed out in the Model dropdown with a tooltip saying what to install.
+The prompt field next to the Model dropdown is enabled only for models with `uses_prompt` (Stable Diffusion).
+A prompt the assistant sets with its `set_prompt` tool shows up in that field, and the field's text is the
+starting prompt for the assistant.
+Stable Diffusion runs with `local_files_only=True` and the diffusers safety checker disabled.
+
 How to add a model:
 ```python
 # companion/models/my_model.py, then add `from companion.models import my_model` to companion/models/__init__.py
@@ -150,6 +168,8 @@ efface-magique-lr/
 ├── README.md                            # End-user setup and installation manual
 ├── requirements.txt                     # Production Python dependencies
 ├── requirements-dev.txt                 # Testing & QA dependencies (pytest, pytest-qt, etc.)
+├── requirements-migan.txt               # Optional MI-GAN dependency (onnxruntime), pinned
+├── requirements-sd.txt                  # Optional Stable Diffusion dependencies (diffusers, transformers, accelerate), pinned
 ├── run_tests.py                         # Unified test runner with coverage and formatted reports
 ├── companion.bat                        # Windows external editor launcher for Ctrl+Alt+E workflow
 ├── companion.sh                         # Unix/macOS external editor launcher
@@ -169,7 +189,7 @@ efface-magique-lr/
 │   ├── app.py                           # PyQt6 Main Window, toolbars, prompt bar, carousel, headless CLI
 │   ├── canvas.py                        # Interactive high-res canvas, brush, auto-fit, hold-to-compare (\)
 │   ├── model_engine.py                  # Engine around the active registry model (EngineMode.FIREFLY & FAST) + seeded variations
-│   ├── models/                          # InpaintModel ABC (base.py), registry.py, lama.py (default "lama")
+│   ├── models/                          # InpaintModel ABC (base.py), registry.py, lama.py (default "lama"), migan.py, sd_inpaint.py
 │   ├── agent/                           # Optional assistant: llm.py, tools.py, harness.py, usage.py, usage_dialog.py
 │   ├── pipeline.py                      # Photographic pipeline (crop, noise, grain, sigmoid blending)
 │   ├── live_bridge.py                   # High-performance local HTTP IPC bridge (port discovery, REST endpoints)

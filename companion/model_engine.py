@@ -54,7 +54,8 @@ class InpaintingEngine:
     """
     Inpainting pipeline around the active registry model (default "lama") with two
     modes: FAST (one model pass) and FIREFLY (model inpainting with slight seeded
-    variations; an optional prompt only adds a deterministic colour tint of a few levels).
+    variations; for models without uses_prompt an optional prompt only adds a deterministic
+    colour tint of a few levels, prompt models such as sd_inpaint get the prompt itself).
     """
 
     def __init__(
@@ -222,7 +223,9 @@ class InpaintingEngine:
         seed_offset = seed % 3
         variation_layer = self._generate_noise_variation(
             h=crop_h, w=crop_w, seed=seed, seed_offset=seed_offset,
-            device=self.device, prompt=prompt,
+            device=self.device,
+            # a real prompt model already used the prompt; the hash tint is only a stand-in for models without one
+            prompt=None if self._model_cls.uses_prompt else prompt,
         )
         mask_float = cv2.GaussianBlur(mask_arr.astype(np.float32), (15, 15), 0)[:, :, np.newaxis]
         modulated_patch = np.clip(patch_np + (variation_layer * mask_float), 0, 255).astype(np.uint8)
@@ -246,7 +249,8 @@ class InpaintingEngine:
         Uses local bounding-box cropping with configurable padding for maximum execution speed on both CPU and GPU.
         """
         if not self._is_loaded:
-            self.load_model()
+            # forward load messages (e.g. the Stable Diffusion CPU warning) to the worker's progress
+            self.load_model((lambda msg: progress_callback(5, msg)) if progress_callback else None)
 
         mask_np = np.array(mask.convert("L"))
         if np.count_nonzero(mask_np > 10) == 0:
