@@ -1,13 +1,14 @@
 """
 app.py
 Efface Magique LR - Adobe Lightroom Classic AI Companion Application
-Dual-Mode LaMa Inpainting Interface (Generative AI variations & Fast)
+Dual-Mode Inpainting Interface (Generative AI variations & Fast)
 
 Key Capabilities:
-- Dual Inpainting Engine:
-  * ✨ Generative AI mode (LaMa inpainting with slight seeded variations, 3 candidates;
+- Model dropdown filled from companion.models.registry (default LaMa), saved in QSettings
+- Dual Inpainting Engine (pipeline mode, independent of the model):
+  * ✨ Generative AI mode (model inpainting with slight seeded variations, 3 candidates;
     the optional prompt only adds a deterministic colour tint of a few levels)
-  * ⚡ Fast Mode (Simple-LaMa GAN for spots, wires, and quick fixes)
+  * ⚡ Fast Mode (single model pass for spots, wires, and quick fixes)
 - Variations Carousel Panel with real-time viewport updates & "More Variations" regeneration
 - Camera Sensor Grain & Noise Matching
 - Split-Screen & Hold-to-Compare (\\ and Space keys)
@@ -35,7 +36,7 @@ _PROJECT_ROOT = os.path.dirname(_CURRENT_DIR)
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSize, QTimer, qInstallMessageHandler, QtMsgType, QUrl
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSize, QTimer, qInstallMessageHandler, QtMsgType, QUrl, QSettings
 from PyQt6.QtGui import QIcon, QFont, QColor, QKeySequence, QAction, QShortcut, QPixmap, QDesktopServices
 from PyQt6.QtWidgets import (
     QApplication,
@@ -86,6 +87,7 @@ from companion.model_engine import (
     InpaintingEngine,
     InpaintingWorker,
 )
+from companion.models import registry as model_registry, DEFAULT_MODEL
 from companion.layers import ModificationLayer, create_layer_thumbnail
 from companion.live_bridge import LiveBridgeServer
 from companion.utils.tiff16 import read_rgb16, write_tiff16, merge_into_16bit
@@ -122,6 +124,25 @@ def qt_message_handler(mode, context, message):
 
 
 qInstallMessageHandler(qt_message_handler)
+
+
+MODEL_SETTINGS_KEY = "model/name"
+
+
+def _open_settings() -> QSettings:
+    return QSettings("EffaceMagique", "EffaceMagiqueLR")
+
+
+def restore_model_name(settings: QSettings) -> str:
+    """Saved model name, or DEFAULT_MODEL (with a warning) if it is unknown or unavailable."""
+    name = settings.value(MODEL_SETTINGS_KEY, DEFAULT_MODEL, type=str)
+    try:
+        if model_registry.get(name).is_available() or name == DEFAULT_MODEL:
+            return name
+        logger.warning(f"Saved model {name!r} is not available; falling back to {DEFAULT_MODEL!r}.")
+    except KeyError:
+        logger.warning(f"Saved model {name!r} is unknown; falling back to {DEFAULT_MODEL!r}.")
+    return DEFAULT_MODEL
 
 
 # -----------------------------------------------------------------------------
@@ -215,6 +236,9 @@ class MainWindow(QMainWindow):
         setup_device_optimizations(device)
         self.engine = InpaintingEngine(device=device, mode=EngineMode.FIREFLY)
         self.worker: Optional[InpaintingWorker] = None
+        # Restore the model before the warm-up thread starts so it loads the right one
+        self._settings = _open_settings()
+        self.engine.set_model(restore_model_name(self._settings))
 
         # Asynchronously pre-warm inpainting models in background daemon thread
         import threading
@@ -1140,6 +1164,20 @@ class MainWindow(QMainWindow):
         self.combo_engine.currentIndexChanged.connect(self._on_engine_changed)
         layout.addWidget(self.combo_engine)
 
+        # Model selector (which inpainting network; independent of the Fast/Generative mode)
+        self.combo_model = QComboBox()
+        self.combo_model.setToolTip("Inpainting model")
+        for cls in model_registry.all():
+            self.combo_model.addItem(cls.label, cls.name)
+            if not cls.is_available():
+                i = self.combo_model.count() - 1
+                item = self.combo_model.model().item(i)
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
+                self.combo_model.setItemData(i, cls.unavailable_reason(), Qt.ItemDataRole.ToolTipRole)
+        self.combo_model.setCurrentIndex(max(0, self.combo_model.findData(self.engine.model_name)))
+        self.combo_model.currentIndexChanged.connect(self._on_model_changed)
+        layout.addWidget(self.combo_model)
+
         # Detect Subject (Object-Aware) toggle
         self.chk_detect_subject = QCheckBox("Subject")
         self.chk_detect_subject.setChecked(False)
@@ -1382,6 +1420,25 @@ class MainWindow(QMainWindow):
         else:
             QMessageBox.warning(self, "Folder Not Found", f"Directory does not exist:\n{folder}")
 
+    def _on_model_changed(self, index: int):
+        name = self.combo_model.itemData(index)
+        self.engine.set_model(name)
+        self._settings.setValue(MODEL_SETTINGS_KEY, name)
+        self.statusBar().showMessage(f"Inpainting model: {self.combo_model.itemText(index)}", 3000)
+
+    def _set_run_controls_enabled(self, enabled: bool):
+        """Erase button and Model dropdown are locked together for the whole worker run."""
+        self.btn_erase.setEnabled(enabled)
+        self.combo_model.setEnabled(enabled)
+
+    def _apply_bridge_model(self, payload: dict):
+        """Apply the optional (bridge-validated) 'model' of a selection payload; absent keeps the current one."""
+        name = payload.get("model")
+        if name is not None:
+            idx = self.combo_model.findData(name)
+            if idx >= 0:
+                self.combo_model.setCurrentIndex(idx)
+
     def _on_engine_changed(self, index: int):
         mode = self.combo_engine.itemData(index)
         self.engine.set_mode(mode)
@@ -1549,7 +1606,7 @@ class MainWindow(QMainWindow):
             return
 
         # Immediate UI reaction so button doesn't feel stuck
-        self.btn_erase.setEnabled(False)
+        self._set_run_controls_enabled(False)
         self.progress_bar.setVisible(True)
         self.progress_bar.setValue(1)
         self.statusBar().showMessage("Starting AI inpainting pipeline...")
@@ -1585,7 +1642,7 @@ class MainWindow(QMainWindow):
 
     def _start_inpainting_pipeline(self, current_img: Image.Image, mask_img: Image.Image, seed: Optional[int] = None):
         """Launch worker thread for single-pass or multi-variation generation."""
-        self.btn_erase.setEnabled(False)
+        self._set_run_controls_enabled(False)
         self.progress_bar.setVisible(True)
         self.progress_bar.setValue(2)
         self._generation_start_time = time.time()
@@ -1644,7 +1701,7 @@ class MainWindow(QMainWindow):
 
         if not variations:
             self.progress_bar.setVisible(False)
-            self.btn_erase.setEnabled(True)
+            self._set_run_controls_enabled(True)
             return
 
         self.current_variations = variations
@@ -1751,7 +1808,7 @@ class MainWindow(QMainWindow):
 
         self.progress_bar.setValue(100)
         self.progress_bar.setVisible(False)
-        self.btn_erase.setEnabled(True)
+        self._set_run_controls_enabled(True)
 
     def _render_carousel_thumbnails(self):
         """Populate the bottom carousel with thumbnails for each candidate variation."""
@@ -1862,7 +1919,7 @@ class MainWindow(QMainWindow):
     def _on_inpainting_error(self, err_msg: str):
         free_device_memory(self.engine.device)
         self.progress_bar.setVisible(False)
-        self.btn_erase.setEnabled(True)
+        self._set_run_controls_enabled(True)
         QMessageBox.critical(self, "AI Inpainting Error", f"An error occurred during inpainting:\n\n{err_msg}")
         self.statusBar().showMessage("Inpainting failed.", 4000)
 
@@ -1894,6 +1951,8 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Lightroom selection changed; switching once inpainting finishes...", 4000)
             return
 
+        self._apply_bridge_model(payload)
+
         # Re-selecting the loaded photo changes nothing; don't prompt or throw away its layers
         if self.modification_layers and self.input_path and os.path.abspath(new_path) == os.path.abspath(self.input_path):
             return
@@ -1906,6 +1965,7 @@ class MainWindow(QMainWindow):
             # User agreed to switch; follow Lightroom's latest selection, not the stale one
             payload = newer
             new_path = payload.get("path")
+            self._apply_bridge_model(payload)
 
         self.current_photo_id = payload.get("photo_id")
         self.current_original_path = payload.get("original_path")

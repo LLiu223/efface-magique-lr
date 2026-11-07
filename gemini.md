@@ -47,6 +47,47 @@
 
 ---
 
+### Inpainting Models (registry)
+The pipeline (crop, dilation, grain, feather blend, layers) is independent of the network that fills the hole.
+That network is an `InpaintModel` (`companion/models/base.py`) looked up by name in
+`companion/models/registry.py`; LaMa (`companion/models/lama.py`, name `"lama"`) is the first and default entry.
+The **Model** dropdown next to the Fast/Generative dropdown lists every registered model (unavailable ones are
+greyed out with a tooltip); the choice is saved in `QSettings` (`model/name`) and restored at startup (unknown or
+unavailable names fall back to `lama`). `InpaintingEngine.set_model(name)` unloads the old model and frees device
+memory under the load lock before the new one loads lazily, so only one model is ever resident in VRAM.
+The dropdown is locked while an erase runs. The bridge accepts an optional `"model"` string in `POST /api/select`
+(absent keeps the current choice; non-string, unknown or unavailable names get `400 {"error": ...}`).
+
+How to add a model:
+```python
+# companion/models/my_model.py, then add `from companion.models import my_model` to companion/models/__init__.py
+import importlib.util
+from PIL import Image
+from companion.models.base import InpaintModel
+from companion.models.registry import register
+
+@register
+class MyModel(InpaintModel):
+    name = "my_model"          # stable id (settings, bridge)
+    label = "My Model"         # dropdown text
+    uses_prompt = False
+    steps = None
+
+    @classmethod
+    def is_available(cls):     # cheap check only: never load weights here
+        return importlib.util.find_spec("my_model_pkg") is not None
+
+    def load(self, device, progress_callback=None):
+        import my_model_pkg    # lazy import keeps startup fast
+        self._net = my_model_pkg.load(device)
+
+    def unload(self):
+        self._net = None       # drop references; the engine then frees device memory
+
+    def inpaint(self, crop, mask, seed, prompt):
+        return self._net(crop, mask).convert("RGB").resize(crop.size, Image.Resampling.LANCZOS)
+```
+
 ## 2. Technology Stack
 
 - **Lightroom Classic Plugin**:
@@ -103,7 +144,8 @@ efface-magique-lr/
 │   ├── __main__.py                      # Entry point for python -m companion
 │   ├── app.py                           # PyQt6 Main Window, toolbars, prompt bar, carousel, headless CLI
 │   ├── canvas.py                        # Interactive high-res canvas, brush, auto-fit, hold-to-compare (\)
-│   ├── model_engine.py                  # LaMa engine (EngineMode.FIREFLY & FAST) + seeded variations
+│   ├── model_engine.py                  # Engine around the active registry model (EngineMode.FIREFLY & FAST) + seeded variations
+│   ├── models/                          # InpaintModel ABC (base.py), registry.py, lama.py (default "lama")
 │   ├── pipeline.py                      # Photographic pipeline (crop, noise, grain, sigmoid blending)
 │   ├── live_bridge.py                   # High-performance local HTTP IPC bridge (port discovery, REST endpoints)
 │   └── utils/

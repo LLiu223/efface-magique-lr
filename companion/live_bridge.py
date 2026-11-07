@@ -15,6 +15,8 @@ from socketserver import ThreadingMixIn
 
 from PyQt6.QtCore import QObject, pyqtSignal
 
+from companion.models import registry
+
 logger = logging.getLogger("LiveBridge")
 
 _CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -22,6 +24,22 @@ _PROJECT_ROOT = os.path.dirname(_CURRENT_DIR)
 DEFAULT_BRIDGE_PORT = 51739
 MAX_BODY_BYTES = 64 * 1024
 BRIDGE_INFO_FILENAME = os.path.join(_PROJECT_ROOT, ".tmp", "live_bridge.json")
+
+
+def _validate_model_field(payload: Dict[str, Any]) -> Optional[str]:
+    """Error text for a bad optional 'model' field, else None. Exact registry match only (untrusted input)."""
+    if "model" not in payload:
+        return None
+    name = payload["model"]
+    if not isinstance(name, str):
+        return "'model' must be a string"
+    try:
+        cls = registry.get(name)
+    except KeyError as e:
+        return str(e)
+    if not cls.is_available():
+        return f"Model {name!r} is not available: {cls.unavailable_reason()}"
+    return None
 
 
 class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
@@ -123,6 +141,10 @@ class LiveBridgeRequestHandler(BaseHTTPRequestHandler):
             image_path = payload.get("path")
             if not image_path:
                 self._send_json_response(400, {"error": "Missing 'path' parameter"})
+                return
+            model_error = _validate_model_field(payload)
+            if model_error:
+                self._send_json_response(400, {"error": model_error})
                 return
 
             logger.info(f"Received selection notification from Lightroom: {image_path}")
