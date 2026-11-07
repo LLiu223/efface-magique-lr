@@ -88,6 +88,8 @@ from companion.model_engine import (
 )
 from companion.layers import ModificationLayer, create_layer_thumbnail
 from companion.live_bridge import LiveBridgeServer
+from companion.config import CONFIG
+from companion import recovery
 from companion.utils.tiff16 import read_rgb16, write_tiff16, merge_into_16bit
 
 # Configure logging to console and file
@@ -101,6 +103,9 @@ logging.basicConfig(
     ],
 )
 logger = logging.getLogger("EffaceMagiqueCompanion")
+
+# Outside .tmp/ on purpose: _cleanup_temp_files wipes .tmp on every close
+_RECOVERY_ROOT = os.path.join(_PROJECT_ROOT, ".recovery")
 
 
 def global_exception_handler(exc_type, exc_value, exc_traceback):
@@ -203,6 +208,11 @@ class MainWindow(QMainWindow):
         self.modification_layers: List[ModificationLayer] = []
         self.active_layer_index: Optional[int] = None
         self.layer_card_widgets: dict = {}
+        # Layer-op history: (op, index, layer) with op in {"add", "delete", "toggle"}; no image copies
+        self._layer_undo: List[tuple] = []
+        self._layer_redo: List[tuple] = []
+        # True when layers changed since the last recovery autosave
+        self._autosave_dirty = False
 
         self.setWindowTitle("Efface Magique LR - Generative AI Eraser")
         if os.path.isfile(_LOGO_PATH):
@@ -260,6 +270,12 @@ class MainWindow(QMainWindow):
 
         self._create_statusbar()
         self._connect_signals()
+        self._update_history_buttons()
+
+        self._autosave_timer = QTimer(self)
+        self._autosave_timer.setInterval(CONFIG.AUTOSAVE_INTERVAL_MS)
+        self._autosave_timer.timeout.connect(self._on_autosave_timer)
+        self._autosave_timer.start()
 
         # Global hotkeys
         QShortcut(QKeySequence("Ctrl+0"), self, self.canvas.fit_to_screen)
@@ -358,8 +374,7 @@ class MainWindow(QMainWindow):
         # "+ New" button: deselects active layer so user can draw a fresh modification
         self.btn_new_layer = QPushButton("+ New")
         self.btn_new_layer.setToolTip("Start a new modification on the current image")
-        self.btn_new_layer.setFixedHeight(24)
-        self.btn_new_layer.setStyleSheet("""
+        header_btn_style = """
             QPushButton {
                 background-color: #2b2b2b;
                 border: 1px solid #444444;
@@ -372,9 +387,19 @@ class MainWindow(QMainWindow):
                 background-color: #0078d4;
                 border-color: #0078d4;
             }
-        """)
+        """
         self.btn_new_layer.clicked.connect(self._on_new_layer_clicked)
-        header_layout.addWidget(self.btn_new_layer)
+
+        self.btn_layer_undo = QPushButton("Undo")
+        self.btn_layer_undo.setToolTip("Undo last layer add/delete/visibility change (Ctrl+Z)")
+        self.btn_layer_undo.clicked.connect(self._undo_layer_op)
+        self.btn_layer_redo = QPushButton("Redo")
+        self.btn_layer_redo.setToolTip("Redo layer change (Ctrl+Y / Ctrl+Shift+Z)")
+        self.btn_layer_redo.clicked.connect(self._redo_layer_op)
+        for btn in (self.btn_layer_undo, self.btn_layer_redo, self.btn_new_layer):
+            btn.setFixedHeight(24)
+            btn.setStyleSheet(header_btn_style)
+            header_layout.addWidget(btn)
 
         # Delete layer button (retained on window instance for compatibility, hidden from UI)
         self.btn_delete_layer = QPushButton("Delete")
@@ -785,6 +810,7 @@ class MainWindow(QMainWindow):
         if 0 <= index < len(self.modification_layers):
             layer = self.modification_layers[index]
             layer.visible = not layer.visible
+            self._push_layer_op("toggle", index, layer)
 
             # FAST PATH: If toggling the TOP layer and all preceding layers are visible
             is_top = (index == len(self.modification_layers) - 1)
@@ -828,11 +854,13 @@ class MainWindow(QMainWindow):
 
             state = "visible" if layer.visible else "hidden"
             self.statusBar().showMessage(f"{layer.name} is now {state}.", 3000)
+            self._autosave()
 
     def _delete_layer(self, index: int):
         """Delete a modification layer and cleanly re-composite the stack."""
         if 0 <= index < len(self.modification_layers):
             layer = self.modification_layers.pop(index)
+            self._push_layer_op("delete", index, layer)
             if self.active_layer_index == index:
                 self.active_layer_index = None
                 self.canvas.clear_mask(save_state=False)
@@ -863,6 +891,7 @@ class MainWindow(QMainWindow):
 
             self._refresh_layers_ui()
             self.statusBar().showMessage(f"Deleted {layer.name}.", 3000)
+            self._autosave()
 
     def _recompute_composite_stack(self, from_index: int = 0) -> Image.Image:
         """
@@ -893,8 +922,6 @@ class MainWindow(QMainWindow):
             else:
                 composite = self._get_composite_image(up_to_index=from_index - 1)
 
-        from companion.pipeline import seamless_distance_feather_blend
-
         for i in range(from_index, len(self.modification_layers)):
             layer = self.modification_layers[i]
             if not layer.visible:
@@ -915,17 +942,11 @@ class MainWindow(QMainWindow):
                     x2 = min(img_w, bx + bw + pad)
                     y2 = min(img_h, by + bh + pad)
 
-                    sub_comp = composite.crop((x1, y1, x2, y2)).convert("RGB")
-                    sub_active = active_img.crop((x1, y1, x2, y2)).convert("RGB")
-                    sub_mask = mask_l.crop((x1, y1, x2, y2))
-
-                    blended_sub = seamless_distance_feather_blend(
-                        sub_comp,
-                        sub_active,
-                        sub_mask,
-                        feather_radius=14,
-                    )
-                    composite.paste(blended_sub, (x1, y1))
+                    # Layer results are already feathered by the pipeline: paste them through the
+                    # binary mask. Re-blending would fade the edges on every recomposite (not idempotent).
+                    box = (x1, y1, x2, y2)
+                    sub_mask = Image.fromarray(((mask_np[y1:y2, x1:x2] > 10) * 255).astype(np.uint8))
+                    composite.paste(active_img.crop(box).convert("RGB"), (x1, y1), sub_mask)
 
                     # If the layer has candidate variations, update each variation against pre_layer_composite
                     if layer.variations and len(layer.variations) > 1:
@@ -934,15 +955,7 @@ class MainWindow(QMainWindow):
                                 layer.variations[v_idx] = composite.copy()
                             else:
                                 var_comp = pre_layer_composite.copy()
-                                sub_v_comp = var_comp.crop((x1, y1, x2, y2)).convert("RGB")
-                                sub_v_act = var_img.crop((x1, y1, x2, y2)).convert("RGB")
-                                blended_v = seamless_distance_feather_blend(
-                                    sub_v_comp,
-                                    sub_v_act,
-                                    sub_mask,
-                                    feather_radius=14,
-                                )
-                                var_comp.paste(blended_v, (x1, y1))
+                                var_comp.paste(var_img.crop(box).convert("RGB"), (x1, y1), sub_mask)
                                 layer.variations[v_idx] = var_comp
 
             # Store updated composite and pixmap on layer
@@ -952,6 +965,187 @@ class MainWindow(QMainWindow):
             layer.update_thumbnail(self.base_image)
 
         return composite
+
+    # -------------------------------------------------------------------------
+    # Layer Undo / Redo (add, delete, toggle visibility)
+    # -------------------------------------------------------------------------
+
+    def _push_layer_op(self, op: str, index: int, layer: ModificationLayer):
+        """Record a new undoable layer op; any new op drops the redo history."""
+        self._layer_undo.append((op, index, layer))
+        # Dropping the oldest entry releases its layer reference (e.g. a deleted layer)
+        del self._layer_undo[:-CONFIG.LAYER_HISTORY_DEPTH]
+        self._layer_redo.clear()
+        self._layers_synced = False
+        self._update_history_buttons()
+
+    def _clear_layer_history(self):
+        self._layer_undo.clear()
+        self._layer_redo.clear()
+        self._update_history_buttons()
+
+    def _update_history_buttons(self):
+        if hasattr(self, "btn_layer_undo"):
+            self.btn_layer_undo.setEnabled(bool(self._layer_undo))
+            self.btn_layer_redo.setEnabled(bool(self._layer_redo))
+
+    def _on_undo(self):
+        """Ctrl+Z: unconsumed brush strokes first, then the last layer op."""
+        if self.canvas.has_mask() and len(self.canvas._mask_history) > 1:
+            self.canvas.undo()
+        else:
+            self._undo_layer_op()
+
+    def _on_redo(self):
+        """Ctrl+Y / Ctrl+Shift+Z: brush strokes first, then layer ops."""
+        if self.canvas._mask_redo_stack:
+            self.canvas.redo()
+        else:
+            self._redo_layer_op()
+
+    def _undo_layer_op(self):
+        if not self._layer_undo:
+            self.statusBar().showMessage("Nothing to undo.", 3000)
+            return
+        entry = self._layer_undo.pop()
+        self._layer_redo.append(entry)
+        self._apply_layer_op(*entry, undo=True)
+
+    def _redo_layer_op(self):
+        if not self._layer_redo:
+            self.statusBar().showMessage("Nothing to redo.", 3000)
+            return
+        entry = self._layer_redo.pop()
+        self._layer_undo.append(entry)
+        self._apply_layer_op(*entry, undo=False)
+
+    def _apply_layer_op(self, op: str, index: int, layer: ModificationLayer, undo: bool):
+        """Apply (undo=False) or revert (undo=True) one history entry, then recomposite from index."""
+        layers = self.modification_layers
+        if op == "toggle":
+            layer.visible = not layer.visible
+        elif (op == "add") == undo:  # undo add / redo delete
+            del layers[index]
+        else:  # undo delete / redo add: the same object goes back at its old index
+            layers.insert(index, layer)
+        self._layers_synced = False
+
+        if self.active_layer_index is not None:
+            self.active_layer_index = None
+            self.canvas.clear_mask(save_state=False)
+        self.carousel_panel.setVisible(False)
+        self.current_variations = []
+
+        for l in layers[index:]:
+            l.composite_cache = None
+            l.cached_pixmap = None
+        full = self._recompute_composite_stack(from_index=index)
+        top_pix = layers[-1].cached_pixmap if layers else self._base_pixmap
+        self.canvas.set_display_image(full, cached_pixmap=top_pix)
+
+        self._refresh_layers_ui()
+        self._update_history_buttons()
+        self.statusBar().showMessage(f"{'Undid' if undo else 'Redid'} {op} of {layer.name}.", 3000)
+        self._autosave()
+
+    # -------------------------------------------------------------------------
+    # Crash-recovery autosave
+    # -------------------------------------------------------------------------
+
+    def _recovery_key(self) -> Optional[str]:
+        if self.current_photo_id:
+            return str(self.current_photo_id)
+        path = self.current_original_path or self.input_path
+        return os.path.abspath(path) if path else None
+
+    def _recovery_path(self) -> Optional[str]:
+        key = self._recovery_key()
+        return recovery.recovery_dir(_RECOVERY_ROOT, key) if key else None
+
+    def _autosave(self):
+        """Write the layer stack to the recovery folder. Errors are logged and shown, never raised."""
+        self._autosave_dirty = False
+        path = self._recovery_path()
+        if path is None or self.base_image is None:
+            return
+        try:
+            if self.modification_layers:
+                recovery.save(path, self._recovery_key(), self.base_image.size, self.modification_layers)
+            else:
+                recovery.clear(path)  # nothing left to recover
+        except Exception as e:
+            self._autosave_dirty = True  # retry on the next timer tick
+            logger.warning(f"Recovery autosave failed: {e}")
+            self.statusBar().showMessage(f"Autosave failed: {e}", 6000)
+
+    def _on_autosave_timer(self):
+        if self._autosave_dirty and self.modification_layers and not self._layers_synced:
+            self._autosave()
+
+    def _clear_recovery(self):
+        path = self._recovery_path()
+        if path:
+            recovery.clear(path)
+
+    def _offer_recovery(self):
+        """After a load: offer back layers autosaved for this photo by a previous session."""
+        path = self._recovery_path()
+        if path is None or self.base_image is None:
+            return
+        try:
+            entries = recovery.load(path, self._recovery_key(), self.base_image.size)
+        except ValueError as e:
+            logger.warning(f"Discarding invalid recovery data: {e}")
+            recovery.clear(path)
+            return
+        if entries is None:
+            return
+        if not entries:
+            recovery.clear(path)
+            return
+
+        n = len(entries)
+        self._confirming_switch = True  # Lightroom selections arriving now go to _pending_select
+        try:
+            answer = QMessageBox.question(
+                self,
+                "Recover Layers",
+                f"Restore {n} unsaved layer{'' if n == 1 else 's'} from a previous session?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes,
+            )
+        finally:
+            self._confirming_switch = False
+        pending, self._pending_select = self._pending_select, None
+        if pending is not None:
+            # Apply the newest selection after this load returns (normal switch rules, no stacking)
+            QTimer.singleShot(0, lambda: self._on_live_photo_selected(pending))
+
+        if answer != QMessageBox.StandardButton.Yes:
+            recovery.clear(path)
+            return
+
+        for e in entries:
+            x1, y1 = e["box"][:2]
+            img = self.base_image.copy()
+            img.paste(e["patch"], (x1, y1))
+            mask = Image.new("L", self.base_image.size, 0)
+            mask.paste(e["mask"], (x1, y1))
+            try:
+                mode = EngineMode(e["engine_mode"])
+            except ValueError:
+                mode = EngineMode.FIREFLY
+            self.modification_layers.append(ModificationLayer(
+                layer_id=e["id"], name=e["name"], mask=mask, inpainted_image=img,
+                prompt=e.get("prompt"), engine_mode=mode, seed=e.get("seed"),
+                detect_subject=e["detect_subject"], enable_grain=e["enable_grain"], visible=e["visible"],
+            ))
+        full = self._recompute_composite_stack(from_index=0)
+        self.canvas.set_display_image(full, cached_pixmap=self.modification_layers[-1].cached_pixmap)
+        self._layers_synced = False
+        if hasattr(self, "layer_cards_layout"):
+            self._refresh_layers_ui()
+        self.statusBar().showMessage(f"Restored {n} layer{'' if n == 1 else 's'} from a previous session.", 5000)
 
     def _on_new_layer_clicked(self):
         """Deselect active layer and return canvas to full composited view ready for new edits."""
@@ -1025,8 +1219,6 @@ class MainWindow(QMainWindow):
         composite = self.base_image.copy()
         img_w, img_h = composite.size
 
-        from companion.pipeline import seamless_distance_feather_blend
-
         for i in range(limit):
             layer = self.modification_layers[i]
             if not layer.visible:
@@ -1048,17 +1240,9 @@ class MainWindow(QMainWindow):
             x2 = min(img_w, bx + bw + pad)
             y2 = min(img_h, by + bh + pad)
 
-            sub_comp = composite.crop((x1, y1, x2, y2)).convert("RGB")
-            sub_active = active_img.crop((x1, y1, x2, y2)).convert("RGB")
-            sub_mask = mask_l.crop((x1, y1, x2, y2))
-
-            blended_sub = seamless_distance_feather_blend(
-                sub_comp,
-                sub_active,
-                sub_mask,
-                feather_radius=14,
-            )
-            composite.paste(blended_sub, (x1, y1))
+            # Same binary-mask paste as _recompute_composite_stack (results are already feathered)
+            sub_mask = Image.fromarray(((mask_np[y1:y2, x1:x2] > 10) * 255).astype(np.uint8))
+            composite.paste(active_img.crop((x1, y1, x2, y2)).convert("RGB"), (x1, y1), sub_mask)
 
         return composite
 
@@ -1194,12 +1378,12 @@ class MainWindow(QMainWindow):
         # Undo / Redo
         self.btn_undo = QPushButton("Undo")
         self.btn_undo.setToolTip("Undo last action (Ctrl+Z)")
-        self.btn_undo.clicked.connect(self.canvas.undo)
+        self.btn_undo.clicked.connect(self._on_undo)
         layout.addWidget(self.btn_undo)
 
         self.btn_redo = QPushButton("Redo")
         self.btn_redo.setToolTip("Redo last action (Ctrl+Y)")
-        self.btn_redo.clicked.connect(self.canvas.redo)
+        self.btn_redo.clicked.connect(self._on_redo)
         layout.addWidget(self.btn_redo)
 
         # Reset All
@@ -1303,13 +1487,13 @@ class MainWindow(QMainWindow):
 
         # Global window shortcuts for Undo / Redo / Save / Erase
         self.shortcut_undo = QShortcut(QKeySequence("Ctrl+Z"), self)
-        self.shortcut_undo.activated.connect(self.canvas.undo)
+        self.shortcut_undo.activated.connect(self._on_undo)
 
         self.shortcut_redo_y = QShortcut(QKeySequence("Ctrl+Y"), self)
-        self.shortcut_redo_y.activated.connect(self.canvas.redo)
+        self.shortcut_redo_y.activated.connect(self._on_redo)
 
         self.shortcut_redo_shift_z = QShortcut(QKeySequence("Ctrl+Shift+Z"), self)
-        self.shortcut_redo_shift_z.activated.connect(self.canvas.redo)
+        self.shortcut_redo_shift_z.activated.connect(self._on_redo)
 
         # Shortcuts for Save / Sync
         self.shortcut_sync = QShortcut(QKeySequence("Ctrl+S"), self)
@@ -1339,6 +1523,9 @@ class MainWindow(QMainWindow):
         self.carousel_panel.setVisible(False)
         self.last_base_image = None
         self.last_used_mask = None
+        self._clear_layer_history()
+        # Reset is an explicit discard of every layer
+        self._clear_recovery()
         if hasattr(self, "layer_cards_layout"):
             self._refresh_layers_ui()
         self.statusBar().showMessage("Reset canvas and variations to original unedited photo.", 4000)
@@ -1460,6 +1647,7 @@ class MainWindow(QMainWindow):
             self.modification_layers = []
             self.active_layer_index = None
             self.layer_card_widgets = {}
+            self._clear_layer_history()
 
             # A different photo needs its own output path; keep an explicit one for the initial load
             if self.input_path is None or os.path.abspath(file_path) != os.path.abspath(self.input_path):
@@ -1487,6 +1675,7 @@ class MainWindow(QMainWindow):
 
             self.setWindowTitle(f"Efface Magique LR — {os.path.basename(file_path)} ({w}x{h})")
             self.statusBar().showMessage(f"Loaded {file_path}", 5000)
+            self._offer_recovery()
         except Exception as e:
             logger.exception("Failed to open image")
             QMessageBox.critical(self, "Error Opening Image", f"Could not load image:\n{e}")
@@ -1523,6 +1712,7 @@ class MainWindow(QMainWindow):
         finally:
             self._confirming_switch = False
         if answer == QMessageBox.StandardButton.Yes:
+            self._clear_recovery()
             return True
         self.statusBar().showMessage("Kept current photo; switch cancelled. Sync still targets this photo.", 6000)
         return False
@@ -1691,6 +1881,11 @@ class MainWindow(QMainWindow):
             self.canvas.apply_inpainted_image(full_composite, cached_pixmap=top_cached_pix if is_top else None)
             self.statusBar().showMessage(f"Updated {layer.name} successfully.", 4000)
             self.active_layer_index = None
+            # In-place re-erase is not undoable; a stale redo must not reapply over it
+            self._layer_redo.clear()
+            self._update_history_buttons()
+            self._layers_synced = False
+            self._autosave_dirty = True
         else:
             # Create new layer
             new_idx = len(self.modification_layers) + 1
@@ -1715,12 +1910,16 @@ class MainWindow(QMainWindow):
             new_layer.composite_cache = full_composite.copy()
             new_layer.update_thumbnail(self.base_image)
             self.modification_layers.append(new_layer)
-            self._layers_synced = False
+            self._push_layer_op("add", len(self.modification_layers) - 1, new_layer)
             self.active_layer_index = None
 
             # Apply to canvas directly reusing pix_0 without duplicate QPixmap conversion
             self.canvas.apply_inpainted_image(full_composite, cached_pixmap=pix_0)
             self.statusBar().showMessage(f"Added {new_layer.name} to Modifications stack.", 4000)
+            self._autosave()
+
+        # Layer history replaces the canvas image history; drop its full-res copies
+        del self.canvas._image_history[:-1]
 
         # Refresh layer cards UI
         if hasattr(self, "layer_cards_layout"):
@@ -1816,6 +2015,10 @@ class MainWindow(QMainWindow):
             layer = self.modification_layers[target_layer_idx]
             layer.active_variation_index = index
             layer.cached_pixmap = cached_pix
+            # Variation picks are not undoable; a stale redo must not reapply over them
+            self._layer_redo.clear()
+            self._update_history_buttons()
+            self._autosave_dirty = True
 
             # If modifying the top layer or single layer, target_img IS the final composite!
             if target_layer_idx == len(self.modification_layers) - 1:
@@ -2019,6 +2222,8 @@ class MainWindow(QMainWindow):
         if saved_path:
             self.saved_successfully = True
             self._layers_synced = True
+            self._autosave_dirty = False
+            self._clear_recovery()
             self.live_bridge.queue_import(
                 export_path=saved_path,
                 original_path=self.current_original_path,
@@ -2040,6 +2245,9 @@ class MainWindow(QMainWindow):
         """Ensure all threads, live servers, and background processes terminate when window is closed."""
         logger.info("MainWindow closeEvent: shutting down background processes and cleaning temp files...")
         try:
+            # Flush pending recovery changes; unsynced recovery data stays on disk after a clean close
+            self._on_autosave_timer()
+
             # 1. Give an active worker thread a moment to finish (os._exit in main() kills it otherwise)
             if hasattr(self, "worker") and self.worker is not None:
                 try:
