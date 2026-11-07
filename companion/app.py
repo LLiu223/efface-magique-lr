@@ -173,6 +173,8 @@ class ImageLoaderWorker(QThread):
 
 
 class MainWindow(QMainWindow):
+    _prewarm_finished = pyqtSignal()  # emitted from the warm-up daemon thread, delivered queued on the GUI thread
+
     def __init__(
         self,
         input_path: Optional[str] = None,
@@ -242,6 +244,8 @@ class MainWindow(QMainWindow):
 
         # Asynchronously pre-warm inpainting models in background daemon thread
         import threading
+        self._pending_model: Optional[str] = None  # model picked while warm-up held the load lock
+        self._prewarm_finished.connect(self._apply_pending_model)
         self._prewarm_thread = threading.Thread(target=self._prewarm_engine, daemon=True)
         self._prewarm_thread.start()
 
@@ -312,6 +316,11 @@ class MainWindow(QMainWindow):
                 self.engine.load_model()
         except Exception as e:
             logger.warning(f"Background engine warmup non-fatal exception: {e}")
+        finally:
+            try:
+                self._prewarm_finished.emit()
+            except RuntimeError:  # window already deleted
+                pass
 
     def _create_carousel_panel(self) -> QFrame:
         """Create the bottom carousel panel for Firefly candidate variations."""
@@ -1422,9 +1431,33 @@ class MainWindow(QMainWindow):
 
     def _on_model_changed(self, index: int):
         name = self.combo_model.itemData(index)
-        self.engine.set_model(name)
         self._settings.setValue(MODEL_SETTINGS_KEY, name)
-        self.statusBar().showMessage(f"Inpainting model: {self.combo_model.itemText(index)}", 3000)
+        if self.engine.set_model(name, blocking=False):
+            self._pending_model = None
+            self._show_model_status(index)
+            return
+        # Warm-up holds the load lock: never wait on it from the GUI thread; apply once it ends.
+        # Erase stays locked meanwhile so nothing runs on the old model.
+        self._pending_model = name
+        self.btn_erase.setEnabled(False)
+        self.statusBar().showMessage(f"Switching to {self.combo_model.itemText(index)} after warm-up...")
+
+    def _apply_pending_model(self):
+        """GUI thread, after warm-up released the load lock: apply the last model picked meanwhile."""
+        name, self._pending_model = self._pending_model, None
+        if name is None:
+            return
+        self.engine.set_model(name)
+        if self.worker is None:
+            self.btn_erase.setEnabled(True)
+        self._show_model_status(self.combo_model.findData(name))
+
+    def _show_model_status(self, index: int):
+        msg = f"Inpainting model: {self.combo_model.itemText(index)}"
+        if self.engine.last_unload_error:
+            self.statusBar().showMessage(f"{msg} ({self.engine.last_unload_error})", 8000)
+        else:
+            self.statusBar().showMessage(msg, 3000)
 
     def _set_run_controls_enabled(self, enabled: bool):
         """Erase button and Model dropdown are locked together for the whole worker run."""

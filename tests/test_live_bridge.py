@@ -281,6 +281,16 @@ class TestLiveBridgeHardening:
         status, _, _ = _raw_request(server.port, "POST", "/api/select", {"Content-Length": value})
         assert status == 400
 
+    @pytest.mark.parametrize("path", ["/api/select", "/api/import_done"])
+    @pytest.mark.parametrize("body", [b"[]", b'"x"', b"1", b"null"])
+    def test_non_object_json_body_rejected(self, qtbot, server, path, body):
+        emitted = []
+        server.photo_selected.connect(emitted.append)
+        status, _, raw = _raw_request(server.port, "POST", path, {"Content-Type": "application/json"}, body)
+        assert status == 400 and "error" in json.loads(raw)
+        qtbot.wait(50)
+        assert emitted == []
+
     def test_notify_lightroom_closing_still_accepted(self, qtbot, server):
         # urllib caller used by the companion itself must pass the guards
         status, data = _http_post(f"http://127.0.0.1:{server.port}/api/companion_closed", {})

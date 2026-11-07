@@ -136,6 +136,9 @@ class LiveBridgeRequestHandler(BaseHTTPRequestHandler):
         except Exception as e:
             self._send_json_response(400, {"error": f"Invalid JSON payload: {e}"})
             return
+        if not isinstance(payload, dict):
+            self._send_json_response(400, {"error": "JSON payload must be an object"})
+            return
 
         if self.path == "/api/select":
             image_path = payload.get("path")
