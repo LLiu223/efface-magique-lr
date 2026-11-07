@@ -206,6 +206,9 @@ class ImageCanvas(QGraphicsView):
         self._hud_timer = QTimer(self)
         self._hud_timer.timeout.connect(self._on_hud_timer_tick)
 
+        # Read-only Lightroom preview drawn over the scene; the scene (photo, mask, history) is untouched
+        self._placeholder: Optional[QPixmap] = None
+
         # Undo / Redo history
         self._image_history: List[Image.Image] = []
         self._image_redo_stack: List[Image.Image] = []
@@ -331,6 +334,12 @@ class ImageCanvas(QGraphicsView):
         # Automatically fit image to view when window resizes unless user actively zoomed in
         if not self._user_has_manually_zoomed and self._current_pil is not None:
             self.fit_to_screen()
+
+    def set_placeholder(self, pixmap: Optional[QPixmap]):
+        """Show pixmap fit to the viewport over everything (None hides it). Painting is refused meanwhile."""
+        self._placeholder = pixmap
+        self._is_drawing = False
+        self.viewport().update()
 
     def get_current_image(self) -> Optional[Image.Image]:
         """Return the current active PIL image."""
@@ -778,6 +787,17 @@ class ImageCanvas(QGraphicsView):
         """Draw viewport-level HUD overlays: Split divider, pills, and brush badge."""
         super().drawForeground(painter, rect)
 
+        if self._placeholder is not None:
+            painter.save()
+            painter.resetTransform()
+            vp = self.viewport().rect()
+            painter.fillRect(vp, QColor("#181818"))
+            pix = self._placeholder.scaled(vp.size(), Qt.AspectRatioMode.KeepAspectRatio,
+                                           Qt.TransformationMode.SmoothTransformation)
+            painter.drawPixmap((vp.width() - pix.width()) // 2, (vp.height() - pix.height()) // 2, pix)
+            painter.restore()
+            return
+
         # 1. Render Split-Screen Curtain Divider & Pills
         if self._split_compare_mode and self.scene is not None and not self.scene.sceneRect().isEmpty():
             painter.save()
@@ -932,6 +952,9 @@ class ImageCanvas(QGraphicsView):
         self.viewport().update()
 
     def mousePressEvent(self, event: QMouseEvent):
+        if self._placeholder is not None:
+            event.accept()
+            return
         # 1. Split-Screen slider drag initiation
         if self._split_compare_mode and event.button() == Qt.MouseButton.LeftButton:
             scene_pos = self.mapToScene(event.pos())
@@ -1057,6 +1080,9 @@ class ImageCanvas(QGraphicsView):
         super().mouseReleaseEvent(event)
 
     def keyPressEvent(self, event: QKeyEvent):
+        if self._placeholder is not None:  # Ctrl+Z/Y here would edit the hidden mask
+            event.accept()
+            return
         key = event.key()
 
         # Spacebar or Backslash (\) hold for instant Before/After comparison

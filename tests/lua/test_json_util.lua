@@ -49,6 +49,17 @@ check('escape: windows path', JsonUtil.jsonEscape([=[C:\Photos\say "hi"\x.tif]=]
 check('escape: \\"', JsonUtil.jsonEscape([=[\"]=]), [=[\\\"]=])
 check('escape: empty', JsonUtil.jsonEscape(''), '')
 
+-- 5. Preview-first sync bodies (job 019)
+check('preview leaf: number id', JsonUtil.previewLeafName(12345), 'preview_12345.jpg')
+check('preview leaf: string id', JsonUtil.previewLeafName('7'), 'preview_7.jpg')
+check('preview body', JsonUtil.previewBody([=[C:\Été "x"\.tmp\preview_7.jpg]=], 7),
+    [=[{"path": "C:\\Été \"x\"\\.tmp\\preview_7.jpg", "photo_id": "7"}]=])
+check('export failed body', JsonUtil.exportFailedBody(7), [=[{"photo_id": "7", "export_failed": true}]=])
+check('select body: export_ms rounded', JsonUtil.selectBody([=[C:\t\live_7.tif]=], 7, [=[D:\a "b".cr3]=], 'a "b"', 1234.6),
+    [=[{"path": "C:\\t\\live_7.tif", "photo_id": "7", "original_path": "D:\\a \"b\".cr3", "title": "a \"b\"", "export_ms": 1235}]=])
+check('select body: cache hit 0', JsonUtil.selectBody('p', '1', 'o', 't', 0):match('"export_ms": (%-?%d+)}$'), '0')
+check('select body: negative clamps to 0', JsonUtil.selectBody('p', '1', 'o', 't', -5):match('"export_ms": (%-?%d+)}$'), '0')
+
 if failures > 0 then
     io.stderr:write(string.format('%d failure(s)\n', failures))
     os.exit(1)

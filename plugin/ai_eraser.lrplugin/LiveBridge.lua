@@ -6,6 +6,7 @@ syncs active photo to Companion window, and auto-imports completed inpaintings.
 ------------------------------------------------------------------------------]]
 
 local LrApplication = import 'LrApplication'
+local LrDate = import 'LrDate'
 local LrDialogs = import 'LrDialogs'
 local LrExportSession = import 'LrExportSession'
 local LrFileUtils = import 'LrFileUtils'
@@ -112,6 +113,8 @@ local function runLiveBridge()
     local MAX_CACHED_EXPORTS = 5
     local cachedExports = {}
     local exportEditTimes = {} -- photo id -> lastEditTime at export (false when the photo has none)
+    local PREVIEW_SIZE = 2048 -- long edge of the cached-preview JPEG sent before the full export
+    local PREVIEW_BUDGET = 0.3 -- seconds to wait for Lightroom's preview callback before exporting anyway
 
     local function touchCachedExport(path)
         for i = #cachedExports, 1, -1 do
@@ -159,10 +162,7 @@ local function runLiveBridge()
                         local exportPath = LrPathUtils.child(tempDir, exportName)
 
                         local selectUrl = string.format("http://127.0.0.1:%d/api/select", port)
-                        local jsonBody = string.format(
-                            '{"path": "%s", "photo_id": "%s", "original_path": "%s", "title": "%s"}',
-                            JsonUtil.jsonEscape(exportPath), JsonUtil.jsonEscape(targetId), JsonUtil.jsonEscape(origPath), JsonUtil.jsonEscape(baseName)
-                        )
+                        local previewUrl = string.format("http://127.0.0.1:%d/api/preview", port)
 
                         -- false stands in for a missing edit time so the table entry still exists
                         local editTime = activePhoto:getRawMetadata('lastEditTime') or false
@@ -172,8 +172,35 @@ local function runLiveBridge()
                         if LrFileUtils.exists(exportPath) == "file"
                             and cachedEditTime ~= nil and cachedEditTime == editTime then
                             touchCachedExport(exportPath)
-                            LrHttp.post(selectUrl, jsonBody, headers)
+                            LrHttp.post(selectUrl, JsonUtil.selectBody(exportPath, targetId, origPath, baseName, 0), headers)
                         else
+                            -- Preview first: Lightroom's cached JPEG, shown read-only until the full export arrives.
+                            -- Any failure or a slow callback just skips it (today's behaviour).
+                            local previewPosted = false
+                            LrTasks.pcall(function()
+                                local jpeg = nil
+                                local request = activePhoto:requestJpegThumbnail(PREVIEW_SIZE, PREVIEW_SIZE, function(data, err)
+                                    if not err and type(data) == "string" and #data > 0 then
+                                        jpeg = jpeg or data
+                                    end
+                                end)
+                                local waited = 0
+                                while not jpeg and waited < PREVIEW_BUDGET do
+                                    LrTasks.sleep(0.02)
+                                    waited = waited + 0.02
+                                end
+                                request = nil -- kept referenced while waiting; a late callback only sets this dead local
+                                if jpeg then
+                                    local previewPath = LrPathUtils.child(tempDir, JsonUtil.previewLeafName(targetId))
+                                    local f = io.open(previewPath, "wb")
+                                    if f then
+                                        f:write(jpeg)
+                                        f:close()
+                                        previewPosted = LrHttp.post(previewUrl, JsonUtil.previewBody(previewPath, targetId), headers) ~= nil
+                                    end
+                                end
+                            end)
+
                             -- Ultra-fast uncompressed 16-bit TIFF export (no CPU-heavy ZIP compression)
                             local exportSettings = {
                                 LR_export_destinationType = 'specificFolder',
@@ -197,12 +224,17 @@ local function runLiveBridge()
                                 exportSettings = exportSettings,
                             })
 
+                            local exportStart = LrDate.currentTime()
                             exportSession:doExportOnCurrentTask()
+                            local exportMs = (LrDate.currentTime() - exportStart) * 1000
 
                             if LrFileUtils.exists(exportPath) == "file" then
                                 exportEditTimes[targetId] = editTime
                                 touchCachedExport(exportPath)
-                                LrHttp.post(selectUrl, jsonBody, headers)
+                                LrHttp.post(selectUrl, JsonUtil.selectBody(exportPath, targetId, origPath, baseName, exportMs), headers)
+                            elseif previewPosted then
+                                -- Nothing follows the preview: let the companion go back to its loaded photo now
+                                LrHttp.post(previewUrl, JsonUtil.exportFailedBody(targetId), headers)
                             end
                         end
                     end
@@ -300,18 +332,22 @@ local function runLiveBridge()
         LrHttp.post(closeUrl, "{}", headers)
     end
 
-    -- Clean up temporary exported live TIFFs
+    -- Clean up temporary exported live TIFFs and preview JPEGs
+    local function isSessionTemp(entry)
+        return (string.find(entry, "live_") and (string.find(entry, "%.tif") or string.find(entry, "%.tiff")))
+            or (string.find(entry, "preview_") and string.find(entry, "%.jpg"))
+    end
     if LrFileUtils.exists(tempDir) == "directory" then
         local entries = LrFileUtils.directoryEntries(tempDir)
         if type(entries) == "function" then
             for entry in entries do
-                if string.find(entry, "live_") and (string.find(entry, "%.tif") or string.find(entry, "%.tiff")) then
+                if isSessionTemp(entry) then
                     LrFileUtils.delete(entry)
                 end
             end
         elseif type(entries) == "table" then
             for _, entry in ipairs(entries) do
-                if string.find(entry, "live_") and (string.find(entry, "%.tif") or string.find(entry, "%.tiff")) then
+                if isSessionTemp(entry) then
                     LrFileUtils.delete(entry)
                 end
             end

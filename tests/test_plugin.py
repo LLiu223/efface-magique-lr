@@ -110,10 +110,40 @@ class TestLiveBridgeFixes(unittest.TestCase):
         self.assertIn("local JsonUtil = require 'JsonUtil'", src)
         self.assertNotIn("local function jsonEscape", src)
         self.assertNotIn("local function parsePendingImports", src)
-        self.assertIn("JsonUtil.jsonEscape(exportPath), JsonUtil.jsonEscape(targetId), "
-                      "JsonUtil.jsonEscape(origPath), JsonUtil.jsonEscape(baseName)", src)
+        self.assertEqual(src.count("JsonUtil.selectBody(exportPath, targetId, origPath, baseName, "), 2)
         self.assertIn("""string.format('{"path": "%s"}', JsonUtil.jsonEscape(editedPath))""", src)
         self.assertIn("JsonUtil.parsePendingImports(importsResp)", src)
+
+    def test_preview_first_sync(self):
+        """Job 019: preview only on a cache miss, before the unchanged export; export_ms; failure report; cleanup."""
+        src = _read_live_bridge()
+        hit = src.index("JsonUtil.selectBody(exportPath, targetId, origPath, baseName, 0)")
+        preview = src.index("activePhoto:requestJpegThumbnail(PREVIEW_SIZE, PREVIEW_SIZE, function(data, err)")
+        export = src.index("exportSession:doExportOnCurrentTask()")
+        self.assertLess(hit, preview)
+        self.assertLess(preview, export)
+        self.assertEqual(src.count("requestJpegThumbnail"), 1)
+        block = src[preview:export]
+        self.assertIn("LrTasks.sleep(", block)
+        self.assertIn("waited < PREVIEW_BUDGET", block)
+        self.assertIn('io.open(previewPath, "wb")', block)
+        self.assertIn("JsonUtil.previewLeafName(targetId)", block)
+        self.assertIn("JsonUtil.previewBody(previewPath, targetId)", block)
+        self.assertIn("PREVIEW_BUDGET = 0.3", src)
+        self.assertIn("LrTasks.pcall(function()", src[hit:preview + 200])
+        self.assertIn("local exportStart = LrDate.currentTime()\n                            exportSession:doExportOnCurrentTask()", src)
+        self.assertIn("JsonUtil.selectBody(exportPath, targetId, origPath, baseName, exportMs)", src)
+        self.assertIn("elseif previewPosted then", src)
+        self.assertIn("JsonUtil.exportFailedBody(targetId)", src)
+        # Export settings unchanged
+        for needle in ["LR_format = 'TIFF'", "LR_export_bitDepth = 16", "LR_export_colorSpace = 'ProPhotoRGB'",
+                       "LR_export_compressionMethod = 'None'", "LR_size_doConstrain = false"]:
+            self.assertIn(needle, src)
+        self.assertIn('(string.find(entry, "preview_") and string.find(entry, "%.jpg"))', src)
+        self.assertEqual(src.count("if isSessionTemp(entry) then"), 2)
+        util = _read_json_util()
+        for name in ("previewLeafName", "previewBody", "exportFailedBody", "selectBody"):
+            self.assertIn(f"{name} = {name},", util)
 
     def test_port_read_only_in_failure_branch(self):
         src = _read_live_bridge()

@@ -6,6 +6,7 @@ with the Python AI Companion app for instantaneous, zero-latency image synchroni
 """
 
 import os
+import re
 import json
 import logging
 import threading
@@ -26,6 +27,33 @@ _PROJECT_ROOT = os.path.dirname(_CURRENT_DIR)
 DEFAULT_BRIDGE_PORT = 51739
 MAX_BODY_BYTES = 64 * 1024
 BRIDGE_INFO_FILENAME = os.path.join(_PROJECT_ROOT, ".tmp", "live_bridge.json")
+# The only folder /api/preview may point into (the plugin's temp dir)
+PREVIEW_DIR = os.path.join(_PROJECT_ROOT, ".tmp")
+_PHOTO_ID_RE = re.compile(r"[A-Za-z0-9_-]+")
+
+
+def _validate_preview(payload: Dict[str, Any]) -> Optional[str]:
+    """Error text for a bad /api/preview body, else None. Untrusted input: exact compares only, no prefix match."""
+    photo_id = payload.get("photo_id")
+    if not isinstance(photo_id, str) or not _PHOTO_ID_RE.fullmatch(photo_id):
+        return "'photo_id' must be a non-empty string of [A-Za-z0-9_-]"
+    if "export_failed" in payload:
+        # Failure report: the plugin's full export for photo_id produced no file
+        if payload["export_failed"] is not True or "path" in payload:
+            return "'export_failed' must be true and comes without 'path'"
+        return None
+    path = payload.get("path")
+    if not isinstance(path, str) or not os.path.isabs(path):
+        return "'path' must be an absolute path"
+    if ".." in re.split(r"[\\/]", path):
+        return "'path' must not contain '..'"
+    if os.path.normcase(os.path.abspath(os.path.dirname(path))) != os.path.normcase(os.path.abspath(PREVIEW_DIR)):
+        return "'path' must be in the plugin temp folder"
+    if os.path.basename(path) != f"preview_{photo_id}.jpg":
+        return "'path' must be named preview_<photo_id>.jpg"
+    if not os.path.isfile(path):
+        return "'path' does not exist"
+    return None
 
 
 def _validate_model_field(payload: Dict[str, Any]) -> Optional[str]:
@@ -150,6 +178,10 @@ class LiveBridgeRequestHandler(BaseHTTPRequestHandler):
             if not image_path:
                 self._send_json_response(400, {"error": "Missing 'path' parameter"})
                 return
+            export_ms = payload.get("export_ms", 0)
+            if isinstance(export_ms, bool) or not isinstance(export_ms, int) or export_ms < 0:
+                self._send_json_response(400, {"error": "'export_ms' must be a non-negative integer"})
+                return
             model_error = _validate_model_field(payload)
             if model_error:
                 self._send_json_response(400, {"error": model_error})
@@ -166,6 +198,20 @@ class LiveBridgeRequestHandler(BaseHTTPRequestHandler):
                 "path": image_path,
                 "photo_id": payload.get("photo_id", ""),
             })
+            return
+
+        elif self.path == "/api/preview":
+            error = _validate_preview(payload)
+            if error:
+                self._send_json_response(400, {"error": error})
+                return
+            # active_image_path stays the last full file: a preview is never an edit base
+            payload["received_monotonic"] = time.monotonic()
+            try:
+                bridge_server.photo_previewed.emit(payload)
+            except (RuntimeError, AttributeError):
+                pass
+            self._send_json_response(200, {"status": "received", "photo_id": payload["photo_id"]})
             return
 
         elif self.path == "/api/import_done":
@@ -211,6 +257,7 @@ class LiveBridgeServer(QObject):
     Emits Qt signals on the main thread for seamless UI updates.
     """
     photo_selected = pyqtSignal(dict)
+    photo_previewed = pyqtSignal(dict)
     focus_requested = pyqtSignal()
     import_completed = pyqtSignal(dict)
     close_requested = pyqtSignal()
