@@ -1492,6 +1492,10 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Error Opening Image", f"Could not load image:\n{e}")
 
     def _on_open_file(self):
+        if self.worker is not None:
+            # The running erase would land its result on the newly opened photo
+            self.statusBar().showMessage("Erase in progress; open another photo once it finishes.", 5000)
+            return
         file_path, _ = QFileDialog.getOpenFileName(
             self,
             "Select Photo to Edit",
@@ -1500,6 +1504,10 @@ class MainWindow(QMainWindow):
         )
         if file_path and self._confirm_discard_layers():
             self.load_image_file(file_path)
+            if self.input_path == file_path:
+                # Not a Lightroom selection: Sync must not stack this edit onto the previous LR photo
+                self.current_photo_id = None
+                self.current_original_path = None
         # Selections that arrived during the prompt are superseded by this explicit choice
         self._pending_select = None
 
