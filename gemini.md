@@ -10,9 +10,9 @@
 |                                      ADOBE LIGHTROOM CLASSIC                                      |
 |                                                                                                   |
 | 1. User selects target photo in Library or Develop module.                                        |
-| 2. User invokes: File > Plug-in Extras > "⚡ AI Generative Eraser" (Live Window).                   |
+| 2. User invokes: File > Plug-in Extras > "⚡ AI Generative Eraser" (Live Window).                 |
 | 3. LiveBridge.lua:                                                                                |
-|    - Observes photo selection, debounces exports, and communicates with Companion via IPC bridge.  |
+|    - Observes photo selection, debounces exports, and communicates with Companion via IPC bridge. |
 |    - Exports 16-bit TIFF with embedded color profile (kept in memory as 16-bit by companion).     |
 |    - Sends selection event to local companion app via HTTP IPC API.                               |
 | 4. On companion save & sync:                                                                      |
@@ -22,19 +22,19 @@
                                                   | Process invocation (CLI arguments)
                                                   v
 +---------------------------------------------------------------------------------------------------+
-|                        PYTHON COMPANION APP (PyQt6 - Firefly Experience)                          |
+|                                    PYTHON COMPANION APP (PyQt6)                                   |
 |                                                                                                   |
 | - High-performance hardware-accelerated canvas supporting 24MP-60MP raw/tiff exports.             |
 | - Dual Inpainting Engine:                                                                         |
-|   * ✨ Generative AI Mode: LaMa inpainting with slight seeded variations (3 candidates, distinct  |
+|   * ✨ LaMa Variations: LaMa inpainting with slight seeded variations (3 candidates, distinct     |
 |     seeds). The optional prompt only adds a deterministic colour tint of a few levels.            |
 |   * ⚡ Fast Mode: Simple-LaMa GAN for instantaneous spot, dust, and wire removal.                 |
 | - Variations Carousel: Clickable thumbnail cards at bottom to instantly preview & switch          |
 |   between generated variations, plus "🔄 More Variations" button with seed re-roll.               |
 | - High-Fidelity Photographic Blending Pipeline:                                                   |
 |   1. Intelligent context-aware crop & padding with >= 35% margin (default 85%).                   |
-|   2. Camera sensor noise profiling (Laplacian variance & per-channel residuals).                   |
-|   3. Synthetic sensor ISO grain matching to eliminate plastic smoothing.                         |
+|   2. Camera sensor noise profiling (Laplacian variance & per-channel residuals).                  |
+|   3. Synthetic sensor ISO grain matching to eliminate plastic smoothing.                          |
 |   4. Seamless sigmoid / outer-feather alpha blending (zero untouched pixel bleed).                |
 | - Brush mask tools: Auto-Erase on stroke release, adjustable radius ([ and ]), eraser mode.       |
 | - Hold-to-Compare: Hold \ (Backslash) or Spacebar for instant Before/After comparison.            |
@@ -97,7 +97,7 @@ class MyModel(InpaintModel):
   - Python 3.10+ (Tested on 3.11 / 3.12)
   - **GUI Toolkit**: PyQt6 (High-DPI aware, OpenGL viewport canvas, dark studio aesthetic)
   - **Dual Inference Engine**:
-    * Generative AI mode: LaMa inpainting with slight seeded variations (prompt only adds a few levels of colour tint)
+    * LaMa Variations mode (UI label, formerly "Generative AI"): LaMa inpainting with slight seeded variations (prompt only adds a few levels of colour tint)
     * Simple-LaMa (Fast Fourier Convolutions) for rapid spot healing
   - **GPU Hardware Acceleration & Optimizations**:
     * NVIDIA CUDA GPU acceleration with cuDNN auto-tuning (`torch.backends.cudnn.benchmark = True`)

@@ -36,6 +36,7 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
+import companion
 from companion.live_bridge import LiveBridgeServer, BRIDGE_INFO_FILENAME
 from companion.app import MainWindow, HelpGuideDialog, _LOGO_PATH, _LOGO_ICO_PATH, _CHECKMARK_PATH, DARK_STYLE
 from package_release import create_release_zip
@@ -106,7 +107,7 @@ class TestLiveBridgeServer:
             assert status == 200
             assert data["status"] == "ok"
             assert data["app"] == "EffaceMagique"
-            assert data["version"] == "1.0"
+            assert data["version"] == companion.__version__
             assert data["pid"] == os.getpid()
             assert data["active_image"] is None
         finally:
@@ -358,7 +359,7 @@ class TestMainWindowLiveIntegration:
         window.close()
 
     def test_sync_to_lightroom_saves_and_keeps_window_open(self, qtbot, temp_image):
-        """_on_sync_to_lightroom saves 16-bit TIFF and queues import without closing MainWindow."""
+        """_on_sync_to_lightroom saves the TIFF (8-bit here, the fixture is 8-bit) and queues import without closing MainWindow."""
         with tempfile.NamedTemporaryFile(suffix=".tif", delete=False) as f:
             out_path = f.name
 

@@ -67,6 +67,8 @@ class InpaintingEngine:
         self._model_cls = registry.get(DEFAULT_MODEL)
         self._model: Optional[InpaintModel] = None  # loaded instance; None if not loaded or load failed
         self._is_loaded = False
+        # Why the LaMa model failed to load (None when loaded or not tried yet)
+        self.load_error: Optional[str] = None
         self._load_lock = threading.Lock()
 
     @property
@@ -89,6 +91,7 @@ class InpaintingEngine:
             free_device_memory(self.device)
             self._model_cls = new_cls
             self._is_loaded = False
+            self.load_error = None
         logger.info(f"Inpainting model switched to {name}.")
 
     def set_mode(self, mode: EngineMode):
@@ -116,6 +119,7 @@ class InpaintingEngine:
             model.load(self.device, progress_callback)
             self._model = model
         except Exception as e:
+            self.load_error = f"{type(e).__name__}: {e}"
             logger.warning(f"{model.label} ({model.name}) initialization: {e}")
             self._model = None
 
