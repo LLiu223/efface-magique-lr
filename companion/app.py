@@ -1422,13 +1422,14 @@ class MainWindow(QMainWindow):
         bar_layout.setContentsMargins(10, 5, 10, 5)
         bar_layout.setSpacing(12)
         flow_host = QWidget()
-        self.top_flow = FlowLayout(flow_host, spacing=12)
+        self.top_flow = FlowLayout(flow_host, spacing=12, reserve_height=True)
         self.top_bar_groups: List[QWidget] = []
         bar_layout.addWidget(flow_host, stretch=1)
 
-        def new_group(parent_layout=self.top_flow) -> QHBoxLayout:
+        def new_group(parent_layout=self.top_flow):
             group = QWidget()
-            group_layout = QHBoxLayout(group)
+            # Flow groups stay on one row and only wrap inside when wider than a whole row (huge fonts)
+            group_layout = FlowLayout(group, spacing=6) if parent_layout is self.top_flow else QHBoxLayout(group)
             group_layout.setContentsMargins(0, 0, 0, 0)
             group_layout.setSpacing(6)
             parent_layout.addWidget(group)
@@ -1597,7 +1598,7 @@ class MainWindow(QMainWindow):
         self._create_assistant_widgets(layout)
 
         # Primary actions: outside the flow, so they are never wrapped or squeezed
-        layout = new_group(bar_layout)
+        layout = new_group(bar_layout)  # a plain QHBoxLayout
         self.top_bar_groups.pop()
         self.primary_group = layout.parentWidget()
         bar_layout.setAlignment(self.primary_group, Qt.AlignmentFlag.AlignTop)
@@ -1621,7 +1622,7 @@ class MainWindow(QMainWindow):
 
         return bar
 
-    def _create_assistant_widgets(self, layout: QHBoxLayout):
+    def _create_assistant_widgets(self, layout):
         """Assistant input + provider/model fields; disabled when requirements-agent.txt is missing."""
         self.agent_input = QLineEdit()
         self.agent_input.setPlaceholderText("Assistant: e.g. remove the person on the left")
@@ -2743,7 +2744,8 @@ class MainWindow(QMainWindow):
             self._on_autosave_timer()
             try:
                 self._settings.setValue(WINDOW_GEOMETRY_KEY, self.saveGeometry())
-                self._settings.setValue(WINDOW_SPLITTER_KEY, self.middle_splitter.saveState())
+                if not self.layers_panel.isHidden():  # a hidden panel would be saved as width 0
+                    self._settings.setValue(WINDOW_SPLITTER_KEY, self.middle_splitter.saveState())
                 self._settings.sync()
             except Exception as e:
                 logger.warning(f"Could not save the window layout: {e}")

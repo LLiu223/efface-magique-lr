@@ -236,9 +236,10 @@ QLabel {
 class FlowLayout(QLayout):
     """Port of Qt's FlowLayout example: items go left to right and wrap to a new row when full."""
 
-    def __init__(self, parent=None, spacing: int = 6):
+    def __init__(self, parent=None, spacing: int = 6, reserve_height: bool = False):
         super().__init__(parent)
         self._items = []
+        self._reserve_height = reserve_height
         self.setContentsMargins(0, 0, 0, 0)
         self.setSpacing(spacing)
 
@@ -268,11 +269,16 @@ class FlowLayout(QLayout):
         needed = self._do_layout(rect, test_only=False)
         # A short window would squeeze the bar below its wrapped height; reserve the rows instead
         host = self.parentWidget()
-        if host is not None and host.minimumHeight() != needed:
+        if self._reserve_height and host is not None and host.minimumHeight() != needed:
             host.setMinimumHeight(needed)
 
     def sizeHint(self):
-        return self.minimumSize()
+        # Everything on one row; minimumSize() is the narrowest it can wrap to
+        items = [i for i in self._items if not i.isEmpty()]
+        size = QSize(sum(i.sizeHint().width() for i in items) + self.spacing() * max(0, len(items) - 1),
+                     max((i.sizeHint().height() for i in items), default=0))
+        m = self.contentsMargins()
+        return size + QSize(m.left() + m.right(), m.top() + m.bottom())
 
     def minimumSize(self):
         size = QSize()
@@ -291,12 +297,13 @@ class FlowLayout(QLayout):
             hint = item.sizeHint()
             if x + hint.width() > r.right() + 1 and line_height > 0:
                 x, y, line_height = r.x(), y + line_height + self.spacing(), 0
-            # A group wider than the row (only below the window minimum) gets the row width
+            # An item wider than the whole row gets the row width (a nested FlowLayout wraps inside it)
             w = min(hint.width(), max(item.minimumSize().width(), r.right() + 1 - x))
+            h = item.heightForWidth(w) if item.hasHeightForWidth() else hint.height()
             if not test_only:
-                item.setGeometry(QRect(QPoint(x, y), QSize(w, hint.height())))
+                item.setGeometry(QRect(QPoint(x, y), QSize(w, h)))
             x += w + self.spacing()
-            line_height = max(line_height, hint.height())
+            line_height = max(line_height, h)
         return y + line_height - rect.y() + m.bottom()
 
 

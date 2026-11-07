@@ -46,6 +46,7 @@ def _assert_not_clipped(w):
         assert group.isVisible()
         g = group.geometry().translated(group.parentWidget().mapTo(w.top_bar, group.parentWidget().rect().topLeft()))
         assert bar.contains(g), (g, bar)
+        assert group.parentWidget().rect().contains(group.geometry()), "group runs under Erase / Save"
         for child in group.findChildren(QPushButton) + group.findChildren(QCheckBox):
             if child.isVisible():
                 assert child.width() >= child.sizeHint().width(), child.text()
@@ -114,6 +115,24 @@ def test_geometry_and_splitter_survive_restart(qtbot, ini):
     qtbot.waitExposed(w2)
     QApplication.processEvents()
     assert w2.middle_splitter.sizes()[1] == sizes[1]
+
+
+def test_hidden_sidebar_at_close_reopens_at_normal_width(qtbot, ini):
+    w = _show(qtbot, (1100, 700))
+    total = sum(w.middle_splitter.sizes())
+    w.middle_splitter.setSizes([total - w.layers_panel.minimumWidth() - 60, w.layers_panel.minimumWidth() + 60])
+    QApplication.processEvents()
+    chosen = w.layers_panel.width()
+    w.close()  # stores the visible layout
+    w = _show(qtbot, (1100, 700))
+    w.btn_layers_toggle.setChecked(False)
+    QApplication.processEvents()
+    w.close()  # hidden: must not overwrite the stored width with 0
+
+    w = _show(qtbot, (1100, 700))
+    assert w.layers_panel.isVisible() and w.btn_layers_toggle.isChecked()
+    # The width chosen before hiding, not the 0 a hidden panel reports (which collapses to the minimum)
+    assert w.layers_panel.width() == chosen
 
 
 def test_oversized_geometry_is_clamped_to_screen(qtbot, ini):
