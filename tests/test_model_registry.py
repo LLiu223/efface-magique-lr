@@ -73,6 +73,13 @@ def ini_settings(monkeypatch, tmp_path):
     return lambda: QSettings(path, QSettings.Format.IniFormat)
 
 
+def _wait_warmup(window):
+    """Let the warm-up thread finish so model switches apply synchronously (job 018 defers them otherwise)."""
+    from PyQt6.QtWidgets import QApplication
+    window._prewarm_thread.join(60)
+    QApplication.processEvents()  # deliver the queued _prewarm_finished
+
+
 # (a) registry -------------------------------------------------------------
 
 def test_registry_register_get_all_available(fakes):
@@ -156,6 +163,7 @@ def test_settings_round_trip_and_fallback(qtbot, fakes, ini_settings, caplog):
     from companion.app import MainWindow, MODEL_SETTINGS_KEY
     window = MainWindow()
     qtbot.addWidget(window)
+    _wait_warmup(window)
     assert window.engine.model_name == "lama"
     window.combo_model.setCurrentIndex(window.combo_model.findData("fake_b"))
     assert window.engine.model_name == "fake_b"
@@ -261,9 +269,118 @@ def test_bridge_model_change_deferred_until_worker_finishes(qtbot, fakes, ini_se
     Image.new("RGB", (40, 30), (10, 20, 30)).save(photo)
     window = MainWindow()
     qtbot.addWidget(window)
+    _wait_warmup(window)
     window.worker = StubWorker()
     window._on_live_photo_selected({"path": photo, "model": "fake_b"})
     assert window.engine.model_name == "lama"  # held in _pending_select
     window._on_worker_thread_finished()
     assert window.engine.model_name == "fake_b" and window.combo_model.currentData() == "fake_b"
     assert window.input_path == photo
+
+
+# job 018: model switch hardening ---------------------------------------------------
+
+def test_switch_during_warmup_does_not_block_and_applies_last_pick(qtbot, fakes, ini_settings, monkeypatch):
+    import threading
+    import time
+    from companion.app import MainWindow, MODEL_SETTINGS_KEY
+    gate = threading.Event()
+
+    def gated_load(self, device, progress_callback=None):
+        _FakeBase.load(self, device, progress_callback)
+        gate.wait(10)  # warm-up holds _load_lock until the test opens the gate
+    monkeypatch.setattr(FakeA, "load", gated_load)
+    s = ini_settings()
+    s.setValue(MODEL_SETTINGS_KEY, "fake_a")
+    s.sync()
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    try:
+        qtbot.waitUntil(lambda: ("load", "fake_a") in EVENTS, timeout=3000)
+        for name in ("lama", "fake_b"):  # several picks during warm-up: only the last counts
+            t0 = time.monotonic()
+            window.combo_model.setCurrentIndex(window.combo_model.findData(name))
+            assert time.monotonic() - t0 < 0.5
+        assert window.engine.model_name == "fake_a"
+        assert window.statusBar().currentMessage() == "Switching to Fake B after warm-up..."
+        assert not window.btn_erase.isEnabled()
+        window._settings.sync()
+        assert ini_settings().value(MODEL_SETTINGS_KEY) == "fake_b"
+    finally:
+        gate.set()
+
+    qtbot.waitUntil(lambda: window.engine.model_name == "fake_b", timeout=3000)
+    # first "free" is the startup lama -> fake_a restore; no load of the in-between lama pick
+    assert EVENTS == [("free", None), ("load", "fake_a"), ("unload", "fake_a"), ("free", None)]
+    assert window.statusBar().currentMessage() == "Inpainting model: Fake B"
+    assert window.btn_erase.isEnabled() and not window.engine.is_loaded
+    window.engine.load_model()
+    assert EVENTS[-1] == ("load", "fake_b")
+
+
+def _boom_unload(self):
+    RESIDENT.discard(id(self))  # the fake really freed; only the call reports failure
+    raise RuntimeError("driver lost")
+
+
+def test_set_model_unload_failure_still_switches(fakes, monkeypatch, caplog):
+    engine = InpaintingEngine(device=torch.device("cpu"))
+    engine.set_model("fake_a")
+    engine.load_model()
+    monkeypatch.setattr(FakeA, "unload", _boom_unload)
+    EVENTS.clear()
+    with caplog.at_level(logging.WARNING, logger="EffaceMagiqueModelEngine"):
+        assert engine.set_model("fake_b") is True  # no re-raise
+    assert engine._model is None and EVENTS == [("free", None)]
+    assert engine._model_cls is FakeB and not engine.is_loaded
+    assert "driver lost" in engine.last_unload_error
+    assert any("fake_a" in r.getMessage() and r.exc_info for r in caplog.records)
+    engine.load_model()
+    assert EVENTS[-1] == ("load", "fake_b") and engine._model is not None
+
+
+def test_unload_failure_shown_in_status_bar(qtbot, fakes, ini_settings, monkeypatch):
+    from companion.app import MainWindow
+    monkeypatch.setattr(MainWindow, "_prewarm_engine", lambda self: None)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.engine.set_model("fake_a")
+    window.engine.load_model()
+    monkeypatch.setattr(FakeA, "unload", _boom_unload)
+    window.combo_model.setCurrentIndex(window.combo_model.findData("fake_b"))
+    msg = window.statusBar().currentMessage()
+    assert msg.startswith("Inpainting model: Fake B") and "Fake A failed: driver lost" in msg
+    assert window.engine.model_name == "fake_b" and not window.engine.is_loaded
+
+
+def test_erase_blocked_while_switch_pending(qtbot, fakes, ini_settings, monkeypatch):
+    from companion.app import MainWindow
+    monkeypatch.setattr(MainWindow, "_prewarm_engine", lambda self: None)
+    started = []
+    monkeypatch.setattr(model_engine.InpaintingWorker, "start", lambda self: started.append(self))
+    window = MainWindow()
+    qtbot.addWidget(window)
+    dialogs = []  # without the guard, the no-image check would pop this dialog
+    monkeypatch.setattr("companion.app.QMessageBox.information", lambda *a, **k: dialogs.append(a))
+    window._pending_model = "fake_b"
+    window._on_run_inpainting()  # what Return/Enter call
+    assert dialogs == []
+    window._start_inpainting_pipeline(Image.new("RGB", (64, 64)), Image.new("L", (64, 64), 0))  # Generate More
+    assert started == [] and window.worker is None
+    assert window.statusBar().currentMessage() == "Waiting for model switch..."
+    window._apply_pending_model()
+    assert window.engine.model_name == "fake_b" and window.btn_erase.isEnabled()
+
+
+def test_deferred_switch_failure_reenables_erase(qtbot, fakes, ini_settings, monkeypatch):
+    from companion.app import MainWindow
+    monkeypatch.setattr(MainWindow, "_prewarm_engine", lambda self: None)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.btn_erase.setEnabled(False)
+    window._pending_model = "gone_model"  # stale name: set_model raises KeyError
+    window._apply_pending_model()  # must not raise out of the slot
+    assert window.btn_erase.isEnabled() and window._pending_model is None
+    assert window.statusBar().currentMessage().startswith("Model switch to gone_model failed")
+    assert window.engine.model_name == "lama"

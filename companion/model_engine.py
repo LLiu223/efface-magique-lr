@@ -70,6 +70,7 @@ class InpaintingEngine:
         # Why the LaMa model failed to load (None when loaded or not tried yet)
         self.load_error: Optional[str] = None
         self._load_lock = threading.Lock()
+        self.last_unload_error: Optional[str] = None  # set by set_model when unload() raised
 
     @property
     def is_loaded(self) -> bool:
@@ -79,20 +80,34 @@ class InpaintingEngine:
     def model_name(self) -> str:
         return self._model_cls.name
 
-    def set_model(self, name: str):
-        """Switch the active model. Unloads and frees the old one first; the new one loads lazily."""
+    def set_model(self, name: str, blocking: bool = True) -> bool:
+        """Switch the active model. Unloads and frees the old one first; the new one loads lazily.
+
+        With blocking=False, returns False without switching if a load holds the lock.
+        A failing unload() is logged and stored in last_unload_error; the switch still completes.
+        """
         new_cls = registry.get(name)  # raises KeyError before anything is unloaded
-        with self._load_lock:  # plain Lock: never call set_model while holding it
+        if not self._load_lock.acquire(blocking=blocking):  # plain Lock: never call set_model while holding it
+            return False
+        try:
+            self.last_unload_error = None
             if new_cls is self._model_cls:
-                return
+                return True
             if self._model is not None:
-                self._model.unload()
+                try:
+                    self._model.unload()
+                except Exception as e:
+                    logger.exception(f"Unloading {self._model_cls.label} ({self.model_name}) failed")
+                    self.last_unload_error = f"unloading {self._model_cls.label} failed: {e}"
                 self._model = None
-            free_device_memory(self.device)
+            free_device_memory(self.device)  # best effort: a failed unload may still leak VRAM
             self._model_cls = new_cls
             self._is_loaded = False
             self.load_error = None
+        finally:
+            self._load_lock.release()
         logger.info(f"Inpainting model switched to {name}.")
+        return True
 
     def set_mode(self, mode: EngineMode):
         """Switch between Fast GAN and Firefly Generative modes."""

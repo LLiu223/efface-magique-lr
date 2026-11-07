@@ -182,6 +182,7 @@ class ImageLoaderWorker(QThread):
 class MainWindow(QMainWindow):
     # Emitted from the prewarm thread; AutoConnection queues it onto the GUI thread
     modelLoadFailed = pyqtSignal(str)
+    _prewarm_finished = pyqtSignal()  # emitted from the warm-up daemon thread, delivered queued on the GUI thread
 
     def __init__(
         self,
@@ -258,6 +259,8 @@ class MainWindow(QMainWindow):
         self._settings = _open_settings()
         self.engine.set_model(restore_model_name(self._settings))
 
+        self._pending_model: Optional[str] = None  # model picked while warm-up held the load lock
+        self._prewarm_finished.connect(self._apply_pending_model)
         # Start high-performance local Live IPC Bridge
         self.live_bridge = LiveBridgeServer(preferred_port=bridge_port, parent=self)
         self.live_bridge_port = self.live_bridge.start()
@@ -333,11 +336,13 @@ class MainWindow(QMainWindow):
             logger.warning(f"Background engine warmup non-fatal exception: {e}")
             if self.engine.load_error is None:
                 self.engine.load_error = str(e)
-        if self.engine.load_error is not None:
+        finally:
             try:
-                self.modelLoadFailed.emit(self.engine.load_error)
-            except RuntimeError:
-                pass  # window already destroyed
+                if self.engine.load_error is not None:  # before the deferred switch, so it reports the warmed model
+                    self.modelLoadFailed.emit(self.engine.load_error)
+                self._prewarm_finished.emit()
+            except RuntimeError:  # window already deleted
+                pass
 
     def _on_model_load_failed(self, err: str):
         """GUI thread: non-blocking, persistent status bar warning (no modal)."""
@@ -1545,9 +1550,45 @@ class MainWindow(QMainWindow):
 
     def _on_model_changed(self, index: int):
         name = self.combo_model.itemData(index)
-        self.engine.set_model(name)
         self._settings.setValue(MODEL_SETTINGS_KEY, name)
-        self.statusBar().showMessage(f"Inpainting model: {self.combo_model.itemText(index)}", 3000)
+        if self.engine.set_model(name, blocking=False):
+            self._pending_model = None
+            self._show_model_status(index)
+            return
+        # Warm-up holds the load lock: never wait on it from the GUI thread; apply once it ends.
+        # Erase stays locked meanwhile so nothing runs on the old model.
+        self._pending_model = name
+        self.btn_erase.setEnabled(False)
+        self.statusBar().showMessage(f"Switching to {self.combo_model.itemText(index)} after warm-up...")
+
+    def _apply_pending_model(self):
+        """GUI thread, after warm-up released the load lock: apply the last model picked meanwhile."""
+        name, self._pending_model = self._pending_model, None
+        if name is None:
+            return
+        try:
+            self.engine.set_model(name)
+            self._show_model_status(self.combo_model.findData(name))
+        except Exception as e:
+            logger.exception(f"Deferred switch to model {name!r} failed")
+            self.statusBar().showMessage(f"Model switch to {name} failed: {e}", 8000)
+        finally:
+            if self.worker is None:
+                self._set_run_controls_enabled(True)
+
+    def _model_switch_pending(self) -> bool:
+        """True (with a status hint) while a deferred switch waits: no erase may start on the old model."""
+        if self._pending_model is None:
+            return False
+        self.statusBar().showMessage("Waiting for model switch...", 3000)
+        return True
+
+    def _show_model_status(self, index: int):
+        msg = f"Inpainting model: {self.combo_model.itemText(index)}"
+        if self.engine.last_unload_error:
+            self.statusBar().showMessage(f"{msg} ({self.engine.last_unload_error})", 8000)
+        else:
+            self.statusBar().showMessage(msg, 3000)
 
     def _set_run_controls_enabled(self, enabled: bool):
         """Erase button and Model dropdown are locked together for the whole worker run."""
@@ -1723,6 +1764,8 @@ class MainWindow(QMainWindow):
 
     def _on_run_inpainting(self):
         """Trigger AI inpainting in a background worker thread."""
+        if self._model_switch_pending():  # Return/Enter shortcuts bypass the disabled Erase button
+            return
         if self.agent_input.hasFocus():
             # Enter in the assistant box is a question, not an erase
             self._on_agent_ask()
@@ -1917,6 +1960,8 @@ class MainWindow(QMainWindow):
 
     def _start_inpainting_pipeline(self, current_img: Image.Image, mask_img: Image.Image, seed: Optional[int] = None):
         """Launch worker thread for single-pass or multi-variation generation."""
+        if self._model_switch_pending():  # covers Generate More, which skips _on_run_inpainting
+            return
         self._set_run_controls_enabled(False)
         self.progress_bar.setVisible(True)
         self.progress_bar.setValue(2)
