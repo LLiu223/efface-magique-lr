@@ -1903,16 +1903,22 @@ class MainWindow(QMainWindow):
                 self.original_exif = None
             self.original_dpi = pil_img.info.get("dpi")
 
-            self.canvas.load_image(pil_img)
-            self.base_image = pil_img.copy().convert("RGB")
-            self._base_pixmap = QPixmap.fromImage(pil_to_qimage(self.base_image))
+            display_img = None
             tag = getattr(pil_img, "tag_v2", None)
             if tag is not None and tuple(tag.get(258, ())) == (16, 16, 16):
+                # Decode a 16-bit TIFF once; its high bytes are exactly what Pillow's 8-bit decode gives
                 arr16 = read_rgb16(file_path)
-                if arr16 is not None and arr16.shape[:2] == (self.base_image.height, self.base_image.width):
+                if arr16 is not None and arr16.shape[:2] == (pil_img.height, pil_img.width):
                     self.base_image16 = arr16
+                    display_img = Image.fromarray((arr16 >> 8).astype(np.uint8), "RGB")
                 else:
                     logger.warning("16-bit decode unavailable or size differs from 8-bit decode; saving at 8 bits.")
+            if display_img is None:
+                display_img = pil_img.convert("RGB")
+
+            self.canvas.load_image(display_img)  # keeps its own copies
+            self.base_image = display_img
+            self._base_pixmap = self.canvas.original_pixmap  # QPixmap is implicitly shared: no second upload
             self.modification_layers = []
             self.active_layer_index = None
             self.layer_card_widgets = {}

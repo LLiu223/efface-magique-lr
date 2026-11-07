@@ -163,3 +163,15 @@ def test_failed_overwrite_keeps_previous_file(tmp_path, monkeypatch):
     monkeypatch.setattr(tiff16.zlib, "compress", zlib.compress)
     assert np.array_equal(read_rgb16(p), arr)
     assert os.listdir(tmp_path) == ["x.tif"]
+
+
+def test_16bit_preview_matches_pillow_decode(qtbot, tmp_path):
+    """The 8-bit preview is built from the single 16-bit decode; it must equal Pillow's own 8-bit decode."""
+    src = str(tmp_path / "in.tif")
+    write_tiff16(src, _noisy16())
+    window = MainWindow(input_path=src)
+    qtbot.addWidget(window)
+    expected = np.asarray(Image.open(src).convert("RGB"))
+    assert np.array_equal(np.asarray(window.base_image), expected)
+    assert np.array_equal(np.asarray(window.canvas.get_current_image()), expected)
+    assert window._base_pixmap.width() == expected.shape[1]

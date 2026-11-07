@@ -256,6 +256,11 @@ class ImageCanvas(QGraphicsView):
         self.scene.addItem(self._brush_inner_ring_item)
         self._brush_inner_ring_item.setVisible(False)
 
+    @property
+    def original_pixmap(self) -> QPixmap:
+        """Pixmap of the image passed to load_image (shared, not copied)."""
+        return self._orig_pixmap
+
     def load_image(self, pil_img: Image.Image):
         """Set a new base image and initialize scene and masks with minimal memory overhead."""
         if pil_img.mode == "RGB":
