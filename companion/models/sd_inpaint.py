@@ -70,7 +70,7 @@ class SdInpaintModel(InpaintModel):
     def unavailable_reason(cls) -> str:
         missing = _missing_packages()
         if missing:
-            return f"Stable Diffusion needs {', '.join(missing)} (pip install -r requirements-extra.txt)."
+            return f"Stable Diffusion needs {', '.join(missing)} (pip install -r requirements-sd.txt)."
         files = cls._missing_files()
         if files:
             return (f"Stable Diffusion weights missing in {cls.weight_dir()}: {', '.join(files)} "
@@ -83,7 +83,7 @@ class SdInpaintModel(InpaintModel):
             progress_callback(CPU_WARNING)
         missing = _missing_packages()
         if missing:
-            raise ImportError(f"Stable Diffusion needs {', '.join(missing)} (pip install -r requirements-extra.txt).")
+            raise ImportError(f"Stable Diffusion needs {', '.join(missing)} (pip install -r requirements-sd.txt).")
         files = self._missing_files()
         if files:
             raise FileNotFoundError(f"Stable Diffusion weights missing in {self.weight_dir()}: {', '.join(files)} "

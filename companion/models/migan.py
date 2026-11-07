@@ -50,7 +50,7 @@ class MiganModel(InpaintModel):
     @classmethod
     def unavailable_reason(cls) -> str:
         if importlib.util.find_spec("onnxruntime") is None:
-            return "MI-GAN needs the onnxruntime package (pip install -r requirements-extra.txt)."
+            return "MI-GAN needs the onnxruntime package (pip install -r requirements-migan.txt)."
         if not os.path.isfile(cls.weight_path()):
             return f"MI-GAN weights missing: {cls.weight_path()} (re-run install.bat and answer y to MI-GAN)."
         return ""
@@ -59,7 +59,7 @@ class MiganModel(InpaintModel):
         try:
             import onnxruntime as ort
         except ImportError as e:
-            raise ImportError("MI-GAN needs the onnxruntime package (pip install -r requirements-extra.txt).") from e
+            raise ImportError("MI-GAN needs the onnxruntime package (pip install -r requirements-migan.txt).") from e
         path = self.weight_path()
         if not os.path.isfile(path):
             raise FileNotFoundError(f"MI-GAN weights missing: {path} (re-run install.bat).")

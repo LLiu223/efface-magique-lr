@@ -63,23 +63,23 @@ goto :INSTALL_COMPLETE
 :: ---------------------------------------------------------------------
 set "MODELS_DIR=%~dp0models"
 set "FETCH_ERRORS=0"
-set "EXTRAS_DONE=0"
 
 echo.
 set "ANSWER="
 set /p "ANSWER=[?] Download MI-GAN, a small fast eraser, 28 MB, MIT licence? [y/N]: "
-if /i "!ANSWER!"=="y" (
-    call :INSTALL_EXTRAS
+if /i "!ANSWER!"=="y" call :INSTALL_EXTRAS requirements-migan.txt MI-GAN
+if /i "!ANSWER!"=="y" if "!PIP_OK!"=="1" (
     call :FETCH "https://huggingface.co/andraniksargsyan/migan/resolve/406830d0fa60666da0071c342ad2fbc8f30c5c64/migan_pipeline_v2.onnx" "!MODELS_DIR!\migan_pipeline_v2.onnx" 6f1f3530a1a2324b19752018ce756088b07973cda8d7d890034ace5c8a48c40b
 )
 
 echo.
 echo [i] Stable Diffusion inpainting is prompt-driven but slow on CPU. Download size: about 2.1 GB,
 echo     plus the diffusers/transformers/accelerate packages. Licence: CreativeML OpenRAIL-M, use restrictions apply.
+echo     The diffusers safety checker is turned off; see README "Optional models" for why and how to turn it on.
 set "ANSWER="
 set /p "ANSWER=[?] Download Stable Diffusion inpainting, about 2.1 GB? [y/N]: "
-if /i "!ANSWER!"=="y" (
-    call :INSTALL_EXTRAS
+if /i "!ANSWER!"=="y" call :INSTALL_EXTRAS requirements-sd.txt "Stable Diffusion"
+if /i "!ANSWER!"=="y" if "!PIP_OK!"=="1" (
     set "SD_URL=https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-inpainting/resolve/8a4288a76071f7280aedbdb3253bdb9e9d5d84bb"
     call :FETCH_SD model_index.json 636d700de8970a70f02b91d433ad949dc2ceb750f39ba0cf2cf39ef0b0b9d1e4
     call :FETCH_SD feature_extractor/preprocessor_config.json 2a1da83b5e1032aaeef397552ddb408dca0d8cd1dc58f61bf6abf38d6f33a0a2
@@ -98,7 +98,8 @@ if /i "!ANSWER!"=="y" (
 
 if not "!FETCH_ERRORS!"=="0" (
     echo.
-    echo [ERROR] !FETCH_ERRORS! optional model file^(s^) failed to download or verify. Bad files were deleted.
+    echo [ERROR] !FETCH_ERRORS! optional model step^(s^) failed: package install, download or verification.
+    echo     Partial and bad downloads were deleted.
     echo     The core app works without them. Re-run install.bat to retry.
 )
 
@@ -123,20 +124,21 @@ exit /b 0
 :: Subroutines
 :: ---------------------------------------------------------------------
 :INSTALL_EXTRAS
-if "!EXTRAS_DONE!"=="1" exit /b 0
-echo [*] Installing optional model packages from requirements-extra.txt...
+:: %1 = requirements file, %2 = model label. Sets PIP_OK=1 on success; on failure the caller skips the weights.
+set "PIP_OK=0"
+echo [*] Installing %~2 packages from %~1...
 where uv >nul 2>nul
 if !errorlevel! equ 0 (
-    uv pip install -r requirements-extra.txt --python .venv\Scripts\python.exe
+    uv pip install -r "%~1" --python .venv\Scripts\python.exe
 ) else (
-    .venv\Scripts\python.exe -m pip install -r requirements-extra.txt
+    .venv\Scripts\python.exe -m pip install -r "%~1"
 )
 if !errorlevel! neq 0 (
-    echo [ERROR] Installing requirements-extra.txt failed.
+    echo [ERROR] Installing %~1 failed. Skipping the %~2 weight download: the model could not run without its packages.
     set /a FETCH_ERRORS+=1
     exit /b 1
 )
-set "EXTRAS_DONE=1"
+set "PIP_OK=1"
 exit /b 0
 
 :FETCH_SD
@@ -146,8 +148,10 @@ call :FETCH "!SD_URL!/!SD_REL!" "!MODELS_DIR!\sd_inpaint\!SD_REL:/=\!" %~2
 exit /b
 
 :FETCH
-:: %1 = URL, %2 = destination file, %3 = expected SHA256. A file that fails the check is deleted.
+:: %1 = URL, %2 = destination file, %3 = expected SHA256. Downloads to <dest>.part and moves it into place only
+:: after the hash matches, so an interrupted or failed download never leaves a file at the final path.
 set "FETCH_DEST=%~2"
+set "FETCH_PART=%~2.part"
 if exist "!FETCH_DEST!" (
     call :HASH_MATCHES "!FETCH_DEST!" %~3
     if "!HASH_OK!"=="1" (
@@ -158,18 +162,26 @@ if exist "!FETCH_DEST!" (
     del /f /q "!FETCH_DEST!"
 )
 for %%D in ("!FETCH_DEST!") do if not exist "%%~dpD" mkdir "%%~dpD"
+if exist "!FETCH_PART!" del /f /q "!FETCH_PART!"
 echo [*] Downloading %~1
-curl.exe -L --fail --retry 3 -o "!FETCH_DEST!" "%~1"
+curl.exe -L --fail --retry 3 -o "!FETCH_PART!" "%~1"
 if !errorlevel! neq 0 (
     echo [ERROR] Download failed: %~1
-    if exist "!FETCH_DEST!" del /f /q "!FETCH_DEST!"
+    if exist "!FETCH_PART!" del /f /q "!FETCH_PART!"
     set /a FETCH_ERRORS+=1
     exit /b 1
 )
-call :HASH_MATCHES "!FETCH_DEST!" %~3
+call :HASH_MATCHES "!FETCH_PART!" %~3
 if not "!HASH_OK!"=="1" (
-    echo [ERROR] SHA256 mismatch, file deleted: !FETCH_DEST!
-    del /f /q "!FETCH_DEST!"
+    echo [ERROR] SHA256 mismatch, download deleted: !FETCH_PART!
+    del /f /q "!FETCH_PART!"
+    set /a FETCH_ERRORS+=1
+    exit /b 1
+)
+move /y "!FETCH_PART!" "!FETCH_DEST!" >nul
+if !errorlevel! neq 0 (
+    echo [ERROR] Could not move the verified download into place: !FETCH_DEST!
+    del /f /q "!FETCH_PART!"
     set /a FETCH_ERRORS+=1
     exit /b 1
 )

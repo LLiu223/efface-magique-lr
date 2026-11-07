@@ -1,0 +1,4 @@
+# Efface Magique LR - optional MI-GAN model dependency.
+# install.bat installs this file when you opt in to the MI-GAN download.
+# Pinned to the version tested with this release (numpy 1.26.4, Python 3.11).
+onnxruntime==1.31.1

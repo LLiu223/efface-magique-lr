@@ -4,6 +4,7 @@ import dataclasses
 import hashlib
 import importlib.machinery
 import importlib.util
+import os
 import sys
 import types
 
@@ -138,7 +139,7 @@ def test_migan_unavailable_reasons(monkeypatch, models_dir):
     _hide_packages(monkeypatch, "onnxruntime")
     assert not MiganModel.is_available()
     assert "onnxruntime" in MiganModel.unavailable_reason()
-    assert "requirements-extra.txt" in MiganModel.unavailable_reason()
+    assert "requirements-migan.txt" in MiganModel.unavailable_reason()
 
 
 def test_migan_missing_weight_file(monkeypatch, models_dir):
@@ -155,7 +156,7 @@ def test_sd_unavailable_names_missing_package(monkeypatch, fake_sd):
     _hide_packages(monkeypatch, "accelerate")
     assert not SdInpaintModel.is_available()
     reason = SdInpaintModel.unavailable_reason()
-    assert "accelerate" in reason and "diffusers" not in reason and "requirements-extra.txt" in reason
+    assert "accelerate" in reason and "diffusers" not in reason and "requirements-sd.txt" in reason
 
 
 def test_sd_unavailable_names_missing_weight_file(fake_sd):
@@ -164,6 +165,21 @@ def test_sd_unavailable_names_missing_weight_file(fake_sd):
     reason = SdInpaintModel.unavailable_reason()
     assert "unet/diffusion_pytorch_model.fp16.safetensors" in reason and "vae/" not in reason
     assert "install.bat" in reason
+
+
+def _requirement_names(filename):
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(root, filename), encoding="utf-8") as f:
+        lines = [ln.strip() for ln in f if ln.strip() and not ln.startswith("#")]
+    assert all("==" in ln for ln in lines), lines  # exact pins (rework round 2)
+    return {ln.split("==")[0].lower() for ln in lines}
+
+
+def test_each_model_has_its_own_pinned_requirements_file():
+    assert _requirement_names("requirements-migan.txt") == {"onnxruntime"}
+    assert _requirement_names("requirements-sd.txt") == set(sd_inpaint.PACKAGES)
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    assert not os.path.exists(os.path.join(root, "requirements-extra.txt"))
 
 
 def test_is_available_imports_nothing(monkeypatch, models_dir):
@@ -177,10 +193,10 @@ def test_is_available_imports_nothing(monkeypatch, models_dir):
 
 def test_load_raises_missing_dependency_text(monkeypatch, models_dir):
     _hide_packages(monkeypatch, "diffusers")
-    with pytest.raises(ImportError, match=r"diffusers.*requirements-extra\.txt"):
+    with pytest.raises(ImportError, match=r"diffusers.*requirements-sd\.txt"):
         SdInpaintModel().load(CPU)
     monkeypatch.setitem(sys.modules, "onnxruntime", None)  # makes `import onnxruntime` fail
-    with pytest.raises(ImportError, match=r"onnxruntime.*requirements-extra\.txt"):
+    with pytest.raises(ImportError, match=r"onnxruntime.*requirements-migan\.txt"):
         MiganModel().load(CPU)
 
 
@@ -321,9 +337,11 @@ def window(qtbot, monkeypatch, tmp_path, fake_sd):
     return w
 
 
-def test_prompt_field_follows_model_and_run_lock(window, monkeypatch):
+def test_prompt_field_follows_model_and_run_lock(window, monkeypatch, qtbot):
     assert window.engine.model_name == "lama" and not window.txt_prompt.isEnabled()
     window.combo_model.setCurrentIndex(window.combo_model.findData("sd_inpaint"))
+    assert window.txt_prompt.isEnabled()  # also while the switch is deferred behind warm-up
+    qtbot.waitUntil(lambda: window._pending_model is None and window.engine.model_name == "sd_inpaint")
     assert window.txt_prompt.isEnabled()
 
     captured = {}

@@ -24,7 +24,8 @@ INCLUDE_FILES = [
     "companion.bat",
     "companion.sh",
     "requirements.txt",
-    "requirements-extra.txt",
+    "requirements-migan.txt",
+    "requirements-sd.txt",
     "README.md",
     "package_release.bat",
 ]
