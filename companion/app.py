@@ -1447,10 +1447,22 @@ class MainWindow(QMainWindow):
         name, self._pending_model = self._pending_model, None
         if name is None:
             return
-        self.engine.set_model(name)
-        if self.worker is None:
-            self.btn_erase.setEnabled(True)
-        self._show_model_status(self.combo_model.findData(name))
+        try:
+            self.engine.set_model(name)
+            self._show_model_status(self.combo_model.findData(name))
+        except Exception as e:
+            logger.exception(f"Deferred switch to model {name!r} failed")
+            self.statusBar().showMessage(f"Model switch to {name} failed: {e}", 8000)
+        finally:
+            if self.worker is None:
+                self._set_run_controls_enabled(True)
+
+    def _model_switch_pending(self) -> bool:
+        """True (with a status hint) while a deferred switch waits: no erase may start on the old model."""
+        if self._pending_model is None:
+            return False
+        self.statusBar().showMessage("Waiting for model switch...", 3000)
+        return True
 
     def _show_model_status(self, index: int):
         msg = f"Inpainting model: {self.combo_model.itemText(index)}"
@@ -1627,6 +1639,8 @@ class MainWindow(QMainWindow):
 
     def _on_run_inpainting(self):
         """Trigger AI inpainting in a background worker thread."""
+        if self._model_switch_pending():  # Return/Enter shortcuts bypass the disabled Erase button
+            return
         current_img = self.canvas.get_current_image()
         mask_img = self.canvas.get_mask_image()
 
@@ -1675,6 +1689,8 @@ class MainWindow(QMainWindow):
 
     def _start_inpainting_pipeline(self, current_img: Image.Image, mask_img: Image.Image, seed: Optional[int] = None):
         """Launch worker thread for single-pass or multi-variation generation."""
+        if self._model_switch_pending():  # covers Generate More, which skips _on_run_inpainting
+            return
         self._set_run_controls_enabled(False)
         self.progress_bar.setVisible(True)
         self.progress_bar.setValue(2)

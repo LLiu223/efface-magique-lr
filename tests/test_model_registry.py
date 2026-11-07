@@ -352,3 +352,35 @@ def test_unload_failure_shown_in_status_bar(qtbot, fakes, ini_settings, monkeypa
     msg = window.statusBar().currentMessage()
     assert msg.startswith("Inpainting model: Fake B") and "Fake A failed: driver lost" in msg
     assert window.engine.model_name == "fake_b" and not window.engine.is_loaded
+
+
+def test_erase_blocked_while_switch_pending(qtbot, fakes, ini_settings, monkeypatch):
+    from companion.app import MainWindow
+    monkeypatch.setattr(MainWindow, "_prewarm_engine", lambda self: None)
+    started = []
+    monkeypatch.setattr(model_engine.InpaintingWorker, "start", lambda self: started.append(self))
+    window = MainWindow()
+    qtbot.addWidget(window)
+    dialogs = []  # without the guard, the no-image check would pop this dialog
+    monkeypatch.setattr("companion.app.QMessageBox.information", lambda *a, **k: dialogs.append(a))
+    window._pending_model = "fake_b"
+    window._on_run_inpainting()  # what Return/Enter call
+    assert dialogs == []
+    window._start_inpainting_pipeline(Image.new("RGB", (64, 64)), Image.new("L", (64, 64), 0))  # Generate More
+    assert started == [] and window.worker is None
+    assert window.statusBar().currentMessage() == "Waiting for model switch..."
+    window._apply_pending_model()
+    assert window.engine.model_name == "fake_b" and window.btn_erase.isEnabled()
+
+
+def test_deferred_switch_failure_reenables_erase(qtbot, fakes, ini_settings, monkeypatch):
+    from companion.app import MainWindow
+    monkeypatch.setattr(MainWindow, "_prewarm_engine", lambda self: None)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.btn_erase.setEnabled(False)
+    window._pending_model = "gone_model"  # stale name: set_model raises KeyError
+    window._apply_pending_model()  # must not raise out of the slot
+    assert window.btn_erase.isEnabled() and window._pending_model is None
+    assert window.statusBar().currentMessage().startswith("Model switch to gone_model failed")
+    assert window.engine.model_name == "lama"
