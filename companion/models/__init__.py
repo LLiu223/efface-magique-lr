@@ -5,6 +5,9 @@ from companion.models.base import InpaintModel
 from companion.models import lama  # noqa: F401  (registers LamaModel)
 from companion.models import migan  # noqa: F401  (registers MiganModel; optional weights)
 from companion.models import sd_inpaint  # noqa: F401  (registers SdInpaintModel; optional weights)
+from companion.models import tuned
+
+tuned.discover()  # after the built-in models, so they stay first in the dropdown
 
 DEFAULT_MODEL = "lama"
 
