@@ -61,6 +61,12 @@ class AppConfig:
     # "models/" (gitignored), outside companion/ so the release zip never ships weights.
     MODELS_DIR: str = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "models")
 
+    # Optional assistant (companion/agent) defaults; user choices live in QSettings
+    AGENT_MAX_STEPS: int = 8                 # model calls per request
+    AGENT_TOKEN_BUDGET: int = 20000          # input + output tokens per request
+    AGENT_TIMEOUT_S: float = 120.0           # wall clock per request
+    AGENT_TOOL_OUTPUT_CAP: int = 2000        # max chars of one tool result sent to the model
+
 
 # Global singleton configuration instance
 CONFIG = AppConfig()

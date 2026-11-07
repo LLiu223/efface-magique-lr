@@ -10,9 +10,9 @@
 |                                      ADOBE LIGHTROOM CLASSIC                                      |
 |                                                                                                   |
 | 1. User selects target photo in Library or Develop module.                                        |
-| 2. User invokes: File > Plug-in Extras > "⚡ AI Generative Eraser" (Live Window).                   |
+| 2. User invokes: File > Plug-in Extras > "⚡ AI Generative Eraser" (Live Window).                 |
 | 3. LiveBridge.lua:                                                                                |
-|    - Observes photo selection, debounces exports, and communicates with Companion via IPC bridge.  |
+|    - Observes photo selection, debounces exports, and communicates with Companion via IPC bridge. |
 |    - Exports 16-bit TIFF with embedded color profile (kept in memory as 16-bit by companion).     |
 |    - Sends selection event to local companion app via HTTP IPC API.                               |
 | 4. On companion save & sync:                                                                      |
@@ -22,19 +22,19 @@
                                                   | Process invocation (CLI arguments)
                                                   v
 +---------------------------------------------------------------------------------------------------+
-|                        PYTHON COMPANION APP (PyQt6 - Firefly Experience)                          |
+|                                    PYTHON COMPANION APP (PyQt6)                                   |
 |                                                                                                   |
 | - High-performance hardware-accelerated canvas supporting 24MP-60MP raw/tiff exports.             |
 | - Dual Inpainting Engine:                                                                         |
-|   * ✨ Generative AI Mode: LaMa inpainting with slight seeded variations (3 candidates, distinct  |
+|   * ✨ LaMa Variations: LaMa inpainting with slight seeded variations (3 candidates, distinct     |
 |     seeds). The optional prompt only adds a deterministic colour tint of a few levels.            |
 |   * ⚡ Fast Mode: Simple-LaMa GAN for instantaneous spot, dust, and wire removal.                 |
 | - Variations Carousel: Clickable thumbnail cards at bottom to instantly preview & switch          |
 |   between generated variations, plus "🔄 More Variations" button with seed re-roll.               |
 | - High-Fidelity Photographic Blending Pipeline:                                                   |
 |   1. Intelligent context-aware crop & padding with >= 35% margin (default 85%).                   |
-|   2. Camera sensor noise profiling (Laplacian variance & per-channel residuals).                   |
-|   3. Synthetic sensor ISO grain matching to eliminate plastic smoothing.                         |
+|   2. Camera sensor noise profiling (Laplacian variance & per-channel residuals).                  |
+|   3. Synthetic sensor ISO grain matching to eliminate plastic smoothing.                          |
 |   4. Seamless sigmoid / outer-feather alpha blending (zero untouched pixel bleed).                |
 | - Brush mask tools: Auto-Erase on stroke release, adjustable radius ([ and ]), eraser mode.       |
 | - Hold-to-Compare: Hold \ (Backslash) or Spacebar for instant Before/After comparison.            |
@@ -61,13 +61,19 @@ The dropdown is locked while an erase runs. The bridge accepts an optional `"mod
 | Name (`name`) | Weights | Speed | Prompt | Licence | Install |
 |---|---|---|---|---|---|
 | LaMa (`lama`, default) | ~200 MB (package cache) | fast | no | Apache-2.0 | `requirements.txt` |
-| MI-GAN (`migan`) | 28 MB ONNX, `models/migan_pipeline_v2.onnx` | fastest, also on CPU | no | MIT (code and weights) | install.bat optional step |
-| Stable Diffusion (`sd_inpaint`) | ~2.1 GB fp16 safetensors, `models/sd_inpaint/` | slow: seconds on GPU, minutes on CPU | yes (prompt field) | CreativeML OpenRAIL-M | install.bat optional step + `requirements-extra.txt` |
+| MI-GAN (`migan`) | 28 MB ONNX, `models/migan_pipeline_v2.onnx` | fastest, also on CPU | no | MIT (code and weights) | install.bat optional step + `requirements-migan.txt` |
+| Stable Diffusion (`sd_inpaint`) | ~2.1 GB fp16 safetensors, `models/sd_inpaint/` | slow: seconds on GPU, minutes on CPU | yes (prompt field) | CreativeML OpenRAIL-M | install.bat optional step + `requirements-sd.txt` |
 
 Optional weights live in the repo-root `models/` folder (`CONFIG.MODELS_DIR`, gitignored, never packaged).
-install.bat asks y/N per model (default N), pins the download (HF revision) and checks every file's SHA256.
+install.bat asks y/N per model (default N) and installs only that model's pinned requirements file
+(`requirements-migan.txt`: onnxruntime; `requirements-sd.txt`: diffusers, transformers, accelerate). If that pip
+install fails, the model's weights are not downloaded. Downloads are pinned (HF revision), saved as `<file>.part`,
+checked against their SHA256 and only then moved to the final name, so an interrupted download never shows up as
+an installed model.
 Models whose package or weights are missing stay greyed out in the Model dropdown with a tooltip saying what to install.
 The prompt field next to the Model dropdown is enabled only for models with `uses_prompt` (Stable Diffusion).
+A prompt the assistant sets with its `set_prompt` tool shows up in that field, and the field's text is the
+starting prompt for the assistant.
 Stable Diffusion runs with `local_files_only=True` and the diffusers safety checker disabled.
 
 How to add a model:
@@ -100,6 +106,30 @@ class MyModel(InpaintModel):
         return self._net(crop, mask).convert("RGB").resize(crop.size, Image.Resampling.LANCZOS)
 ```
 
+### Assistant (optional, `companion/agent/`)
+Type a request such as "remove the person on the left" in the **Assistant** box in the top bar and press **Ask**.
+A LangChain agent (`langchain.agents.create_agent`) works only through five tools and never replaces the engine:
+
+```
+Assistant box -> AgentWorker (QThread, harness.py: max steps / token budget / timeout / cancel / allow-list / 1 retry)
+              -> tools.py: list_models, select_model, set_prompt, detect_regions, inpaint_region
+              -> registry.get + InpaintingEngine.set_model / get_segmentation_model / InpaintingEngine.generate_variations
+              -> proposal preview -> user clicks Apply -> the normal Erase layer path (_on_inpainting_finished)
+```
+
+- Install with `pip install -r requirements-agent.txt` (pinned versions; `requirements.txt` is unchanged). Without
+  it the app runs as before and the assistant fields are disabled with the tooltip "install requirements-agent.txt".
+- Providers: `ollama` (default, `http://localhost:11434`), `anthropic`, `openai`, `gemini`. Keys are read only from
+  `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`; they are never written to settings, logs or the usage DB.
+- `detect_regions` can only locate the 20 VOC classes of the segmentation weights (person, car, bottle, dog, chair...),
+  so "remove the bin" usually ends with "nothing matching was found"; paint over such objects by hand.
+- Nothing is added to the layers until you click **Apply**; **Discard** drops the preview, **Stop** cancels.
+- **Usage** opens the usage log (SQLite in the app data folder: tokens, latency, estimated cost per call, CSV export,
+  Clear) and the assistant settings (Ollama URL, token budget, opt-in "store prompt text").
+- **Privacy:** images are never sent to an LLM in v1, nor are file names or EXIF; only your request text, the model
+  list and region labels/positions. Ollama on localhost keeps that text on this computer (a non-localhost Ollama URL
+  shows a warning). Anthropic, OpenAI and Gemini are cloud services: the text and region labels leave the device.
+
 ## 2. Technology Stack
 
 - **Lightroom Classic Plugin**:
@@ -109,7 +139,7 @@ class MyModel(InpaintModel):
   - Python 3.10+ (Tested on 3.11 / 3.12)
   - **GUI Toolkit**: PyQt6 (High-DPI aware, OpenGL viewport canvas, dark studio aesthetic)
   - **Dual Inference Engine**:
-    * Generative AI mode: LaMa inpainting with slight seeded variations (prompt only adds a few levels of colour tint)
+    * LaMa Variations mode (UI label, formerly "Generative AI"): LaMa inpainting with slight seeded variations (prompt only adds a few levels of colour tint)
     * Simple-LaMa (Fast Fourier Convolutions) for rapid spot healing
   - **GPU Hardware Acceleration & Optimizations**:
     * NVIDIA CUDA GPU acceleration with cuDNN auto-tuning (`torch.backends.cudnn.benchmark = True`)
@@ -138,6 +168,8 @@ efface-magique-lr/
 ├── README.md                            # End-user setup and installation manual
 ├── requirements.txt                     # Production Python dependencies
 ├── requirements-dev.txt                 # Testing & QA dependencies (pytest, pytest-qt, etc.)
+├── requirements-migan.txt               # Optional MI-GAN dependency (onnxruntime), pinned
+├── requirements-sd.txt                  # Optional Stable Diffusion dependencies (diffusers, transformers, accelerate), pinned
 ├── run_tests.py                         # Unified test runner with coverage and formatted reports
 ├── companion.bat                        # Windows external editor launcher for Ctrl+Alt+E workflow
 ├── companion.sh                         # Unix/macOS external editor launcher
@@ -158,6 +190,7 @@ efface-magique-lr/
 │   ├── canvas.py                        # Interactive high-res canvas, brush, auto-fit, hold-to-compare (\)
 │   ├── model_engine.py                  # Engine around the active registry model (EngineMode.FIREFLY & FAST) + seeded variations
 │   ├── models/                          # InpaintModel ABC (base.py), registry.py, lama.py (default "lama"), migan.py, sd_inpaint.py
+│   ├── agent/                           # Optional assistant: llm.py, tools.py, harness.py, usage.py, usage_dialog.py
 │   ├── pipeline.py                      # Photographic pipeline (crop, noise, grain, sigmoid blending)
 │   ├── live_bridge.py                   # High-performance local HTTP IPC bridge (port discovery, REST endpoints)
 │   └── utils/

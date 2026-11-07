@@ -32,7 +32,11 @@ from PyQt6.QtWidgets import (
     QDialog,
     QTabWidget,
     QTextBrowser,
+    QApplication,
 )
+
+from companion import __version__
+from companion.diagnostics import build_diagnostics
 
 # Application Brand Assets
 _CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -371,12 +375,15 @@ class HelpGuideDialog(QDialog):
             header.addWidget(logo_lbl)
 
         header_text = QVBoxLayout()
-        title = QLabel("Efface Magique LR (AI Generative Eraser)")
+        title = QLabel("Efface Magique LR (LaMa Variations Eraser)")
         title.setStyleSheet("font-size: 18px; font-weight: bold; color: #ffffff;")
         subtitle = QLabel("Local, private AI inpainting companion for Adobe Lightroom Classic")
         subtitle.setStyleSheet("font-size: 12px; color: #0078d4; font-weight: 500;")
         header_text.addWidget(title)
         header_text.addWidget(subtitle)
+        self.version_label = QLabel(f"Version {__version__}")
+        self.version_label.setStyleSheet("font-size: 11px; color: #888888;")
+        header_text.addWidget(self.version_label)
         header.addLayout(header_text)
         header.addStretch(1)
         layout.addLayout(header)
@@ -454,6 +461,19 @@ class HelpGuideDialog(QDialog):
                 <li>Click <b>📥 Save &amp; Sync to Lightroom</b> (<code>Ctrl + S</code>) — the image is saved as a TIFF (untouched pixels keep full 16-bit precision; the erased area is computed in 8-bit and merged back; preview is 8-bit) and auto-stacked into your Lightroom catalog!</li>
                 <li>Click <b>📌 Pin</b> (<code>Ctrl + T</code>) to keep the companion floating on top of Lightroom while you work.</li>
             </ol>
+
+            <h3 style="color: #60a5fa;">Assistant (optional)</h3>
+            <p>Install <code>requirements-agent.txt</code>, pick a provider (ollama, anthropic, openai, gemini) and a model
+            name, then type a request such as <i>remove the person on the left</i> and press <b>Ask</b>.
+            The assistant detects objects, proposes an erase and shows a preview; nothing is added to your layers
+            until you click <b>Apply</b> (<b>Discard</b> throws it away, <b>Stop</b> cancels a running request).</p>
+            <p><b>Limit:</b> only these object classes can be located: person, car, bus, bicycle, motorbike, aeroplane,
+            boat, train, bottle, chair, sofa, diningtable, pottedplant, tvmonitor, bird, cat, dog, horse, sheep, cow.
+            Anything else (a bin, a sign, a wire) is usually <b>not found</b>; paint over it with the brush instead.</p>
+            <p><b>Privacy:</b> only your request text and region labels are sent to the model; images, file names and
+            EXIF are never sent. Ollama on localhost stays on this computer; Anthropic, OpenAI and Gemini are cloud
+            services. API keys are read only from ANTHROPIC_API_KEY, OPENAI_API_KEY and GOOGLE_API_KEY.
+            <b>Usage</b> shows tokens and cost per call.</p>
         """)
         self.tabs.addTab(tab_usage, "✨ How to Use")
 
@@ -564,6 +584,11 @@ class HelpGuideDialog(QDialog):
         btn_readme.clicked.connect(self._on_open_readme)
         bottom_row.addWidget(btn_readme)
 
+        self.btn_copy_diagnostics = QPushButton("📋 Copy diagnostics")
+        self.btn_copy_diagnostics.setToolTip("Copy versions, device, bridge status and the last error for a bug report.\nThe last error can include a full file path; check it before posting publicly.")
+        self.btn_copy_diagnostics.clicked.connect(self._on_copy_diagnostics)
+        bottom_row.addWidget(self.btn_copy_diagnostics)
+
         bottom_row.addStretch(1)
 
         btn_close = QPushButton("Close")
@@ -586,6 +611,11 @@ class HelpGuideDialog(QDialog):
             )
         except Exception as e:
             QMessageBox.critical(self, "Packaging Error", f"Failed to create release ZIP:\n{e}")
+
+    def _on_copy_diagnostics(self):
+        provider = getattr(self.parent(), "diagnostics_text", None)
+        text = provider() if callable(provider) else build_diagnostics({"app_version": __version__})
+        QApplication.clipboard().setText(text)
 
     def _on_open_readme(self):
         readme_path = os.path.join(_PROJECT_ROOT, "README.md")
