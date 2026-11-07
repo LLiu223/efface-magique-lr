@@ -94,6 +94,7 @@ def test_module_round_trip_and_atomic_overwrite(tmp_path):
     lambda m: {**m, "layers": [{**m["layers"][0], "box": [0, 0, 999, 10]}]},
     lambda m: {**m, "layers": [{**m["layers"][0], "visible": "yes"}]},
     lambda m: {**m, "layers": [{**m["layers"][0], "mask": "../manifest.json"}]},
+    lambda m: {**m, "layers": [{**m["layers"][0], "box": [0, 0, 20, 20]}]},  # PNG size != box
 ])
 def test_module_rejects_bad_manifest(tmp_path, corrupt):
     d = str(tmp_path / "r")

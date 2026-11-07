@@ -126,12 +126,15 @@ def load(dir_path: str, key: str, base_size: Tuple[int, int]) -> Optional[List[d
                 raise ValueError(f"bad {field} file name")
             try:
                 with Image.open(os.path.join(dir_path, name)) as im:
+                    # Check the header size before decoding so an oversized PNG is never loaded
+                    if im.size != (x2 - x1, y2 - y1):
+                        raise ValueError(f"{field} size does not match crop box")
                     im.load()
                     images[field] = im.convert(mode)
+            except ValueError:
+                raise
             except Exception as err:
                 raise ValueError(f"unreadable {field} PNG: {err}") from None
-            if images[field].size != (x2 - x1, y2 - y1):
-                raise ValueError(f"{field} size does not match crop box")
         out.append({**e, "box": (x1, y1, x2, y2), **images})
     return out
 

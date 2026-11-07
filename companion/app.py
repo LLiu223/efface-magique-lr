@@ -383,9 +383,14 @@ class MainWindow(QMainWindow):
                 font-size: 11px;
                 padding: 2px 8px;
             }
-            QPushButton:hover {
+            QPushButton:hover:enabled {
                 background-color: #0078d4;
                 border-color: #0078d4;
+            }
+            QPushButton:disabled {
+                background-color: #242424;
+                color: #555555;
+                border-color: #303030;
             }
         """
         self.btn_new_layer.clicked.connect(self._on_new_layer_clicked)

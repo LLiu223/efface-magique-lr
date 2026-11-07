@@ -100,6 +100,7 @@ def test_new_op_clears_redo_and_buttons_follow_history(window):
     assert window._layer_redo == []
     assert not window.btn_layer_redo.isEnabled()
     assert window.btn_layer_undo.styleSheet() == window.btn_new_layer.styleSheet()
+    assert "QPushButton:disabled" in window.btn_layer_undo.styleSheet()  # disabled state is visible
     assert "Ctrl+Z" in window.btn_layer_undo.toolTip() and "Ctrl+Y" in window.btn_layer_redo.toolTip()
 
 
