@@ -14,6 +14,10 @@ import agent_blocker  # noqa: F401  (installs the sys.meta_path blocker)
 from PyQt6.QtWidgets import QApplication
 app = QApplication([])
 import companion.app as capp
+import tempfile
+from PyQt6.QtCore import QSettings
+_ini = os.path.join(tempfile.mkdtemp(), 'settings.ini')  # never the owner's real QSettings
+capp._open_settings = lambda: QSettings(_ini, QSettings.Format.IniFormat)
 import companion.agent.harness, companion.agent.tools, companion.agent.usage, companion.agent.usage_dialog
 from companion.agent import agent_available, MISSING_TOOLTIP
 from companion.agent.llm import make_llm

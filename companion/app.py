@@ -61,6 +61,7 @@ from PyQt6.QtWidgets import (
     QTabWidget,
     QTextBrowser,
     QScrollArea,
+    QSplitter,
 )
 
 from companion.ui import (
@@ -69,6 +70,7 @@ from companion.ui import (
     _LOGO_PATH,
     _LOGO_ICO_PATH,
     DARK_STYLE,
+    FlowLayout,
     HelpGuideDialog,
     LoadingSpinnerOverlay,
 )
@@ -139,6 +141,8 @@ qInstallMessageHandler(qt_message_handler)
 
 
 MODEL_SETTINGS_KEY = "model/name"
+WINDOW_GEOMETRY_KEY = "window/geometry"
+WINDOW_SPLITTER_KEY = "window/splitter"
 
 
 def _open_settings() -> QSettings:
@@ -289,17 +293,18 @@ class MainWindow(QMainWindow):
         self.top_bar = self._create_top_bar()
         central_layout.addWidget(self.top_bar)
 
-        # Middle container: Canvas (center) + Modifications Layers Sidebar (right)
-        middle_container = QWidget()
-        middle_layout = QHBoxLayout(middle_container)
-        middle_layout.setContentsMargins(0, 0, 0, 0)
-        middle_layout.setSpacing(0)
-
-        middle_layout.addWidget(self.canvas, stretch=1)
+        # Middle splitter: Canvas (center) + resizable Modifications Layers Sidebar (right)
+        self.middle_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.middle_splitter.setChildrenCollapsible(False)
+        self.middle_splitter.setHandleWidth(4)
+        self.middle_splitter.addWidget(self.canvas)
         self.layers_panel = self._create_layers_panel()
-        middle_layout.addWidget(self.layers_panel)
+        self.middle_splitter.addWidget(self.layers_panel)
+        self.middle_splitter.setStretchFactor(0, 1)
+        self.middle_splitter.setStretchFactor(1, 0)
+        self.middle_splitter.setSizes([1130, 270])
 
-        central_layout.addWidget(middle_container, stretch=1)
+        central_layout.addWidget(self.middle_splitter, stretch=1)
 
         # Variations Carousel Panel at the bottom
         self.carousel_panel = self._create_carousel_panel()
@@ -331,6 +336,9 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("Y"), self, lambda: self.btn_split.setChecked(not self.btn_split.isChecked()))
         QShortcut(QKeySequence("Ctrl+L"), self, lambda: self.btn_layers_toggle.setChecked(not self.btn_layers_toggle.isChecked()))
         QShortcut(QKeySequence("L"), self, lambda: self.btn_layers_toggle.setChecked(not self.btn_layers_toggle.isChecked()))
+
+        self.setMinimumSize(960, 540)
+        self._restore_window_layout()
 
         # Load initial image if provided
         if self.input_path and os.path.isfile(self.input_path):
@@ -451,7 +459,6 @@ class MainWindow(QMainWindow):
         """Create the right-side Modifications (Layers) sidebar panel."""
         panel = QFrame(self)
         panel.setObjectName("layersPanel")
-        panel.setFixedWidth(270)
         panel.setStyleSheet("""
             QFrame#layersPanel {
                 background-color: #1e1e1e;
@@ -513,6 +520,8 @@ class MainWindow(QMainWindow):
         self.btn_delete_layer.setVisible(False)
 
         layout.addLayout(header_layout)
+        # Never narrower than the header, so its title and buttons are not clipped
+        panel.setMinimumWidth(max(270, header_layout.minimumSize().width() + 16))
 
         # Active layer notification / editing banner
         self.layer_active_banner = QFrame()
@@ -1408,16 +1417,25 @@ class MainWindow(QMainWindow):
                 font-size: 11px;
             }
         """)
-        layout = QHBoxLayout(bar)
-        layout.setContentsMargins(10, 5, 10, 5)
-        layout.setSpacing(6)
+        # Groups wrap onto extra rows in a FlowLayout; Erase / Save stay pinned on the right
+        bar_layout = QHBoxLayout(bar)
+        bar_layout.setContentsMargins(10, 5, 10, 5)
+        bar_layout.setSpacing(12)
+        flow_host = QWidget()
+        self.top_flow = FlowLayout(flow_host, spacing=12)
+        self.top_bar_groups: List[QWidget] = []
+        bar_layout.addWidget(flow_host, stretch=1)
 
-        def add_vsep():
-            sep = QFrame()
-            sep.setFrameShape(QFrame.Shape.VLine)
-            sep.setFrameShadow(QFrame.Shadow.Sunken)
-            sep.setStyleSheet("color: #383838; max-width: 1px;")
-            layout.addWidget(sep)
+        def new_group(parent_layout=self.top_flow) -> QHBoxLayout:
+            group = QWidget()
+            group_layout = QHBoxLayout(group)
+            group_layout.setContentsMargins(0, 0, 0, 0)
+            group_layout.setSpacing(6)
+            parent_layout.addWidget(group)
+            self.top_bar_groups.append(group)
+            return group_layout
+
+        layout = new_group()  # file / model
 
         # Brand App Logo
         if os.path.isfile(_LOGO_PATH):
@@ -1434,18 +1452,18 @@ class MainWindow(QMainWindow):
         self.btn_open.clicked.connect(self._on_open_file)
         layout.addWidget(self.btn_open)
 
-        add_vsep()
-
         # Engine Mode Switcher (clean naming without emojis)
         self.combo_engine = QComboBox()
         self.combo_engine.addItem("LaMa Variations", EngineMode.FIREFLY)
         self.combo_engine.addItem("Fast Spot Removal", EngineMode.FAST)
+        self.combo_engine.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
         self.combo_engine.currentIndexChanged.connect(self._on_engine_changed)
         layout.addWidget(self.combo_engine)
 
         # Model selector (which inpainting network; independent of the Fast/Generative mode)
         self.combo_model = QComboBox()
         self.combo_model.setToolTip("Inpainting model")
+        self.combo_model.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
         for cls in model_registry.all():
             self.combo_model.addItem(cls.label, cls.name)
             if not cls.is_available():
@@ -1468,6 +1486,8 @@ class MainWindow(QMainWindow):
         self._update_prompt_enabled()
         layout.addWidget(self.txt_prompt)
 
+        layout = new_group()  # options + brush
+
         # Detect Subject (Object-Aware) toggle
         self.chk_detect_subject = QCheckBox("Subject")
         self.chk_detect_subject.setChecked(False)
@@ -1480,8 +1500,6 @@ class MainWindow(QMainWindow):
         self.chk_grain.setToolTip("Add subtle monochromatic camera sensor noise")
         layout.addWidget(self.chk_grain)
 
-        add_vsep()
-
         # Brush Radius slider
         layout.addWidget(QLabel("Size:"))
         self.size_slider = QSlider(Qt.Orientation.Horizontal)
@@ -1492,10 +1510,10 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.size_slider)
 
         self.size_label = QLabel(f"{self.canvas.brush_radius}px")
-        self.size_label.setFixedWidth(36)
+        self.size_label.setFixedWidth(max(36, self.size_label.fontMetrics().horizontalAdvance("200px") + 6))  # fits the widest value
         layout.addWidget(self.size_label)
 
-        add_vsep()
+        layout = new_group()  # view
 
         # Fit to Screen button
         self.btn_fit = QPushButton("Fit")
@@ -1517,7 +1535,7 @@ class MainWindow(QMainWindow):
         self.btn_split.toggled.connect(self.canvas.set_split_compare_mode)
         layout.addWidget(self.btn_split)
 
-        add_vsep()
+        layout = new_group()  # history
 
         # Undo / Redo
         self.btn_undo = QPushButton("Undo")
@@ -1536,7 +1554,7 @@ class MainWindow(QMainWindow):
         self.btn_reset.clicked.connect(self._on_reset_all)
         layout.addWidget(self.btn_reset)
 
-        add_vsep()
+        layout = new_group()  # window
 
         # Always on Top Pin
         self.btn_pin = QPushButton("Pin")
@@ -1575,11 +1593,14 @@ class MainWindow(QMainWindow):
         self.btn_layers_toggle.toggled.connect(self._toggle_layers_panel)
         layout.addWidget(self.btn_layers_toggle)
 
-        add_vsep()
+        layout = new_group()  # assistant
         self._create_assistant_widgets(layout)
 
-        # Spacer pushes action buttons smoothly to the right
-        layout.addStretch(1)
+        # Primary actions: outside the flow, so they are never wrapped or squeezed
+        layout = new_group(bar_layout)
+        self.top_bar_groups.pop()
+        self.primary_group = layout.parentWidget()
+        bar_layout.setAlignment(self.primary_group, Qt.AlignmentFlag.AlignTop)
 
         # Primary Inpainting Button
         self.btn_erase = QPushButton("Erase Object")
@@ -1604,7 +1625,7 @@ class MainWindow(QMainWindow):
         """Assistant input + provider/model fields; disabled when requirements-agent.txt is missing."""
         self.agent_input = QLineEdit()
         self.agent_input.setPlaceholderText("Assistant: e.g. remove the person on the left")
-        self.agent_input.setMinimumWidth(200)
+        self.agent_input.setMinimumWidth(180)
         self.agent_input.returnPressed.connect(self._on_agent_ask)
         self.combo_agent_provider = QComboBox()
         self.combo_agent_provider.addItems(AGENT_PROVIDERS)
@@ -1612,7 +1633,7 @@ class MainWindow(QMainWindow):
         self.combo_agent_provider.setCurrentIndex(max(0, self.combo_agent_provider.findText(saved)))
         self.combo_agent_provider.currentTextChanged.connect(lambda t: self._settings.setValue(agent_pkg.KEY_PROVIDER, t))
         self.ed_agent_model = QLineEdit(self._settings.value(agent_pkg.KEY_MODEL, agent_pkg.DEFAULT_AGENT_MODEL, type=str))
-        self.ed_agent_model.setFixedWidth(110)
+        self.ed_agent_model.setMinimumWidth(self.ed_agent_model.fontMetrics().averageCharWidth() * 14)
         self.ed_agent_model.setToolTip("Assistant LLM model name (e.g. llama3.1, claude-sonnet-4-5, gpt-4o-mini, gemini-2.5-flash)")
         self.ed_agent_model.textChanged.connect(lambda t: self._settings.setValue(agent_pkg.KEY_MODEL, t.strip()))
         self.btn_agent_ask = QPushButton("Ask")
@@ -2694,12 +2715,38 @@ class MainWindow(QMainWindow):
                         pass
                 QTimer.singleShot(3000, _safe_reset)
 
+    def _restore_window_layout(self):
+        """Restore the saved geometry and splitter; bad data is ignored, off-screen windows are clamped."""
+        try:
+            geometry = self._settings.value(WINDOW_GEOMETRY_KEY)
+            if geometry and self.restoreGeometry(geometry):
+                screen = self.screen() or QApplication.primaryScreen()
+                if screen is not None:
+                    avail = screen.availableGeometry()
+                    g = self.geometry()
+                    w, h = min(g.width(), avail.width()), min(g.height(), avail.height())
+                    x = min(max(g.x(), avail.x()), avail.x() + avail.width() - w)
+                    y = min(max(g.y(), avail.y()), avail.y() + avail.height() - h)
+                    if (x, y, w, h) != (g.x(), g.y(), g.width(), g.height()):
+                        self.setGeometry(x, y, w, h)
+            splitter = self._settings.value(WINDOW_SPLITTER_KEY)
+            if splitter:
+                self.middle_splitter.restoreState(splitter)
+        except Exception as e:
+            logger.warning(f"Ignoring the saved window layout: {e}")
+
     def closeEvent(self, event):
         """Ensure all threads, live servers, and background processes terminate when window is closed."""
         logger.info("MainWindow closeEvent: shutting down background processes and cleaning temp files...")
         try:
             # Flush pending recovery changes; unsynced recovery data stays on disk after a clean close
             self._on_autosave_timer()
+            try:
+                self._settings.setValue(WINDOW_GEOMETRY_KEY, self.saveGeometry())
+                self._settings.setValue(WINDOW_SPLITTER_KEY, self.middle_splitter.saveState())
+                self._settings.sync()
+            except Exception as e:
+                logger.warning(f"Could not save the window layout: {e}")
 
             # 1. Give an active worker thread a moment to finish (os._exit in main() kills it otherwise)
             if hasattr(self, "worker") and self.worker is not None:
