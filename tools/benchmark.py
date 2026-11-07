@@ -60,9 +60,12 @@ MASK_W, MASK_H = 300, 200  # a typical brush stroke, same absolute size at every
 class StubLama:
     """STUB engine: cv2.inpaint stands in for the LaMa network. Timings are NOT LaMa timings."""
 
-    def __call__(self, image, mask):
+    def inpaint(self, image, mask, seed=None, prompt=None):
         out = cv2.inpaint(np.asarray(image.convert("RGB")), np.asarray(mask.convert("L")), 5, cv2.INPAINT_TELEA)
         return Image.fromarray(out)
+
+    def unload(self):
+        pass
 
 
 def size_for(mp):
@@ -84,7 +87,7 @@ def make_inputs(w, h):
 def make_engine(stub, mode):
     engine = InpaintingEngine(device=get_optimal_device(), mode=mode)
     if stub:
-        engine._lama_model = StubLama()
+        engine._model = StubLama()
         engine._is_loaded = True
         return engine
     # Check the cached weights first so a missing model never triggers a download.
@@ -99,7 +102,7 @@ def make_engine(stub, mode):
     if not os.path.exists(weights):
         sys.exit(f"ERROR: LaMa weights not found at {weights}. Run with --stub to benchmark without them.")
     engine.load_model()
-    if engine._lama_model is None:
+    if engine._model is None:
         sys.exit("ERROR: LaMa model failed to load (see warning above). Run with --stub to benchmark without it.")
     return engine
 
@@ -159,7 +162,7 @@ def run_stages(engine, image, mask, seed=SEED, margin_ratio=0.85, feather_radius
 
     s = time.perf_counter()
     if is_fast_mode:
-        raw_patch = engine._run_lama_neural_inference(cropped_img, cropped_mask)
+        raw_patch = engine._model.inpaint(cropped_img, cropped_mask, seed, None)
     else:
         raw_patch = engine._run_variation_patch(cropped_img, cropped_mask, seed=seed, prompt=None)
     if raw_patch.size != (crop_w, crop_h):
