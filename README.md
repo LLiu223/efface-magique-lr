@@ -174,6 +174,20 @@ memory under the load lock before the new one loads lazily, so only one model is
 The dropdown is locked while an erase runs. The bridge accepts an optional `"model"` string in `POST /api/select`
 (absent keeps the current choice; non-string, unknown or unavailable names get `400 {"error": ...}`).
 
+| Name (`name`) | Weights | Speed | Prompt | Licence | Install |
+|---|---|---|---|---|---|
+| LaMa (`lama`, default) | ~200 MB (package cache) | fast | no | Apache-2.0 | `requirements.txt` |
+| MI-GAN (`migan`) | 28 MB ONNX, `models/migan_pipeline_v2.onnx` | fastest, also on CPU | no | MIT (code and weights) | install.bat optional step |
+| Stable Diffusion (`sd_inpaint`) | ~2.1 GB fp16 safetensors, `models/sd_inpaint/` | slow: seconds on GPU, minutes on CPU | yes (prompt field) | CreativeML OpenRAIL-M | install.bat optional step + `requirements-extra.txt` |
+
+Optional weights live in the repo-root `models/` folder (`CONFIG.MODELS_DIR`, gitignored, never packaged).
+install.bat asks y/N per model (default N), pins the download (HF revision) and checks every file's SHA256.
+Models whose package or weights are missing stay greyed out in the Model dropdown with a tooltip saying what to install.
+The prompt field next to the Model dropdown is enabled only for models with `uses_prompt` (Stable Diffusion).
+Stable Diffusion runs with `local_files_only=True` and the diffusers safety checker disabled.
+
+**Stable Diffusion licence:** the optional SD inpainting weights are CreativeML OpenRAIL-M; use restrictions apply (see the model card at huggingface.co/stable-diffusion-v1-5/stable-diffusion-inpainting).
+
 How to add a model:
 ```python
 # companion/models/my_model.py, then add `from companion.models import my_model` to companion/models/__init__.py
@@ -256,7 +270,7 @@ efface-magique-lr/
 │   ├── canvas.py                     # High-res canvas with brush, zoom, & pan
 │   ├── layers.py                     # Non-destructive layer model & thumbnails
 │   ├── model_engine.py               # Inpainting engine around the active model (Generative AI variations & Fast)
-│   ├── models/                       # InpaintModel interface, registry, LaMa (default model)
+│   ├── models/                       # InpaintModel interface, registry, LaMa (default), MI-GAN, Stable Diffusion
 │   ├── pipeline.py                   # Contextual cropping, blending, & grain matching
 │   ├── live_bridge.py                # Localhost (127.0.0.1) HTTP bridge server
 │   ├── utils/

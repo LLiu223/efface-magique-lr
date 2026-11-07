@@ -58,6 +58,50 @@ if !errorlevel! equ 0 (
 goto :INSTALL_COMPLETE
 
 :INSTALL_COMPLETE
+:: ---------------------------------------------------------------------
+:: Optional models: each one asks y/N (default N), downloads into models\ and verifies SHA256. Safe to re-run: verified files are skipped.
+:: ---------------------------------------------------------------------
+set "MODELS_DIR=%~dp0models"
+set "FETCH_ERRORS=0"
+set "EXTRAS_DONE=0"
+
+echo.
+set "ANSWER="
+set /p "ANSWER=[?] Download MI-GAN, a small fast eraser, 28 MB, MIT licence? [y/N]: "
+if /i "!ANSWER!"=="y" (
+    call :INSTALL_EXTRAS
+    call :FETCH "https://huggingface.co/andraniksargsyan/migan/resolve/406830d0fa60666da0071c342ad2fbc8f30c5c64/migan_pipeline_v2.onnx" "!MODELS_DIR!\migan_pipeline_v2.onnx" 6f1f3530a1a2324b19752018ce756088b07973cda8d7d890034ace5c8a48c40b
+)
+
+echo.
+echo [i] Stable Diffusion inpainting is prompt-driven but slow on CPU. Download size: about 2.1 GB,
+echo     plus the diffusers/transformers/accelerate packages. Licence: CreativeML OpenRAIL-M, use restrictions apply.
+set "ANSWER="
+set /p "ANSWER=[?] Download Stable Diffusion inpainting, about 2.1 GB? [y/N]: "
+if /i "!ANSWER!"=="y" (
+    call :INSTALL_EXTRAS
+    set "SD_URL=https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-inpainting/resolve/8a4288a76071f7280aedbdb3253bdb9e9d5d84bb"
+    call :FETCH_SD model_index.json 636d700de8970a70f02b91d433ad949dc2ceb750f39ba0cf2cf39ef0b0b9d1e4
+    call :FETCH_SD feature_extractor/preprocessor_config.json 2a1da83b5e1032aaeef397552ddb408dca0d8cd1dc58f61bf6abf38d6f33a0a2
+    call :FETCH_SD scheduler/scheduler_config.json 8b457848b74deeeab2a967b75048dd2cb6f393cfc17751eca1b5ec655cff0183
+    call :FETCH_SD text_encoder/config.json 845df614cb9327ae7bbea027316246fae917827407da6df13572e41b5f93b4cc
+    call :FETCH_SD text_encoder/model.fp16.safetensors 77795e2023adcf39bc29a884661950380bd093cf0750a966d473d1718dc9ef4e
+    call :FETCH_SD tokenizer/merges.txt 9fd691f7c8039210e0fced15865466c65820d09b63988b0174bfe25de299051a
+    call :FETCH_SD tokenizer/special_tokens_map.json c4864a9376a8401918425bed71fc14fc0e81f9b59ec45c1cf96cccb2df508eac
+    call :FETCH_SD tokenizer/tokenizer_config.json 00439066fcba73de57644cf41e4e3b9f2dbb09d7f3fc2005898ba52399045882
+    call :FETCH_SD tokenizer/vocab.json e089ad92ba36837a0d31433e555c8f45fe601ab5c221d4f607ded32d9f7a4349
+    call :FETCH_SD unet/config.json 669f6581087fac5b16c44e42c58b359a35eadf2af5691d7945480bd7ceac8e6d
+    call :FETCH_SD unet/diffusion_pytorch_model.fp16.safetensors 24b788b4a777748377cc20364eea4ae113c8c42f4468c16bc8c02fdae5492af9
+    call :FETCH_SD vae/config.json 4cd0ce4803567837175fbb8412689fe77d069c1ef8171beb83979db309a8bad5
+    call :FETCH_SD vae/diffusion_pytorch_model.fp16.safetensors 4fbcf0ebe55a0984f5a5e00d8c4521d52359af7229bb4d81890039d2aa16dd7c
+)
+
+if not "!FETCH_ERRORS!"=="0" (
+    echo.
+    echo [ERROR] !FETCH_ERRORS! optional model file^(s^) failed to download or verify. Bad files were deleted.
+    echo     The core app works without them. Re-run install.bat to retry.
+)
+
 echo.
 echo ======================================================================
 echo                    Installation Succeeded!
@@ -73,3 +117,73 @@ echo     .venv\Scripts\python.exe -m companion.app
 echo.
 echo ======================================================================
 pause
+exit /b 0
+
+:: ---------------------------------------------------------------------
+:: Subroutines
+:: ---------------------------------------------------------------------
+:INSTALL_EXTRAS
+if "!EXTRAS_DONE!"=="1" exit /b 0
+echo [*] Installing optional model packages from requirements-extra.txt...
+where uv >nul 2>nul
+if !errorlevel! equ 0 (
+    uv pip install -r requirements-extra.txt --python .venv\Scripts\python.exe
+) else (
+    .venv\Scripts\python.exe -m pip install -r requirements-extra.txt
+)
+if !errorlevel! neq 0 (
+    echo [ERROR] Installing requirements-extra.txt failed.
+    set /a FETCH_ERRORS+=1
+    exit /b 1
+)
+set "EXTRAS_DONE=1"
+exit /b 0
+
+:FETCH_SD
+:: %1 = file path inside the pinned HF revision, %2 = expected SHA256
+set "SD_REL=%~1"
+call :FETCH "!SD_URL!/!SD_REL!" "!MODELS_DIR!\sd_inpaint\!SD_REL:/=\!" %~2
+exit /b
+
+:FETCH
+:: %1 = URL, %2 = destination file, %3 = expected SHA256. A file that fails the check is deleted.
+set "FETCH_DEST=%~2"
+if exist "!FETCH_DEST!" (
+    call :HASH_MATCHES "!FETCH_DEST!" %~3
+    if "!HASH_OK!"=="1" (
+        echo [=] Already present and verified: !FETCH_DEST!
+        exit /b 0
+    )
+    echo [*] Existing file failed verification, downloading it again: !FETCH_DEST!
+    del /f /q "!FETCH_DEST!"
+)
+for %%D in ("!FETCH_DEST!") do if not exist "%%~dpD" mkdir "%%~dpD"
+echo [*] Downloading %~1
+curl.exe -L --fail --retry 3 -o "!FETCH_DEST!" "%~1"
+if !errorlevel! neq 0 (
+    echo [ERROR] Download failed: %~1
+    if exist "!FETCH_DEST!" del /f /q "!FETCH_DEST!"
+    set /a FETCH_ERRORS+=1
+    exit /b 1
+)
+call :HASH_MATCHES "!FETCH_DEST!" %~3
+if not "!HASH_OK!"=="1" (
+    echo [ERROR] SHA256 mismatch, file deleted: !FETCH_DEST!
+    del /f /q "!FETCH_DEST!"
+    set /a FETCH_ERRORS+=1
+    exit /b 1
+)
+echo [+] Verified: !FETCH_DEST!
+exit /b 0
+
+:HASH_MATCHES
+:: %1 = file, %2 = expected SHA256. Sets HASH_OK=1 on a match. certutil's header and footer
+:: lines contain ':' (in every UI language), the hash line does not.
+set "HASH_OK=0"
+set "HASH_ACTUAL="
+for /f "delims=" %%H in ('certutil -hashfile "%~1" SHA256 ^| findstr /v ":"') do (
+    if not defined HASH_ACTUAL set "HASH_ACTUAL=%%H"
+)
+if defined HASH_ACTUAL set "HASH_ACTUAL=!HASH_ACTUAL: =!"
+if /i "!HASH_ACTUAL!"=="%~2" set "HASH_OK=1"
+exit /b 0

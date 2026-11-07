@@ -1178,6 +1178,14 @@ class MainWindow(QMainWindow):
         self.combo_model.currentIndexChanged.connect(self._on_model_changed)
         layout.addWidget(self.combo_model)
 
+        # Prompt for models with uses_prompt (Stable Diffusion); disabled for the others
+        self.txt_prompt = QLineEdit()
+        self.txt_prompt.setPlaceholderText("Prompt (optional)")
+        self.txt_prompt.setToolTip("Text prompt, used only by models that support prompts")
+        self.txt_prompt.setMaximumWidth(220)
+        self._update_prompt_enabled()
+        layout.addWidget(self.txt_prompt)
+
         # Detect Subject (Object-Aware) toggle
         self.chk_detect_subject = QCheckBox("Subject")
         self.chk_detect_subject.setChecked(False)
@@ -1425,11 +1433,19 @@ class MainWindow(QMainWindow):
         self.engine.set_model(name)
         self._settings.setValue(MODEL_SETTINGS_KEY, name)
         self.statusBar().showMessage(f"Inpainting model: {self.combo_model.itemText(index)}", 3000)
+        self._update_prompt_enabled(self.combo_model.isEnabled())  # stays locked if a run is in progress
+
+    def _active_model_uses_prompt(self) -> bool:
+        return model_registry.get(self.engine.model_name).uses_prompt
+
+    def _update_prompt_enabled(self, enabled: bool = True):
+        self.txt_prompt.setEnabled(enabled and self._active_model_uses_prompt())
 
     def _set_run_controls_enabled(self, enabled: bool):
-        """Erase button and Model dropdown are locked together for the whole worker run."""
+        """Erase button, Model dropdown and prompt field are locked together for the whole worker run."""
         self.btn_erase.setEnabled(enabled)
         self.combo_model.setEnabled(enabled)
+        self._update_prompt_enabled(enabled)
 
     def _apply_bridge_model(self, payload: dict):
         """Apply the optional (bridge-validated) 'model' of a selection payload; absent keeps the current one."""
@@ -1658,7 +1674,7 @@ class MainWindow(QMainWindow):
         self.last_base_image = current_img.copy()
         self.last_used_mask = mask_img.copy()
 
-        prompt_text = None
+        prompt_text = (self.txt_prompt.text().strip() or None) if self._active_model_uses_prompt() else None
         num_vars = 3 if self.engine.mode == EngineMode.FIREFLY else 1
 
         detect_subj = self.chk_detect_subject.isChecked() if (hasattr(self, "chk_detect_subject") and self.chk_detect_subject.isEnabled()) else False

@@ -1,0 +1,6 @@
+# Efface Magique LR - optional model dependencies (MI-GAN, Stable Diffusion inpainting)
+# install.bat installs this file when you opt in to either optional model download.
+onnxruntime>=1.16
+diffusers>=0.27
+transformers>=4.38
+accelerate>=0.27
