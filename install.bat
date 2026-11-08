@@ -96,6 +96,23 @@ if /i "!ANSWER!"=="y" if "!PIP_OK!"=="1" (
     call :FETCH_SD vae/diffusion_pytorch_model.fp16.safetensors 4fbcf0ebe55a0984f5a5e00d8c4521d52359af7229bb4d81890039d2aa16dd7c
 )
 
+echo.
+echo [i] The assistant can find any object you name ("power lines", "the sign on the left") with CLIPSeg.
+echo     Without it, it only finds 20 common object classes (person, car, dog, ...).
+set "ANSWER="
+set /p "ANSWER=[?] Enable finding any named object (CLIPSeg, about 600 MB, Apache-2.0)? [y/N]: "
+if /i "!ANSWER!"=="y" call :INSTALL_EXTRAS requirements-clipseg.txt CLIPSeg
+if /i "!ANSWER!"=="y" if "!PIP_OK!"=="1" (
+    set "CS_URL=https://huggingface.co/CIDAS/clipseg-rd64-refined/resolve/999e0328d9e10b484360c477313983f9afdd7050"
+    call :FETCH "!CS_URL!/config.json" "!MODELS_DIR!\clipseg\config.json" c023375966d31b3b1392764f7bd91df47098ce19f62f11b0263d8eedcf708bcd
+    call :FETCH "!CS_URL!/preprocessor_config.json" "!MODELS_DIR!\clipseg\preprocessor_config.json" 4fb09ebcfd7651205ca8299b993c30088e5535ef350a72d46c5c4580eeac0440
+    call :FETCH "!CS_URL!/tokenizer_config.json" "!MODELS_DIR!\clipseg	okenizer_config.json" 4c75d57fd9bd0be8478ad2d6f8b9cebdd4a45338eb108547329c2b6333476ca6
+    call :FETCH "!CS_URL!/special_tokens_map.json" "!MODELS_DIR!\clipseg\special_tokens_map.json" c4864a9376a8401918425bed71fc14fc0e81f9b59ec45c1cf96cccb2df508eac
+    call :FETCH "!CS_URL!/vocab.json" "!MODELS_DIR!\clipsegocab.json" e089ad92ba36837a0d31433e555c8f45fe601ab5c221d4f607ded32d9f7a4349
+    call :FETCH "!CS_URL!/merges.txt" "!MODELS_DIR!\clipseg\merges.txt" 9fd691f7c8039210e0fced15865466c65820d09b63988b0174bfe25de299051a
+    call :FETCH "!CS_URL!/model.safetensors" "!MODELS_DIR!\clipseg\model.safetensors" d00ca85d6b859f9d07b7cfb8ef26fe9771cb275b34c9368f2ecf603139307f55
+)
+
 if not "!FETCH_ERRORS!"=="0" (
     echo.
     echo [ERROR] !FETCH_ERRORS! optional model step^(s^) failed: package install, download or verification.
