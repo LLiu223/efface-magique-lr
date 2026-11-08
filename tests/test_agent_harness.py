@@ -86,7 +86,7 @@ def test_tool_outside_allow_list_is_refused(store, seg):
     llm = scripted(call("run_shell", {"cmd": "rm -rf /"}), say("done"))
     r, _ = _run(llm, s, store)
     assert not r.ok and "Refused tool call outside the allow-list: 'run_shell'" in r.reason
-    assert s.calls == [] and r.proposal is None
+    assert s.calls == [] and r.selection is None
 
 
 def test_tool_surface_is_exactly_the_allow_list():
@@ -95,9 +95,9 @@ def test_tool_surface_is_exactly_the_allow_list():
     for t in tools:
         assert t.description
         for arg in t.args:  # no path / url / shell argument anywhere
-            assert arg in {"name", "text", "region_ids", "num_variations", "query"}
+            assert arg in {"name", "text", "region_ids", "query"}
     assert set(tools[3].args) == {"query"}
-    assert set(tools[4].args) == {"region_ids", "num_variations"}
+    assert set(tools[4].args) == {"region_ids"}
 
 
 # --- (c) scripted conversation -------------------------------------------
@@ -109,24 +109,24 @@ def test_remove_the_bin_conversation(store, seg):
     llm = scripted(
         call("select_model", {"name": "lama"}, 1),
         call("detect_regions", {}, 2),
-        call("inpaint_region", {"region_ids": ["r1"], "num_variations": 1}, 3),
-        say("Proposed erasing the bottle on the right. Click Apply to keep it."),
+        call("select_regions", {"region_ids": ["r1"]}, 3),
+        say("Selected the bottle on the right. Adjust it and click Erase."),
     )
     r, _ = _run(llm, s, store)
     assert r.ok, r.reason
-    assert r.tool_calls == ["select_model", "detect_regions", "inpaint_region"]
+    assert r.tool_calls == ["select_model", "detect_regions", "select_regions"]
     regions = s.regions
     assert {v["label"] for v in regions.values()} == {"person", "bottle"}
     bottle_id = next(k for k, v in regions.items() if v["label"] == "bottle")
     assert regions[bottle_id]["position"] == "right-middle"
     # the region model output reached the model as a tool result
     assert any("bottle" in m for m in llm.seen[2])
-    p = r.proposal
-    assert p is not None and p.region_ids == [bottle_id] == ["r1"] and p.labels == ["bottle"]
-    assert len(engine.generated) == 1 and p.model == "lama"
-    mask = engine.generated[0][1]
-    assert mask.size == (300, 200) and mask.getpixel((255, 100)) == 255 and mask.getpixel((30, 100)) == 0
-    assert "Apply" in r.text
+    sel = r.selection
+    assert sel is not None and sel.region_ids == [bottle_id] == ["r1"] and sel.labels == ["bottle"]
+    assert engine.generated == [] and engine.model_name == "lama"  # the assistant never inpaints
+    assert sel.mask.size == (300, 200) and sel.mask.getpixel((255, 100)) == 255 and sel.mask.getpixel((30, 100)) == 0
+    assert "Selected. The user can adjust it with the brush and click Erase." in llm.seen[3][-1]
+    assert "Erase" in r.text
 
 
 def test_not_found_path_says_so(store, seg):
@@ -135,7 +135,7 @@ def test_not_found_path_says_so(store, seg):
     s = _session(engine)
     llm = scripted(call("detect_regions"), say("I could not find a bin; only VOC objects can be located."))
     r, _ = _run(llm, s, store)
-    assert r.ok and r.proposal is None and engine.generated == []
+    assert r.ok and r.selection is None and engine.generated == []
     assert "No VOC objects found" in llm.seen[1][-1]
     assert "could not find" in r.text
 
@@ -198,9 +198,11 @@ def test_clipseg_two_blobs_positions_sorted_and_inpaintable(clipseg):
     assert [(r["id"], r["label"], r["position"]) for r in out] == [
         ("r1", "trash bag", "left-top"), ("r2", "trash bag", "right-bottom")]
     assert out[0]["area_share"] > out[1]["area_share"]
-    assert json.loads(s.inpaint_region(["r1", "r2"]))["ok"] is True
-    assert s.proposal.labels == ["trash bag", "trash bag"]
-    mask = engine.generated[0][1]
+    out = json.loads(s.select_regions(["r1", "r2", "r1"]))
+    assert out == {"ok": True, "selected": ["r1", "r2"], "labels": ["trash bag", "trash bag"],
+                   "note": "Selected. The user can adjust it with the brush and click Erase."}
+    assert s.selection.labels == ["trash bag", "trash bag"] and engine.generated == []
+    mask = s.selection.mask
     assert mask.size == (300, 200) and mask.getpixel((40, 30)) == 255 and mask.getpixel((280, 180)) == 255
     assert mask.getpixel((150, 100)) == 0
 
@@ -256,15 +258,20 @@ def test_conversation_passes_query_through_the_tool(store, clipseg):
     model.heat = heat
     s = _session()
     llm = scripted(call("detect_regions", {"query": "sign"}, 1),
-                   call("inpaint_region", {"region_ids": ["r1"]}, 2), say("Proposed erasing the sign. Click Apply."))
+                   call("select_regions", {"region_ids": ["r1"]}, 2), say("Selected the sign. Click Erase."))
     r, _ = _run(llm, s, store, text="remove the sign on the left")
     assert r.ok, r.reason
-    assert proc.texts == [["sign"]] and r.proposal.labels == ["sign"]
+    assert proc.texts == [["sign"]] and r.selection.labels == ["sign"]
 
 
-def test_inpaint_unknown_region_and_select_exact_match(seg):
+def test_select_unknown_region_and_select_exact_match(seg):
+    seg.boxes = [(PERSON, 0.0, 0.3)]
     s = _session()
-    assert json.loads(s.inpaint_region(["r9"]))["ok"] is False
+    assert json.loads(s.select_regions(["r1"])) == {"ok": False, "error": "unknown region ids; call detect_regions first",
+                                                    "unknown": ["r1"], "known": []}
+    s.detect_regions()
+    out = json.loads(s.select_regions(["r1", "r9"]))
+    assert out["ok"] is False and out["unknown"] == ["r9"] and out["known"] == ["r1"] and s.selection is None
     assert json.loads(s.select_model("LaMa"))["ok"] is False  # exact match only
     assert json.loads(s.select_model("lama"))["ok"] is True
 

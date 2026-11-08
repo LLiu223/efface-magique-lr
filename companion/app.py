@@ -257,9 +257,7 @@ class MainWindow(QMainWindow):
         # True when layers changed since the last recovery autosave
         self._autosave_dirty = False
 
-        # Optional assistant: pending proposal (nothing is committed until Apply)
-        self._agent_proposal = None
-        self._agent_prev_display: Optional[Image.Image] = None
+        # Optional assistant: layer state when the request started (a stale selection is dropped)
         self._agent_state_key = None
         self._usage_store = None
 
@@ -1675,20 +1673,13 @@ class MainWindow(QMainWindow):
         self.btn_agent_cancel = QPushButton("Stop")
         self.btn_agent_cancel.setToolTip("Cancel the assistant request")
         self.btn_agent_cancel.clicked.connect(self._on_agent_cancel)
-        self.btn_agent_apply = QPushButton("Apply")
-        self.btn_agent_apply.setObjectName("primaryAction")
-        self.btn_agent_apply.setToolTip("Commit the assistant's proposal as a layer")
-        self.btn_agent_apply.clicked.connect(self._on_agent_apply)
-        self.btn_agent_discard = QPushButton("Discard")
-        self.btn_agent_discard.clicked.connect(self._on_agent_discard)
         self.btn_agent_usage = QPushButton("Usage")
         self.btn_agent_usage.setToolTip("Assistant usage: tokens, cost, settings")
         self.btn_agent_usage.clicked.connect(self._on_show_agent_usage)
         for w in (self.agent_input, self.combo_agent_provider, self.ed_agent_model, self.btn_agent_ask,
-                  self.btn_agent_cancel, self.btn_agent_apply, self.btn_agent_discard, self.btn_agent_usage):
+                  self.btn_agent_cancel, self.btn_agent_usage):
             layout.addWidget(w)
-        for w in (self.btn_agent_cancel, self.btn_agent_apply, self.btn_agent_discard):
-            w.setVisible(False)
+        self.btn_agent_cancel.setVisible(False)
         self.agent_enabled = agent_pkg.agent_available()
         if not self.agent_enabled:
             for w in (self.agent_input, self.combo_agent_provider, self.ed_agent_model, self.btn_agent_ask):
@@ -1775,7 +1766,6 @@ class MainWindow(QMainWindow):
 
     def _reset_layers_state(self):
         """Back to the unedited photo: no layers, no variations, no mask. History is left alone."""
-        self._drop_agent_proposal()
         self.canvas.reset_all()
         self.modification_layers.clear()
         self.active_layer_index = None
@@ -1949,7 +1939,6 @@ class MainWindow(QMainWindow):
     def load_image_file(self, file_path: str, offer_recovery: bool = True):
         """Open and display an image file, preserving original ICC profile and EXIF metadata."""
         self.base_image16 = None
-        self._drop_agent_proposal()  # a proposal belongs to the previous photo
         try:
             # Closed on exit: on Windows an open handle makes the later save (os.replace) fail
             with Image.open(file_path) as pil_img:
@@ -2075,8 +2064,6 @@ class MainWindow(QMainWindow):
             return
         if self.worker is not None:
             return  # single worker slot (inpainting or assistant)
-        if self._agent_proposal is not None:
-            self._on_agent_discard()
         current_img = self.canvas.get_current_image()
         mask_img = self.canvas.get_mask_image()
 
@@ -2123,11 +2110,11 @@ class MainWindow(QMainWindow):
         return self._get_composite_image()
 
     # -------------------------------------------------------------------------
-    # Optional assistant (companion/agent): ask -> proposal preview -> Apply/Discard
+    # Optional assistant (companion/agent): ask -> regions selected on the canvas mask -> user clicks Erase
     # -------------------------------------------------------------------------
 
     def _layer_state_key(self):
-        """Everything a proposal's input image depends on; Apply is refused if it changed."""
+        """Everything the assistant's detection depends on; a selection is dropped if it changed."""
         return (
             id(self.base_image),
             self.active_layer_index,
@@ -2154,8 +2141,6 @@ class MainWindow(QMainWindow):
         if self.base_image is None:
             QMessageBox.information(self, "Assistant", "Load a photo first.")
             return
-        if self._agent_proposal is not None:
-            self._on_agent_discard()
 
         from companion.agent.usage import make_usage_callback
 
@@ -2225,57 +2210,22 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Assistant stopped: {reason.splitlines()[0]}", 8000)
             QMessageBox.information(self, "Assistant", reason)
             return
-        proposal = result.proposal
-        if proposal is None or not proposal.variations:
-            msg = result.text or "Nothing matching was found. Only VOC objects (person, car, bottle, dog...) can be located."
+        sel = result.selection
+        if sel is None:
+            msg = result.text or "Nothing matching was found, so nothing was selected."
             self.statusBar().showMessage(f"Assistant: {msg}", 8000)
             QMessageBox.information(self, "Assistant", msg)
             return
-        if self._layer_state_key() != self._agent_state_key:
-            self.statusBar().showMessage("Assistant proposal dropped: the photo or layers changed meanwhile.", 6000)
+        if self._preview is not None:  # never draw over a Lightroom preview (job 019)
+            self.statusBar().showMessage("Assistant selection dropped: a Lightroom preview is shown; ask again.", 6000)
             return
-        self._agent_proposal = proposal
-        self._agent_prev_display = self.canvas.get_current_image()
-        self.canvas.set_preview_image(proposal.variations[0])
-        self.btn_agent_apply.setVisible(True)
-        self.btn_agent_discard.setVisible(True)
+        if self._layer_state_key() != self._agent_state_key:
+            self.statusBar().showMessage("Assistant selection dropped: the photo or layers changed meanwhile.", 6000)
+            return
+        self.canvas.add_mask(sel.mask)  # union with existing strokes, one Ctrl+Z step
         note = f" {result.text}" if result.text else ""
-        self.statusBar().showMessage(f"Assistant proposal (preview): {proposal.describe()}. Click Apply to commit or Discard.{note}")
-
-    def _drop_agent_proposal(self):
-        self._agent_proposal = None
-        self._agent_prev_display = None
-        self.btn_agent_apply.setVisible(False)
-        self.btn_agent_discard.setVisible(False)
-
-    def _on_agent_discard(self):
-        if self._preview_blocks():
-            return
-        prev = self._agent_prev_display
-        if prev is not None and self._layer_state_key() == self._agent_state_key:
-            self.canvas.set_display_image(prev)
-        self._drop_agent_proposal()
-        self.statusBar().showMessage("Assistant proposal discarded.", 3000)
-
-    def _on_agent_apply(self):
-        """Commit the proposal through the same layer path as Erase (_on_inpainting_finished)."""
-        if self._preview_blocks():
-            return
-        p = self._agent_proposal
-        if p is None or self.worker is not None:
-            return
-        if self._layer_state_key() != self._agent_state_key:
-            self._on_agent_discard()
-            QMessageBox.information(self, "Assistant", "The photo or layers changed since the proposal; ask again.")
-            return
-        if self._agent_prev_display is not None:
-            self.canvas.set_display_image(self._agent_prev_display)
-        self._drop_agent_proposal()
-        self.canvas.set_mask_image(p.mask)
-        self.last_base_image = p.base_image.copy()
-        self.last_used_mask = p.mask.copy()
-        self._generation_start_time = time.time()
-        self._on_inpainting_finished(p.variations)
+        self.statusBar().showMessage(
+            f"Assistant selected: {sel.describe()}. Adjust with the brush, then click Erase.{note}")
 
     def _start_inpainting_pipeline(self, current_img: Image.Image, mask_img: Image.Image, seed: Optional[int] = None):
         """Launch worker thread for single-pass or multi-variation generation."""
@@ -2607,7 +2557,7 @@ class MainWindow(QMainWindow):
         """Disable every edit/save/open control while a preview is shown; handlers also refuse (shortcuts)."""
         on = not locked
         for w in (self.btn_open, self.btn_sync, self.btn_undo, self.btn_redo, self.btn_reset,
-                  self.layers_panel, self.carousel_panel, self.btn_agent_apply, self.btn_agent_discard):
+                  self.layers_panel, self.carousel_panel):
             w.setEnabled(on)
         for w in (self.agent_input, self.btn_agent_ask):
             w.setEnabled(on and self.agent_enabled)

@@ -96,8 +96,7 @@ def test_controls_are_vertically_centred_in_their_row(qtbot, ini, size):
 
 def test_runtime_assistant_buttons_rewrap(qtbot, ini):
     w = _show(qtbot, (960, 540))
-    for b in (w.btn_agent_cancel, w.btn_agent_apply, w.btn_agent_discard):
-        b.setVisible(True)
+    w.btn_agent_cancel.setVisible(True)
     qtbot.wait(30)
     QApplication.processEvents()
     _assert_not_clipped(w)

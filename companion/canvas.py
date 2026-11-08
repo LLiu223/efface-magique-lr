@@ -398,29 +398,38 @@ class ImageCanvas(QGraphicsView):
             self._mask_qimage.fill(QColor(0, 0, 0, 0))
 
             if mask_pil is not None:
-                mask_l = mask_pil.convert("L")
-                if mask_l.size != (w, h):
-                    mask_l = mask_l.resize((w, h), Image.Resampling.NEAREST)
-                mask_arr = np.asarray(mask_l)
-                masked_pixels = mask_arr > 10
-
-                if np.any(masked_pixels):
-                    rgba_arr = np.zeros((h, w, 4), dtype=np.uint8)
-                    alpha_val = int(self.brush_opacity * 255)
-                    rgba_arr[masked_pixels, 0] = 255
-                    rgba_arr[masked_pixels, 1] = 30
-                    rgba_arr[masked_pixels, 2] = 30
-                    rgba_arr[masked_pixels, 3] = alpha_val
-
-                    qimg = QImage(rgba_arr.data, w, h, w * 4, QImage.Format.Format_RGBA8888)
-                    painter = QPainter(self._mask_qimage)
-                    painter.drawImage(0, 0, qimg)
-                    painter.end()
+                self._paint_mask(mask_pil)
 
         if self._mask_item:
             self._mask_item.setPixmap(QPixmap.fromImage(self._mask_qimage))
         self._mask_history = [self._mask_qimage.copy()]
         self._mask_redo_stack.clear()
+        self.maskChanged.emit()
+
+    def _paint_mask(self, mask_pil: Image.Image):
+        """Paint a binary PIL mask onto the mask overlay in brush red, over (union with) what is there."""
+        w, h = self._current_pil.size
+        mask_l = mask_pil.convert("L")
+        if mask_l.size != (w, h):
+            mask_l = mask_l.resize((w, h), Image.Resampling.NEAREST)
+        masked_pixels = np.asarray(mask_l) > 10
+        if not np.any(masked_pixels):
+            return
+        rgba_arr = np.zeros((h, w, 4), dtype=np.uint8)
+        rgba_arr[masked_pixels] = (255, 30, 30, int(self.brush_opacity * 255))
+        qimg = QImage(rgba_arr.data, w, h, w * 4, QImage.Format.Format_RGBA8888)
+        painter = QPainter(self._mask_qimage)
+        painter.drawImage(0, 0, qimg)
+        painter.end()
+
+    def add_mask(self, mask_pil: Image.Image):
+        """Add a mask to the brush strokes as ONE undoable step, like a single stroke (assistant selection)."""
+        if self._current_pil is None or self._mask_qimage is None:
+            return
+        self._paint_mask(mask_pil)
+        self._save_mask_state()
+        if self._mask_item:
+            self._mask_item.setPixmap(QPixmap.fromImage(self._mask_qimage))
         self.maskChanged.emit()
 
     def set_display_image(self, pil_img: Image.Image, cached_pixmap: Optional[QPixmap] = None):

@@ -126,7 +126,7 @@ class TestPreviewEndpoint:
 
 def _locked_widgets(w):
     return [w.btn_open, w.btn_erase, w.btn_sync, w.btn_undo, w.btn_redo, w.btn_reset,
-            w.layers_panel, w.carousel_panel, w.btn_agent_apply, w.btn_agent_discard]
+            w.layers_panel, w.carousel_panel]
 
 
 @pytest.fixture
