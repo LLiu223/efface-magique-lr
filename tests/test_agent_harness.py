@@ -347,3 +347,28 @@ def test_langsmith_tracing_forced_off(monkeypatch):
     assert _tracing_v2_is_enabled()  # the env really would turn tracing on
     monkeypatch.setattr(harness, "_run_agent", lambda *a, **k: _tracing_v2_is_enabled())
     assert harness.run_agent(None, None, "x", None) is False
+
+
+def test_model_that_only_describes_still_selects_the_match(store, seg, no_clipseg):
+    """llama3.1 often says "one person found" and stops: the matching region is selected for it."""
+    seg.boxes = [(PERSON, 0.4, 0.6), (BOTTLE, 0.8, 0.95)]
+    s = _session()
+    llm = scripted(call("detect_regions", {"query": "person"}), say("There is one person at the centre-bottom."))
+    r, _ = _run(llm, s, store, text="select the man")
+    assert r.ok and r.selection is not None
+    assert r.selection.labels == ["person"] and r.tool_calls[-1] == "select_regions"
+
+
+def test_fallback_never_selects_an_unrelated_voc_object(store, seg, no_clipseg):
+    seg.boxes = [(PERSON, 0.4, 0.6)]
+    s = _session()
+    llm = scripted(call("detect_regions", {"query": "power lines"}), say("No power lines found."))
+    r, _ = _run(llm, s, store, text="select the power lines")
+    assert r.ok and r.selection is None
+
+
+def test_prompt_gives_photo_size_model_and_detectable_classes(store, seg, no_clipseg):
+    llm = scripted(say("ok"))
+    _run(llm, _session(FakeEngine("migan")), store)
+    system = llm.seen[0][0]
+    assert "300x200" in system and "migan" in system and "person" in system and "select_regions" in system

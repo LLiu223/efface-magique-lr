@@ -71,6 +71,8 @@ class AgentSession:
     regions: Dict[str, dict] = field(default_factory=dict)
     region_masks: Dict[str, np.ndarray] = field(default_factory=dict)
     selection: Optional[Selection] = None
+    detector: str = ""          # "clipseg" or "voc": which detector made `regions`
+    query: str = ""             # the last detect_regions query
     calls: List[str] = field(default_factory=list)
 
     def _out(self, obj) -> str:
@@ -131,6 +133,7 @@ class AgentSession:
         k = max(3, int(0.01 * max(w, h)) | 1)  # small dilation so the inpaint covers object edges
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
         self.regions, self.region_masks = {}, {}
+        self.detector, self.query = ("clipseg" if clipseg is not None else "voc"), query
         for idx, (share, label, comp, (cx, cy)) in enumerate(found[:MAX_REGIONS], start=1):
             rid = f"r{idx}"
             full = cv2.resize(comp.astype(np.uint8) * 255, (w, h), interpolation=cv2.INTER_NEAREST)
