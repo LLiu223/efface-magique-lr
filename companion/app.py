@@ -74,7 +74,7 @@ from companion.ui import (
     HelpGuideDialog,
     LoadingSpinnerOverlay,
 )
-from companion.canvas import ImageCanvas, pil_to_qimage
+from companion.canvas import ImageCanvas, pil_to_qimage, set_source_icc
 from companion.device import (
     DeviceType,
     DeviceInfo,
@@ -1963,6 +1963,7 @@ class MainWindow(QMainWindow):
                 if display_img is None:
                     display_img = pil_img.convert("RGB")
 
+            set_source_icc(self.original_icc_profile)  # before any pixmap of this photo is made
             self.canvas.load_image(display_img)  # keeps its own copies
             self.base_image = display_img
             self._base_pixmap = self.canvas.original_pixmap  # QPixmap is implicitly shared: no second upload

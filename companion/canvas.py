@@ -14,6 +14,7 @@ from typing import Optional, List
 import numpy as np
 from PyQt6.QtCore import Qt, QPoint, QPointF, QRect, QRectF, QTimer, pyqtSignal, QSize
 from PyQt6.QtGui import (
+    QColorSpace,
     QImage,
     QPixmap,
     QPainter,
@@ -45,8 +46,22 @@ except Exception:
     HAS_OPENGL = False
 
 
+_SRGB = QColorSpace(QColorSpace.NamedColorSpace.SRgb)
+_source_color_space: Optional[QColorSpace] = None  # colour space of the open photo; None = show values as sRGB
+
+
+def set_source_icc(icc: Optional[bytes]) -> None:
+    """Set the open photo's ICC profile so its pixels are shown in sRGB (Lightroom exports ProPhoto RGB).
+
+    Only display images are converted; the pixels that are edited and saved keep the photo's own colour space.
+    """
+    global _source_color_space
+    cs = QColorSpace.fromIccProfile(icc) if icc else QColorSpace()
+    _source_color_space = cs if cs.isValid() and cs != _SRGB else None
+
+
 def pil_to_qimage(pil_img: Image.Image) -> QImage:
-    """Convert PIL RGB Image to PyQt6 QImage (Format_RGB888)."""
+    """Convert PIL RGB Image to PyQt6 QImage (Format_RGB888) in sRGB for display."""
     if pil_img.mode == "RGB":
         rgb_img = pil_img
     else:
@@ -55,7 +70,10 @@ def pil_to_qimage(pil_img: Image.Image) -> QImage:
     bytes_per_line = 3 * width
     raw_bytes = rgb_img.tobytes("raw", "RGB")
     qimage = QImage(raw_bytes, width, height, bytes_per_line, QImage.Format.Format_RGB888)
-    return qimage.copy()
+    if _source_color_space is None:
+        return qimage.copy()
+    qimage.setColorSpace(_source_color_space)
+    return qimage.convertedToColorSpace(_SRGB)  # new image, so no copy() needed (~0.1 s for 24 MP)
 
 
 def qimage_to_pil(qimage: QImage) -> Image.Image:

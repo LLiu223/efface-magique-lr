@@ -177,6 +177,31 @@ def test_16bit_preview_matches_pillow_decode(qtbot, tmp_path):
     assert window._base_pixmap.width() == expected.shape[1]
 
 
+def test_prophoto_shown_in_srgb_but_edited_unchanged(qtbot, tmp_path):
+    """Lightroom exports ProPhoto RGB: the screen copy is converted to sRGB, the edit/save pixels are not."""
+    from PyQt6.QtGui import QColorSpace
+    from companion.canvas import pil_to_qimage, set_source_icc
+
+    prophoto = QColorSpace(QColorSpace.NamedColorSpace.ProPhotoRgb).iccProfile().data()
+    rgb16 = np.zeros((8, 8, 3), np.uint16)
+    rgb16[..., 1] = 40000  # mid green: ProPhoto and sRGB values differ clearly
+    src = str(tmp_path / "pro.tif")
+    write_tiff16(src, rgb16, prophoto)
+    try:
+        window = MainWindow(input_path=src)
+        qtbot.addWidget(window)
+        raw = tuple(int(v) for v in np.asarray(window.base_image)[0, 0])
+        assert raw == (0, 40000 >> 8, 0)  # edit base keeps the file's ProPhoto values
+        shown = pil_to_qimage(window.base_image).pixelColor(0, 0)
+        assert (shown.red(), shown.green(), shown.blue()) != raw
+        assert shown.green() > raw[1]  # sRGB needs a stronger green to show the same colour
+
+        set_source_icc(None)  # no profile: values shown as they are
+        assert pil_to_qimage(window.base_image).pixelColor(0, 0).green() == raw[1]
+    finally:
+        set_source_icc(None)
+
+
 def test_16bit_load_releases_file(qtbot, tmp_path):
     """Saving over the Lightroom export replaces it with os.replace; Windows refuses that while the file is open."""
     src = str(tmp_path / "live_1.tif")
