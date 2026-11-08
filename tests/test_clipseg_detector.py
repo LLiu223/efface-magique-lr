@@ -73,6 +73,27 @@ def test_load_failure_is_cached_and_reported(fresh, monkeypatch, caplog):
     assert "failed to load" in cd.unavailable_note()
 
 
+def _install_bat() -> bytes:
+    with open(os.path.join(_PROJECT_ROOT, "install.bat"), "rb") as f:
+        return f.read()
+
+
+def test_install_bat_has_no_stray_control_bytes():
+    """A "\\t" or "\\v" expanded while writing the file once turned clipseg\\tokenizer_config.json into a TAB."""
+    for n, line in enumerate(_install_bat().split(b"\r\n"), start=1):
+        body = line.lstrip(b" \t")  # TAB is only allowed as indentation
+        bad = [b for b in body if b < 0x20 or b == 0x7F]
+        assert not bad, f"install.bat:{n} has control byte(s) {bad}"
+
+
+def test_install_bat_fetches_every_required_clipseg_file():
+    text = _install_bat().decode("ascii")
+    for name in cd.WEIGHT_FILES:
+        assert f'"!MODELS_DIR!\\clipseg\\{name}"' in text, name
+        assert f'"!CS_URL!/{name}"' in text, name
+    assert open(os.path.join(_PROJECT_ROOT, "requirements-clipseg.txt")).read().count("transformers==5.22.2") == 1
+
+
 def test_is_available_needs_every_file(fresh, monkeypatch):
     monkeypatch.setattr(cd.importlib.util, "find_spec", lambda name: object())
     assert not cd.is_available() and cd.status() == "not installed"

@@ -247,7 +247,7 @@ def make_tools(session: AgentSession) -> list:
         (select_model, "Make the inpainting model with this exact registry name active. Use a name from list_models."),
         (set_prompt, "Set the text prompt (max 200 chars). Only models with uses_prompt=true use it."),
         (detect_regions, "Find objects in the photo. query = the user's object words, e.g. \"power lines\". "
-                         "Returns [{id, label, area_share, position}], position = left/centre/right-top/middle/bottom. "
+                         "Returns [{id, label, area_share, position}], position is left/centre/right x top/middle/bottom. "
                          "Without a query only VOC classes (person, car, dog, ...) are found."),
         (inpaint_region, "Erase the given region ids (from detect_regions) with the active model and prepare a "
                          "preview proposal (1-3 variations). The user must click Apply to commit it."),
