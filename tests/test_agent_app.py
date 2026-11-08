@@ -1,8 +1,9 @@
-"""(h) Confirmation flow in MainWindow: nothing reaches modification_layers before Apply; AC 12 data hygiene."""
+"""Assistant in MainWindow: it only selects regions onto the brush mask, the user erases; AC 12 data hygiene."""
 
 import os
 import sys
 
+import numpy as np
 import pytest
 from PIL import Image
 from PyQt6.QtCore import QSettings
@@ -18,7 +19,8 @@ import companion.app as app  # noqa: E402
 from agent_fakes import BOTTLE, FakeSegNet, call, say, scripted  # noqa: E402
 from companion.agent import MISSING_TOOLTIP  # noqa: E402
 from companion.agent import tools as agent_tools  # noqa: E402
-from companion.agent.harness import AgentWorker  # noqa: E402
+from companion.agent.harness import AgentResult, AgentWorker  # noqa: E402
+from companion.agent.tools import Selection  # noqa: E402
 from companion.agent.usage import UsageStore  # noqa: E402
 from companion.layers import ModificationLayer  # noqa: E402
 from companion.model_engine import EngineMode  # noqa: E402
@@ -50,13 +52,17 @@ def env(qtbot, tmp_path, monkeypatch):
     qtbot.addWidget(w)
     w._usage_store = UsageStore(str(tmp_path / "usage.sqlite3"), prices={})
 
+    generated = []
+
     def fake_generate(image, mask, num_variations=1, **kw):
+        generated.append((mask.copy(), kw.get("prompt")))
         return [Image.new("RGB", image.size, GREEN) for _ in range(num_variations)]
 
     monkeypatch.setattr(w.engine, "generate_variations", fake_generate)
 
     class Env:
         window, photo_a, photo_b, messages = w, photos[0], photos[1], infos
+        generations = generated
 
         @staticmethod
         def ask(*items, text="remove the bin"):
@@ -70,79 +76,91 @@ def env(qtbot, tmp_path, monkeypatch):
     return Env
 
 
-PROPOSE = (call("detect_regions", {}, 1), call("inpaint_region", {"region_ids": ["r1"]}, 2), say("Erased the bottle."))
+SELECT = (call("detect_regions", {}, 1), call("select_regions", {"region_ids": ["r1"]}, 2),
+          say("Selected the bottle."))
 
 
-def test_proposal_preview_does_not_touch_layers_until_apply(env):
+def _mask(w):
+    return np.asarray(w.canvas.get_mask_image()) > 0
+
+
+def _strip(x0, x1):
+    m = Image.new("L", (120, 80), 0)
+    m.paste(255, (x0, 0, x1, 80))
+    return m
+
+
+def test_selection_lands_on_mask_union_and_one_undo(env):
     w = env.window
-    before = w.canvas.get_current_image()
-    env.ask(*PROPOSE)
-    assert w._agent_proposal is not None and w.modification_layers == []
-    assert w.canvas.get_current_image().getpixel((5, 5)) == GREEN  # preview shown
-    assert not w.btn_agent_apply.isHidden()
-
-    w.btn_agent_apply.click()
-    assert len(w.modification_layers) == 1 and w._agent_proposal is None
-    layer = w.modification_layers[0]
-    assert layer.inpainted_image.getpixel((5, 5)) == GREEN
-    assert layer.mask.getpixel((100, 40)) == 255 and layer.mask.getpixel((10, 40)) == 0
-    assert w.btn_agent_apply.isHidden() and before is not None
-    w._on_undo()  # an applied proposal is a new layer like any other
-    assert w.modification_layers == []
+    w.canvas.set_mask_image(_strip(0, 10))  # strokes the user already painted
+    env.ask(*SELECT)
+    mask = _mask(w)
+    assert mask[40, 5] and mask[40, 100] and not mask[40, 40]  # union: old strokes + the bottle (x 72-108)
+    assert w.modification_layers == [] and env.generations == []  # nothing erased by the assistant
+    assert "Assistant selected: bottle (r1). Adjust with the brush, then click Erase." in w.statusBar().currentMessage()
+    w._on_undo()  # one Ctrl+Z removes the whole selection, keeps the user's strokes
+    mask = _mask(w)
+    assert mask[40, 5] and not mask[40, 100]
     w._on_redo()
-    assert w.modification_layers == [layer]
+    assert _mask(w)[40, 100]
 
 
-def test_discard_leaves_layers_and_display_unchanged(env):
+def test_undo_without_prior_strokes_clears_the_selection(env):
     w = env.window
-    before = w.canvas.get_current_image()
-    env.ask(*PROPOSE)
-    w.btn_agent_discard.click()
-    assert w.modification_layers == [] and w._agent_proposal is None
-    assert w.canvas.get_current_image() is before
-    w._on_agent_apply()  # nothing pending: no-op
-    assert w.modification_layers == []
+    env.ask(*SELECT)
+    assert w.canvas.has_mask()
+    w._on_undo()
+    assert not w.canvas.has_mask() and w.modification_layers == []
 
 
-def test_apply_respects_active_layer(env):
+def test_erase_after_selection_uses_that_mask(env, qtbot):
     w = env.window
-    img = Image.new("RGB", (120, 80), (1, 2, 3))
-    for i in range(2):
-        layer = ModificationLayer(layer_id=f"L{i}", name=f"Modification {i + 1}", mask=Image.new("L", (120, 80)),
-                                  inpainted_image=img, engine_mode=EngineMode.FAST)
-        layer.composite_cache = img.copy()
-        w.modification_layers.append(layer)
-    w.active_layer_index = 0
-    env.ask(*PROPOSE)
-    w._on_agent_apply()
-    assert len(w.modification_layers) == 2  # updated the active layer, did not append
-    assert w.modification_layers[0].get_active_image().getpixel((100, 40)) == GREEN
-    assert w.modification_layers[1].layer_id == "L1"
+    env.ask(*SELECT)
+    selected = _mask(w)
+    w.agent_input.clearFocus()
+    w._on_run_inpainting()
+    qtbot.waitUntil(lambda: w.worker is None and len(w.modification_layers) == 1, timeout=30000)
+    used = np.asarray(env.generations[0][0]) > 0
+    assert (used == selected).all()
 
 
-def test_layer_change_during_proposal_blocks_apply(env):
+def _selection(w):
+    return Selection(region_ids=["r1"], labels=["bottle"], mask=_strip(80, 100))
+
+
+def test_stale_selection_dropped_when_layers_change(env):
     w = env.window
-    env.ask(*PROPOSE)
+    w._agent_state_key = w._layer_state_key()
     w.modification_layers.append(ModificationLayer(layer_id="x", name="Modification 1", mask=Image.new("L", (120, 80)),
                                                    inpainted_image=Image.new("RGB", (120, 80)), engine_mode=EngineMode.FAST))
-    w._on_agent_apply()
-    assert [layer.layer_id for layer in w.modification_layers] == ["x"] and w._agent_proposal is None
-    assert any("changed since the proposal" in m for m in env.messages)
+    w._on_agent_result(AgentResult(ok=True, selection=_selection(w)))
+    assert not w.canvas.has_mask()
+    assert "selection dropped: the photo or layers changed" in w.statusBar().currentMessage()
 
 
-def test_photo_switch_drops_proposal(env):
+def test_stale_selection_dropped_after_photo_switch(env):
     w = env.window
-    env.ask(*PROPOSE)
+    w._agent_state_key = w._layer_state_key()
     w.load_image_file(env.photo_b)
-    assert w._agent_proposal is None and w.btn_agent_apply.isHidden()
-    w._on_agent_apply()
-    assert w.modification_layers == []
+    w._on_agent_result(AgentResult(ok=True, selection=_selection(w)))
+    assert not w.canvas.has_mask() and "selection dropped" in w.statusBar().currentMessage()
+
+
+def test_selection_never_applied_over_a_preview(env):
+    w = env.window
+    w._agent_state_key = w._layer_state_key()
+    w._preview = {"photo_id": "2"}
+    try:
+        w._on_agent_result(AgentResult(ok=True, selection=_selection(w)))
+        assert not w.canvas.has_mask() and "Lightroom preview" in w.statusBar().currentMessage()
+    finally:
+        w._preview = None
 
 
 def test_not_found_is_reported(env):
     w = env.window
-    env.ask(call("detect_regions"), say("I found no bin; only VOC objects can be located."))
-    assert w._agent_proposal is None and w.modification_layers == []
+    env.ask(call("detect_regions"), say("I found no bin, so nothing is selected."))
+    assert not w.canvas.has_mask() and w.modification_layers == []
     assert any("found no bin" in m for m in env.messages)
 
 
@@ -156,7 +174,7 @@ def test_abort_reason_is_shown_and_controls_restored(env):
 def test_no_file_name_exif_or_image_reaches_the_model(env):
     w = env.window
     assert INJECTION in os.path.basename(w.input_path)
-    llm = env.ask(*PROPOSE)
+    llm = env.ask(*SELECT)
     sent = " ".join(" ".join(m) for m in llm.seen)
     assert INJECTION not in sent and "EXIF" not in sent and ".jpg" not in sent
     assert "remove the bin" in sent
@@ -165,7 +183,7 @@ def test_no_file_name_exif_or_image_reaches_the_model(env):
 def test_agent_shares_the_single_worker_slot(env, qtbot):
     w = env.window
     w.canvas.set_mask_image(Image.new("L", (120, 80), 255))
-    env_llm = scripted(*PROPOSE)
+    env_llm = scripted(*SELECT)
     w._agent_llm_factory = lambda *a: (lambda: env_llm)
     w.agent_input.setText("remove the bin")
     w._on_agent_ask()
@@ -177,7 +195,7 @@ def test_agent_shares_the_single_worker_slot(env, qtbot):
 
 
 def test_usage_rows_written_from_app(env):
-    env.ask(*PROPOSE)
+    env.ask(*SELECT)
     rows = env.window._usage_store.recent()
     assert len(rows) == 3 and all(r["provider"] == "ollama" and r["cost"] == 0 for r in rows)
 
@@ -206,26 +224,22 @@ def test_provider_and_model_saved_in_settings(qtbot, tmp_path, monkeypatch):
     assert w2.ed_agent_model.text() == "claude-sonnet-4-5"
 
 
-def test_assistant_prompt_shows_in_field_and_reaches_prompt_models(env, monkeypatch):
+def test_assistant_prompt_shows_in_field_and_reaches_erase(env, qtbot):
     w = env.window
-    prompts = []
-
-    def fake_generate(image, mask, num_variations=1, prompt=None, **kw):
-        prompts.append(prompt)
-        return [Image.new("RGB", image.size, GREEN) for _ in range(num_variations)]
-
-    monkeypatch.setattr(w.engine, "generate_variations", fake_generate)
     w.engine.set_model("sd_inpaint")  # uses_prompt; generation is faked, so no weights needed
     w._update_prompt_enabled()
     w.txt_prompt.setText("typed by user")
-    env.ask(call("set_prompt", {"text": "a wooden fence"}, 0), *PROPOSE)
-    assert prompts == ["a wooden fence"]
+    env.ask(call("set_prompt", {"text": "a wooden fence"}, 0), *SELECT)
+    assert env.generations == []  # the assistant never runs the model
     assert w.txt_prompt.text() == "a wooden fence" and w.txt_prompt.isEnabled()
+    w.agent_input.clearFocus()
+    w._on_run_inpainting()
+    qtbot.waitUntil(lambda: w.worker is None and bool(env.generations), timeout=30000)
+    assert env.generations[-1][1] == "a wooden fence"
 
-    w._on_agent_discard()
     w.txt_prompt.setText("grass")
-    env.ask(*PROPOSE)  # no set_prompt: the field's text seeds the assistant and stays as is
-    assert prompts[-1] == "grass" and w.txt_prompt.text() == "grass"
+    env.ask(*SELECT)  # no set_prompt: the field's text seeds the assistant and stays as is
+    assert w.txt_prompt.text() == "grass"
 
 
 def test_ollama_connect_error_explains_what_to_do(env):

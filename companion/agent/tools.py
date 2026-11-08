@@ -1,4 +1,5 @@
 """Assistant tools. The model sees only these five; none takes a path, URL or shell argument.
+The assistant finds and selects regions; it never runs an inpainting model (the user clicks Erase).
 
 Each tool returns a JSON string capped at `output_cap` chars. Results are data, never
 instructions (the system prompt says so); free text that did not come from a fixed set
@@ -16,12 +17,16 @@ from PIL import Image
 
 from companion.config import CONFIG
 from companion.models import registry
+from companion.utils import clipseg_detector
 from companion.utils.subject_detector import get_segmentation_model
 
-TOOL_NAMES = ("list_models", "select_model", "set_prompt", "detect_regions", "inpaint_region")
+TOOL_NAMES = ("list_models", "select_model", "set_prompt", "detect_regions", "select_regions")
 MIN_REGION_SHARE = 0.002   # ignore specks below 0.2 % of the frame
 MAX_REGIONS = 20
-MAX_VARIATIONS = 3
+MAX_QUERY_LEN = 77         # CLIP's text limit is 77 tokens, so 77 characters always fit
+# CLIPSeg predicts at 352x352, so thin wires come out blurred with peaks often below 0.5 while
+# background sits below 0.1; 0.3 keeps the thin peaks and still rejects the background.
+CLIPSEG_THRESHOLD = 0.3
 _CTRL = re.compile(r"[\x00-\x1f\x7f-\x9f\u200b-\u200f\u202a-\u202e\u2066-\u2069]")
 
 
@@ -44,19 +49,14 @@ def _position(cx: float, cy: float, w: int, h: int) -> str:
 
 
 @dataclass
-class Proposal:
-    model: str
-    prompt: Optional[str]
+class Selection:
+    """Regions the assistant selected; the app adds `mask` to the canvas brush mask. Nothing is erased."""
     region_ids: List[str]
     labels: List[str]
     mask: Image.Image
-    variations: List[Image.Image]
-    base_image: Image.Image
 
     def describe(self) -> str:
-        regions = ", ".join(f"{r} ({lab})" for r, lab in zip(self.region_ids, self.labels))
-        p = f", prompt {self.prompt!r}" if self.prompt else ""
-        return f"model {self.model}{p}, regions {regions}"
+        return ", ".join(f"{lab} ({r})" for r, lab in zip(self.region_ids, self.labels))
 
 
 @dataclass
@@ -70,7 +70,7 @@ class AgentSession:
     prompt: Optional[str] = None
     regions: Dict[str, dict] = field(default_factory=dict)
     region_masks: Dict[str, np.ndarray] = field(default_factory=dict)
-    proposal: Optional[Proposal] = None
+    selection: Optional[Selection] = None
     calls: List[str] = field(default_factory=list)
 
     def _out(self, obj) -> str:
@@ -105,38 +105,29 @@ class AgentSession:
         self.prompt = sanitize_text(text) or None
         return self._out({"ok": True, "prompt": self.prompt})
 
-    def detect_regions(self) -> str:
+    def detect_regions(self, query: Optional[str] = None) -> str:
         self.calls.append("detect_regions")
         self.progress("Detecting regions...")
-        model = get_segmentation_model()
-        if model is None:
-            return self._out({"regions": [], "error": "segmentation model unavailable"})
+        query = sanitize_text(query, MAX_QUERY_LEN)
         import cv2
-        import torch
-        import torchvision.transforms.functional as TF
 
         img = self.image.convert("RGB")
         w, h = img.size
         scale = min(1.0, CONFIG.NEURAL_CROP_MAX_DIM / max(w, h))
         small = img.resize((max(32, int(w * scale)), max(32, int(h * scale))), Image.Resampling.BILINEAR)
-        t = TF.normalize(TF.to_tensor(small), mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-        device = next(model.parameters()).device
-        with torch.inference_mode():
-            pred = torch.argmax(model(t.unsqueeze(0).to(device))["out"], dim=1)[0].cpu().numpy().astype(np.uint8)
+        notes = []
+        clipseg = clipseg_detector.get_clipseg() if query else None
+        if clipseg is not None:
+            found, (sh, sw) = self._clipseg_regions(clipseg, small, query), small.size[::-1]
+        else:
+            if query:
+                notes.append(clipseg_detector.unavailable_note())
+            model = get_segmentation_model()
+            if model is None:
+                return self._out({"regions": [], "error": "segmentation model unavailable", **(
+                    {"note": " ".join(notes)} if notes else {})})
+            found, (sh, sw) = self._voc_regions(model, small)
 
-        names = voc_categories()
-        found = []
-        for cls in np.unique(pred):
-            if cls == 0 or cls >= len(names):
-                continue
-            n, labels, stats, cents = cv2.connectedComponentsWithStats((pred == cls).astype(np.uint8), connectivity=8)
-            for i in range(1, n):
-                share = stats[i, cv2.CC_STAT_AREA] / pred.size
-                if share >= MIN_REGION_SHARE:
-                    found.append((share, names[cls], labels == i, cents[i]))
-        found.sort(key=lambda f: -f[0])
-
-        sh, sw = pred.shape
         k = max(3, int(0.01 * max(w, h)) | 1)  # small dilation so the inpaint covers object edges
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
         self.regions, self.region_masks = {}, {}
@@ -148,35 +139,64 @@ class AgentSession:
                                  "position": _position(cx, cy, sw, sh)}
         out = {"regions": list(self.regions.values())}
         if not self.regions:
-            out["note"] = "No VOC objects found. Tell the user nothing matching was found; do not guess a region."
+            notes.append(f"Tell the user nothing matching '{query}' found; do not guess a region." if clipseg is not None else
+                         "No VOC objects found. Tell the user nothing matching was found; do not guess a region.")
+        if notes:
+            out["note"] = " ".join(notes)
         return self._out(out)
 
-    def inpaint_region(self, region_ids: List[str], num_variations: int = 1) -> str:
-        self.calls.append("inpaint_region")
+    @staticmethod
+    def _components(binary: np.ndarray, label: str) -> list:
+        """(share, label, mask, centroid) per 8-connected component of at least MIN_REGION_SHARE."""
+        import cv2
+        n, labels, stats, cents = cv2.connectedComponentsWithStats(binary.astype(np.uint8), connectivity=8)
+        return [(stats[i, cv2.CC_STAT_AREA] / binary.size, label, labels == i, cents[i]) for i in range(1, n)
+                if stats[i, cv2.CC_STAT_AREA] / binary.size >= MIN_REGION_SHARE]
+
+    def _voc_regions(self, model, small: Image.Image):
+        import torch
+        import torchvision.transforms.functional as TF
+        t = TF.normalize(TF.to_tensor(small), mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        device = next(model.parameters()).device
+        with torch.inference_mode():
+            pred = torch.argmax(model(t.unsqueeze(0).to(device))["out"], dim=1)[0].cpu().numpy().astype(np.uint8)
+        names = voc_categories()
+        found = []
+        for cls in np.unique(pred):
+            if 0 < cls < len(names):
+                found += self._components(pred == cls, names[cls])
+        found.sort(key=lambda f: -f[0])
+        return found, pred.shape
+
+    def _clipseg_regions(self, clipseg, small: Image.Image, query: str) -> list:
+        import cv2
+        import torch
+        processor, model = clipseg
+        device = next(model.parameters()).device
+        inputs = processor(text=[query], images=[small], padding=True, return_tensors="pt")
+        with torch.inference_mode():
+            logits = model(**{k: v.to(device) for k, v in inputs.items()}).logits
+        # transformers squeezes the batch dim for a single prompt: accept (H,W) and (1,H,W)
+        heat = torch.sigmoid(logits.float()).reshape(logits.shape[-2:]).cpu().numpy()
+        heat = cv2.resize(heat, small.size, interpolation=cv2.INTER_LINEAR)
+        binary = (heat >= CLIPSEG_THRESHOLD).astype(np.uint8)
+        binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))  # join broken wire segments
+        return sorted(self._components(binary, query), key=lambda f: -f[0])
+
+    def select_regions(self, region_ids: List[str]) -> str:
+        self.calls.append("select_regions")
         ids = [r for r in dict.fromkeys(region_ids or []) if r in self.region_masks]
         unknown = [sanitize_text(r, 20) for r in (region_ids or []) if r not in self.region_masks]
         if unknown or not ids:
             return self._out({"ok": False, "error": "unknown region ids; call detect_regions first",
                               "unknown": unknown[:10], "known": list(self.region_masks)})
-        n = max(1, min(MAX_VARIATIONS, int(num_variations or 1)))
         mask_np = np.zeros_like(self.region_masks[ids[0]])
         for r in ids:
-            mask_np = np.maximum(mask_np, self.region_masks[r])
-        mask = Image.fromarray(mask_np)
-        cls = registry.get(self.engine.model_name)
-        self.progress(f"Running {cls.label or cls.name}...")
-        prompt = self.prompt if cls.uses_prompt else None
-        # Same call InpaintingWorker.run makes; runs on this (agent) worker thread
-        variations = self.engine.generate_variations(
-            image=self.image, mask=mask, num_variations=n, prompt=prompt,
-            detect_subject=False, enable_grain=False,
-            progress_callback=lambda pct, msg: self.progress(f"{cls.label or cls.name}: {pct}%"),
-        )
-        self.proposal = Proposal(model=cls.name, prompt=prompt, region_ids=ids,
-                                 labels=[self.regions[r]["label"] for r in ids], mask=mask,
-                                 variations=list(variations), base_image=self.image)
-        return self._out({"ok": True, "proposed": True, "regions": ids, "variations": len(variations),
-                          "note": "Preview ready. Nothing is committed until the user clicks Apply."})
+            mask_np = np.maximum(mask_np, self.region_masks[r])  # masks are already dilated
+        labels = [self.regions[r]["label"] for r in ids]
+        self.selection = Selection(region_ids=ids, labels=labels, mask=Image.fromarray(mask_np))
+        return self._out({"ok": True, "selected": ids, "labels": labels,
+                          "note": "Selected. The user can adjust it with the brush and click Erase."})
 
 
 def make_tools(session: AgentSession) -> list:
@@ -197,23 +217,22 @@ def make_tools(session: AgentSession) -> list:
         with lock:
             return session.set_prompt(text)
 
-    def detect_regions() -> str:
+    def detect_regions(query: Optional[str] = None) -> str:
         with lock:
-            return session.detect_regions()
+            return session.detect_regions(query)
 
-    def inpaint_region(region_ids: List[str], num_variations: int = 1) -> str:
+    def select_regions(region_ids: List[str]) -> str:
         with lock:
-            return session.inpaint_region(region_ids, num_variations)
+            return session.select_regions(region_ids)
 
     specs = [
         (list_models, "List the inpainting models: name, label, uses_prompt, available, and the active one."),
         (select_model, "Make the inpainting model with this exact registry name active. Use a name from list_models."),
-        (set_prompt, "Set the text prompt (max 200 chars). Only models with uses_prompt=true use it."),
-        (detect_regions, "Find objects in the photo. Returns [{id, label, area_share, position}] where position is "
-                         "left/centre/right x top/middle/bottom. Only VOC classes are found: aeroplane, bicycle, "
-                         "bird, boat, bottle, bus, car, cat, chair, cow, diningtable, dog, horse, motorbike, person, "
-                         "pottedplant, sheep, sofa, train, tvmonitor."),
-        (inpaint_region, "Erase the given region ids (from detect_regions) with the active model and prepare a "
-                         "preview proposal (1-3 variations). The user must click Apply to commit it."),
+        (set_prompt, "Set the text prompt Erase will use (max 200 chars). Only models with uses_prompt=true use it."),
+        (detect_regions, "Find objects in the photo. query = the user's object words, e.g. \"power lines\". "
+                         "Returns [{id, label, area_share, position}], position is left/centre/right x top/middle/bottom. "
+                         "Without a query only VOC classes (person, car, dog, ...) are found."),
+        (select_regions, "Select the given region ids (from detect_regions) on the canvas. Nothing is "
+                         "erased: the user adjusts the selection and clicks Erase."),
     ]
     return [StructuredTool.from_function(func=f, name=f.__name__, description=d) for f, d in specs]

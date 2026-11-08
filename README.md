@@ -183,7 +183,9 @@ The dropdown is locked while an erase runs. The bridge accepts an optional `"mod
 
 Optional weights live in the repo-root `models/` folder (`CONFIG.MODELS_DIR`, gitignored, never packaged).
 install.bat asks y/N per model (default N) and installs only that model's pinned requirements file
-(`requirements-migan.txt`: onnxruntime; `requirements-sd.txt`: diffusers, transformers, accelerate). If that pip
+(`requirements-migan.txt`: onnxruntime; `requirements-sd.txt`: diffusers, transformers, accelerate). A last
+optional step, "Enable finding any named object (CLIPSeg, about 600 MB, Apache-2.0)?", installs
+`requirements-clipseg.txt` (transformers) and the CLIPSeg files into `models/clipseg/` for the assistant. If that pip
 install fails, the model's weights are not downloaded. Downloads are pinned (HF revision), saved as `<file>.part`,
 checked against their SHA256 and only then moved to the final name, so an interrupted download never shows up as
 an installed model.
@@ -292,22 +294,34 @@ memorised them: a small set can overfit, so trust the held-out report and the co
 
 ### Assistant (optional, `companion/agent/`)
 Type a request such as "remove the person on the left" in the **Assistant** box in the top bar and press **Ask**.
-A LangChain agent (`langchain.agents.create_agent`) works only through five tools and never replaces the engine:
+The assistant finds and **selects** what you named; it never erases. A LangChain agent
+(`langchain.agents.create_agent`) works only through five tools and never replaces the engine:
 
 ```
 Assistant box -> AgentWorker (QThread, harness.py: max steps / token budget / timeout / cancel / allow-list / 1 retry)
-              -> tools.py: list_models, select_model, set_prompt, detect_regions, inpaint_region
-              -> registry.get + InpaintingEngine.set_model / get_segmentation_model / InpaintingEngine.generate_variations
-              -> proposal preview -> user clicks Apply -> the normal Erase layer path (_on_inpainting_finished)
+              -> tools.py: list_models, select_model, set_prompt, detect_regions, select_regions
+              -> registry.get + InpaintingEngine.set_model / get_segmentation_model / CLIPSeg (clipseg_detector)
+              -> selected regions added to the red brush mask (one Ctrl+Z step) -> user clicks Erase as usual
 ```
 
 - Install with `pip install -r requirements-agent.txt` (pinned versions; `requirements.txt` is unchanged). Without
   it the app runs as before and the assistant fields are disabled with the tooltip "install requirements-agent.txt".
 - Providers: `ollama` (default, `http://localhost:11434`), `anthropic`, `openai`, `gemini`. Keys are read only from
   `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`; they are never written to settings, logs or the usage DB.
-- `detect_regions` can only locate the 20 VOC classes of the segmentation weights (person, car, bottle, dog, chair...),
-  so "remove the bin" usually ends with "nothing matching was found"; paint over such objects by hand.
-- Nothing is added to the layers until you click **Apply**; **Discard** drops the preview, **Stop** cancels.
+- **Named objects:** the assistant passes your object words ("power lines", "the sign on the left", "trash bag")
+  to `detect_regions` as `query`. With the optional CLIPSeg step of install.bat (`CIDAS/clipseg-rd64-refined`,
+  Apache-2.0, loaded from `models/clipseg/` with `local_files_only=True`, never downloaded by the app) it finds any
+  named object, thin wires included; with several matches it picks by position (left/centre/right, top/middle/bottom).
+  The first query loads the model, which takes a few seconds (longer on CPU). Without CLIPSeg only the 20 VOC
+  classes (person, car, bottle, dog, chair...) are found, and the assistant tells you to re-run install.bat and
+  answer y to the find-any-object step. CLIPSeg can mark too much (for example sky for "power lines"): check the
+  red selection and fix it with the brush or eraser before you click Erase.
+- The selection is added to any strokes you already painted, as one undo step (Ctrl+Z removes it). The status bar
+  says what was selected, e.g. "Assistant selected: power lines (r1). Adjust with the brush, then click Erase."
+  Then erase with any model, variations and options as usual. If the photo or layers changed while the assistant
+  ran, or a Lightroom preview is shown, the selection is dropped and the status bar says so. **Stop** cancels.
+  `select_model` and `set_prompt` still prepare the model and prompt your Erase will use (the Model dropdown
+  and prompt field show them).
 - **Usage** opens the usage log (SQLite in the app data folder: tokens, latency, estimated cost per call, CSV export,
   Clear) and the assistant settings (Ollama URL, token budget, opt-in "store prompt text").
 - **Privacy:** images are never sent to an LLM in v1, nor are file names or EXIF; only your request text, the model
@@ -327,6 +341,7 @@ efface-magique-lr/
 ├── companion.sh                      # Unix launcher for companion app
 ├── requirements.txt                  # Python dependencies
 ├── requirements-agent.txt            # Optional assistant (LangChain) dependencies, pinned
+├── requirements-clipseg.txt          # Optional assistant "find any named object" dependency (transformers), pinned
 ├── requirements-migan.txt            # Optional MI-GAN dependency (onnxruntime), pinned
 ├── requirements-sd.txt               # Optional Stable Diffusion dependencies (diffusers, transformers, accelerate), pinned
 ├── README.md                         # Documentation & user guide

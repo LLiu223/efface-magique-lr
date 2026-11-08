@@ -49,7 +49,7 @@ def test_build_diagnostics_normal():
     text = build_diagnostics({
         "app_version": "1.1.0", "python": "3.11.4", "torch": "2.3.0", "pillow": "10.3.0",
         "pyqt6": "6.7.0", "device": "cuda", "gpu_name": "RTX 3070", "lama_model": "loaded",
-        "bridge_port": 51739, "bridge_connected": True, "last_error": None,
+        "clipseg": "installed", "bridge_port": 51739, "bridge_connected": True, "last_error": None,
     })
     lines = text.splitlines()
     assert lines == [
@@ -60,6 +60,7 @@ def test_build_diagnostics_normal():
         "PyQt6: 6.7.0",
         "Device: cuda (RTX 3070)",
         "LaMa model: loaded",
+        "Open-vocabulary detector: installed",
         "Bridge port: 51739",
         "Bridge connected: yes",
         "Last error: none",
@@ -73,7 +74,8 @@ def test_build_diagnostics_missing_and_none_values():
     assert "Bridge port: unknown" in text
     assert "Bridge connected: no" in text
     assert "Last error: boom" in text
-    assert len(build_diagnostics({}).splitlines()) == 10
+    assert "Open-vocabulary detector: unknown" in text
+    assert len(build_diagnostics({}).splitlines()) == 11
 
 
 def test_ping_version_and_connected_after_request(qtbot):
@@ -119,6 +121,7 @@ def test_help_dialog_version_and_copy_diagnostics(qtbot, monkeypatch):
     assert "App version: 1.1.0" in text
     assert f"Bridge port: {window.live_bridge_port}" in text
     assert "LaMa model: loaded" in text
+    assert any(f"Open-vocabulary detector: {v}\n" in text for v in ("not installed", "installed", "loaded"))
     dialog.close()
     window.close()
 

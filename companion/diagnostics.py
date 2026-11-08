@@ -28,6 +28,7 @@ def build_diagnostics(info: Dict[str, Any]) -> str:
         f"PyQt6: {_val(info, 'pyqt6')}",
         f"Device: {device}",
         f"LaMa model: {_val(info, 'lama_model')}",
+        f"Open-vocabulary detector: {_val(info, 'clipseg')}",
         f"Bridge port: {_val(info, 'bridge_port')}",
         f"Bridge connected: {'unknown' if connected is None else ('yes' if connected else 'no')}",
         f"Last error: {_val(info, 'last_error', 'none')}",

@@ -75,3 +75,28 @@ class FakeSegNet(torch.nn.Module):
 
 
 BOTTLE, PERSON = 5, 15
+
+
+class FakeClipSegProcessor:
+    """Stands in for CLIPSegProcessor: records the prompts, returns dummy pixel values."""
+
+    def __init__(self):
+        self.texts = []
+
+    def __call__(self, text, images, **kwargs):
+        self.texts.append(list(text))
+        return {"pixel_values": torch.zeros(1, 3, 352, 352)}
+
+
+class FakeClipSegModel(torch.nn.Module):
+    """Returns logits whose sigmoid is `heat` (a numpy array); `squeeze=True` mimics the (H,W) single-prompt output."""
+
+    def __init__(self, heat, squeeze=False):
+        super().__init__()
+        self.p = torch.nn.Parameter(torch.zeros(1))
+        self.heat, self.squeeze = heat, squeeze
+
+    def forward(self, pixel_values=None, **kwargs):
+        h = torch.as_tensor(self.heat, dtype=torch.float32).clamp(1e-4, 1 - 1e-4)
+        logits = torch.logit(h)
+        return type("Out", (), {"logits": logits if self.squeeze else logits.unsqueeze(0)})()
