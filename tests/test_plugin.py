@@ -59,10 +59,58 @@ def lua_json_escape(s):
     return str(s).replace("\\", "\\\\").replace('"', '\\"')
 
 
+# Python port of ImportGuard.lua validate. Keep in exact sync with the Lua.
+def _guard_is_windows(p):
+    return re.match(r"[A-Za-z]:", p) is not None or "\\" in p
+
+
+def _guard_normalize(p, windows):
+    p = re.sub(r"(.)/+\Z", r"\1", p.replace("\\", "/"), flags=re.S)
+    return p.lower() if windows else p
+
+
+def lua_import_guard_validate(item, temp_dir, session_photos):
+    if not isinstance(item, dict):
+        return None, "item is not a table"
+    path, photo_id = item.get("path"), item.get("photo_id")
+    if not isinstance(path, str) or path == "":
+        return None, "missing path"
+    if not isinstance(photo_id, str) or photo_id == "":
+        return None, "missing photo_id"
+    if not isinstance(temp_dir, str) or temp_dir == "":
+        return None, "no temp dir"
+    windows = _guard_is_windows(temp_dir) or _guard_is_windows(path)
+    p = _guard_normalize(path, windows)
+    if "/../" in "/" + p + "/":
+        return None, "path contains .."
+    if not (p.startswith("/") or re.match(r"[A-Za-z]:/", p)):
+        return None, "path is relative"
+    m = re.match(r"(.*)/[^/]+\Z", p, re.S)
+    if not m or m.group(1) != _guard_normalize(temp_dir, windows):
+        return None, "path is outside the temp dir"
+    leaf = re.search(r"[^/\\]+\Z", path)
+    m = re.match(r"live_(.+)\.tiff?\Z", leaf.group(0) if leaf else "", re.S)
+    if not m:
+        return None, "file name is not live_<id>.tif"
+    pid = m.group(1)
+    if photo_id != pid:
+        return None, "photo_id does not match file name"
+    orig = (session_photos or {}).get(pid)
+    if not isinstance(orig, str):
+        return None, "photo id not exported this session"
+    server_orig = item.get("original_path")
+    if server_orig is not None and (not isinstance(server_orig, str)
+                                    or _guard_normalize(server_orig, windows) != _guard_normalize(orig, windows)):
+        return None, "original_path does not match the exported photo"
+    return path, orig
+
+
 _PLUGIN_DIR = os.path.join(_PROJECT_ROOT, "plugin", "ai_eraser.lrplugin")
 _LIVE_BRIDGE = os.path.join(_PLUGIN_DIR, "LiveBridge.lua")
 _JSON_UTIL = os.path.join(_PLUGIN_DIR, "JsonUtil.lua")
 _LUA_TEST = os.path.join(_PROJECT_ROOT, "tests", "lua", "test_json_util.lua")
+_IMPORT_GUARD = os.path.join(_PLUGIN_DIR, "ImportGuard.lua")
+_LUA_GUARD_TEST = os.path.join(_PROJECT_ROOT, "tests", "lua", "test_import_guard.lua")
 _LUA = shutil.which("lua") or shutil.which("luajit")
 
 
@@ -99,6 +147,80 @@ class TestLiveBridgeFixes(unittest.TestCase):
         """Run tests/lua/test_json_util.lua with a real interpreter against JsonUtil.lua."""
         proc = subprocess.run([_LUA, _LUA_TEST], capture_output=True, text=True, timeout=30)
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+
+    @unittest.skipUnless(_LUA, "lua/luajit not on PATH")
+    def test_import_guard_lua_executes(self):
+        """Run tests/lua/test_import_guard.lua with a real interpreter against ImportGuard.lua."""
+        proc = subprocess.run([_LUA, _LUA_GUARD_TEST], capture_output=True, text=True, timeout=30)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+
+    def test_import_guard_is_pure_lua(self):
+        with open(_IMPORT_GUARD, "r", encoding="utf-8") as f:
+            src = f.read()
+        self.assertIn("validate = validate,", src)
+        self.assertTrue(src.rstrip().endswith("return ImportGuard"))
+        self.assertIsNone(re.search(r"\bimport\s*[('\"]", src))
+        self.assertIsNone(re.search(r"\bLr\w+", src))
+
+    def test_import_guard_called_before_file_ops(self):
+        src = _read_live_bridge()
+        self.assertIn("local ImportGuard = require 'ImportGuard'", src)
+        self.assertEqual(src.count("sessionPhotos[tostring(targetId)] = origPath"), 2)
+        # Every /api/select post is preceded by recording the session photo
+        for m in re.finditer(r"LrHttp\.post\(selectUrl", src):
+            self.assertIn("sessionPhotos[tostring(targetId)] = origPath", src[m.start() - 120:m.start()])
+        guard = src.index("ImportGuard.validate(item, tempDir, sessionPhotos)")
+        loop = src[src.index("JsonUtil.parsePendingImports(importsResp)"):]
+        first_guard = loop.index("ImportGuard.validate(")
+        for op in ["LrFileUtils.exists(", "LrFileUtils.delete(", "LrFileUtils.copy(", "catalog:addPhoto(",
+                   "findPhotoByPath("]:
+            self.assertLess(first_guard, loop.index(op), op)
+        self.assertLess(guard, src.index("LrFileUtils.delete(finalDestPath)"))
+        self.assertNotIn("item.original_path", src)  # the server's original_path never builds the destination
+        # Rejected items are acknowledged too
+        self.assertLess(loop.index("Import skipped"), loop.index("if acknowledge then"))
+
+    def test_import_guard_port(self):
+        temp, orig = r"C:\Proj\.tmp", r"D:\Photos\IMG_42.CR3"
+        session = {"42": orig}
+
+        def item(path, o=orig, pid="42"):
+            return {"path": path, "original_path": o, "photo_id": pid}
+
+        accepted = [
+            (item(r"C:\Proj\.tmp\live_42.tif"), temp),
+            (item(r"C:\Proj\.tmp\live_42.tif", o=None), temp),
+            (item("c:/proj/.TMP/live_42.tif", o="d:/photos/img_42.cr3"), temp),
+            (item(r"C:\Proj\.tmp\live_42.tiff"), temp),
+            (item(r"C:\Proj\.tmp\live_42.tif"), "C:\\Proj\\.tmp\\"),
+            (item("/home/u/proj/.tmp/live_42.tif"), "/home/u/proj/.tmp"),
+        ]
+        for it, t in accepted:
+            self.assertEqual(lua_import_guard_validate(it, t, session), (it["path"], orig), it)
+
+        rejected = [
+            (item(r"C:\Proj\.tmp\..\.tmp\live_42.tif"), temp),
+            (item(r"C:\Proj\.tmp\..\..\Photos\live_42.tif"), temp),
+            (item(r".tmp\live_42.tif"), temp),
+            (item(r"D:\Photos\live_42.tif"), temp),
+            (item(r"C:\Proj\.tmp2\live_42.tif"), temp),
+            (item(r"C:\Proj\.tmp\sub\live_42.tif"), temp),
+            (item(r"C:\Proj\.tmp\IMG_42_ai_edit.tif"), temp),
+            (item(r"C:\Proj\.tmp\live_42.jpg"), temp),
+            (item("C:\\Proj\\.tmp\\live_42.tif\\"), temp),
+            (item(r"C:\Proj\.tmp\live_7.tif", pid="7"), temp),
+            (item(r"C:\Proj\.tmp\live_42.tif", pid="7"), temp),
+            (item(r"C:\Proj\.tmp\live_42.tif", o=r"C:\Windows\x.dll"), temp),
+            (item(r"C:\Proj\.tmp\live_42.tif", pid=None), temp),
+            (item(r"C:\Proj\.tmp\live_42.tif", pid=42), temp),
+            (item(None), temp),
+            (item(5), temp),
+            (item("/home/u/proj/.TMP/live_42.tif"), "/home/u/proj/.tmp"),
+        ]
+        for it, t in rejected:
+            edited, reason = lua_import_guard_validate(it, t, session)
+            self.assertIsNone(edited, it)
+            self.assertIsInstance(reason, str)
 
     def test_static_checks(self):
         src = _read_live_bridge()

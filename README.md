@@ -29,6 +29,7 @@
 - **⚡ Fast Spot Removal:** a single LaMa pass for dust, blemishes and thin wires.
 - **🎯 Object-Aware Erasing (Subject):** the subject detector tightens a rough brush mask to the object's contour inside the painted zone.
 - **📚 Non-Destructive Modification Layers:** every erase is a layer in the sidebar. Toggle it, re-edit its mask, or delete it with its `✕` button.
+- **🖥️ Fits any screen:** on a narrow window the top bar wraps onto extra rows instead of cutting labels; Erase and Save always stay on the right. Drag the sidebar edge to resize it. The window size, position and sidebar width are remembered.
 - **⚡ Live Window:** stays open while you browse photos in Lightroom. Save & Sync stacks the edit above the original in your catalog.
 - **🎨 Color & bit depth:** keeps the ICC profile and DPI. A 16-bit TIFF from Lightroom is saved as a 16-bit TIFF in which only the erased pixels change (they are computed in 8-bit). EXIF is not rewritten.
 - **🔒 Local only:** the plugin and companion talk over an HTTP bridge on `127.0.0.1`, with no cloud calls. See [SECURITY.md](SECURITY.md) for what it does and does not protect against.
@@ -344,6 +345,7 @@ efface-magique-lr/
 │       ├── Info.lua                  # Plugin manifest, menu hooks, & hotkeys
 │       ├── LiveBridge.lua            # High-speed background IPC bridge for Live Window
 │       ├── JsonUtil.lua              # Pure JSON helpers (no Lightroom SDK, unit-testable)
+│       ├── ImportGuard.lua           # Validates pending-import paths before any file operation
 │       ├── PluginUtils.lua           # Environment detection & CLI launcher
 │       └── logo.png                  # Plugin branding icon
 │
@@ -365,7 +367,8 @@ efface-magique-lr/
 │
 └── tests/                            # Automated test suite (150+ unit/integration tests)
     └── lua/
-        └── test_json_util.lua        # Plain-Lua tests for JsonUtil.lua
+        ├── test_json_util.lua        # Plain-Lua tests for JsonUtil.lua
+        └── test_import_guard.lua     # Plain-Lua tests for ImportGuard.lua
 ```
 
 ---
