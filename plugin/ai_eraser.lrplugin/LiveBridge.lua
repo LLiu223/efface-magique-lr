@@ -16,6 +16,7 @@ local LrTasks = import 'LrTasks'
 
 local PluginUtils = require 'PluginUtils'
 local JsonUtil = require 'JsonUtil'
+local ImportGuard = require 'ImportGuard'
 
 local function runLiveBridge()
     local catalog = LrApplication.activeCatalog()
@@ -112,6 +113,7 @@ local function runLiveBridge()
     local MAX_CACHED_EXPORTS = 5
     local cachedExports = {}
     local exportEditTimes = {} -- photo id -> lastEditTime at export (false when the photo has none)
+    local sessionPhotos = {} -- tostring(photo id) -> original path, for ids sent to /api/select this session
 
     local function touchCachedExport(path)
         for i = #cachedExports, 1, -1 do
@@ -172,6 +174,7 @@ local function runLiveBridge()
                         if LrFileUtils.exists(exportPath) == "file"
                             and cachedEditTime ~= nil and cachedEditTime == editTime then
                             touchCachedExport(exportPath)
+                            sessionPhotos[tostring(targetId)] = origPath
                             LrHttp.post(selectUrl, jsonBody, headers)
                         else
                             -- Ultra-fast uncompressed 16-bit TIFF export (no CPU-heavy ZIP compression)
@@ -202,6 +205,7 @@ local function runLiveBridge()
                             if LrFileUtils.exists(exportPath) == "file" then
                                 exportEditTimes[targetId] = editTime
                                 touchCachedExport(exportPath)
+                                sessionPhotos[tostring(targetId)] = origPath
                                 LrHttp.post(selectUrl, jsonBody, headers)
                             end
                         end
@@ -221,14 +225,20 @@ local function runLiveBridge()
             if string.find(importsResp, '"imports"') then
                 local items = JsonUtil.parsePendingImports(importsResp)
                 for _, item in ipairs(items) do
-                    local editedPath = item.path
-                    if editedPath and LrFileUtils.exists(editedPath) == "file" then
+                    -- Only <tempDir>/live_<id>.tif for an id exported this session; origPath is our own record
+                    local editedPath, origPath = ImportGuard.validate(item, tempDir, sessionPhotos)
+                    local acknowledge = false
+                    if not editedPath then
+                        local reason = origPath
+                        editedPath = item.path
+                        progressScope:setCaption("Import skipped (" .. reason .. "): " .. LrPathUtils.leafName(editedPath))
+                        acknowledge = true
+                    elseif LrFileUtils.exists(editedPath) == "file" then
+                        acknowledge = true
                         local ok = LrTasks.pcall(function()
-                            local targetForImport = (item.original_path and catalog:findPhotoByPath(item.original_path))
-                                or targetPhoto
+                            local targetForImport = catalog:findPhotoByPath(origPath) or targetPhoto
 
                             -- Copy edited TIFF adjacent to original photo folder
-                            local origPath = item.original_path or (targetForImport and targetForImport:getRawMetadata('path'))
                             local finalDestPath = editedPath
 
                             if origPath then
@@ -269,8 +279,10 @@ local function runLiveBridge()
                         else
                             progressScope:setCaption("Import failed: " .. LrPathUtils.leafName(editedPath))
                         end
+                    end
 
-                        -- Acknowledge (also on failure, so the item is not retried every poll)
+                    if acknowledge then
+                        -- Acknowledge (also on failure or rejection, so the item is not retried every poll)
                         local doneUrl = string.format("http://127.0.0.1:%d/api/import_done", port)
                         local jsonDoneBody = string.format('{"path": "%s"}', JsonUtil.jsonEscape(editedPath))
                         LrHttp.post(doneUrl, jsonDoneBody, headers)

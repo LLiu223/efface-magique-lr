@@ -33,17 +33,19 @@ Any other path gets 404. While the bridge is stopping, requests get 503.
 
 ## Residual risks
 
-- **No authentication.** There is no token or secret. Any local process, running as any user on the machine, can reach `127.0.0.1:<port>` and drive the bridge. It can select a file to load, focus or close the window, read the pending imports (file paths of your photos) and acknowledge them. The Origin/Host guard only stops browsers. It does not stop local programs, which can set any headers they like.
+- **No authentication.** There is no token or secret. Any local process, running as any user on the machine, can reach `127.0.0.1:<port>` and drive the bridge. It can select a file to load, focus or close the window, read the pending imports (file paths of your photos) and acknowledge them. It cannot make the plugin delete or overwrite arbitrary files: the plugin only imports `live_<id>.tif` files it exported itself (see below). At most it can trigger an import of an edit from the current session, into that photo's own folder. The Origin/Host guard only stops browsers. It does not stop local programs, which can set any headers they like.
 - **`.tmp/live_bridge.json` is trusted for port discovery.** The plugin reads the port from `<project>/.tmp/live_bridge.json`, falling back to `51739`. Anything that can write that file, or bind the port first, can point the plugin at a different local server.
 - **Anything that answers the ping is trusted.** The plugin treats any responder whose `/api/ping` body contains the text `EffaceMagique` as the companion. It does not check the PID or any secret.
 
 ## What the plugin trusts
 
-- **Paths from `/api/pending_imports`.** For each item whose `path` exists on disk, the plugin:
-  1. builds `<folder of original_path>/<file name of path>`;
-  2. **deletes any existing file with that name in the original's folder**, then copies the edited file there. Re-syncing the same photo replaces the earlier `live_<id>.tif` next to the original. A server that sends crafted `path` / `original_path` values can make the plugin delete and replace a same-named file in another folder that Lightroom can write to;
+- **Paths from `/api/pending_imports`: validated, not trusted.** Before any file operation, `ImportGuard.lua` checks each item. It accepts an item only if `path` is absolute, has no `..` segment, sits directly in `<project>/.tmp` (exact folder match, so `.tmp2/` fails), and is named `live_<id>.tif` (or `.tiff`), where `<id>` equals `photo_id` and is a photo the plugin sent to `/api/select` this session. The original folder comes from the plugin's own record for that id. The server's `original_path` is never used to build the destination, and an item whose `original_path` differs from the record is rejected. Separators are normalised, and Windows paths are compared case-insensitively. A rejected item is shown in the Live Sync caption ("Import skipped (<reason>)"), acknowledged with `/api/import_done` so it is not retried, and no file is touched. (Before this check, a crafted `path` / `original_path` could make the plugin delete and replace a same-named file in any folder Lightroom could write to. That is fixed.) For an accepted item the plugin:
+  1. builds `<folder of the recorded original>/live_<id>.tif`;
+  2. deletes any existing file with that name there, then copies the edited file there. Re-syncing the same photo replaces the earlier `live_<id>.tif` next to the original;
   3. imports it with `catalog:addPhoto`, stacked above the original;
   4. deletes the source file at `path` **after a successful import**, if it was copied.
+
+  Side effects: a Sync of a file opened outside Lightroom (Open File, saved as `*_ai_edit.*`) is queued but skipped by the plugin. Items queued before a Lightroom restart are skipped too, because the session record starts empty. An `_ai_edit` file stays beside its source. A stale `.tmp` edit is removed by the normal `.tmp` cleanup.
 - **Ping responders**, as described above.
 
 ## What the companion trusts

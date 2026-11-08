@@ -345,6 +345,7 @@ efface-magique-lr/
 │       ├── Info.lua                  # Plugin manifest, menu hooks, & hotkeys
 │       ├── LiveBridge.lua            # High-speed background IPC bridge for Live Window
 │       ├── JsonUtil.lua              # Pure JSON helpers (no Lightroom SDK, unit-testable)
+│       ├── ImportGuard.lua           # Validates pending-import paths before any file operation
 │       ├── PluginUtils.lua           # Environment detection & CLI launcher
 │       └── logo.png                  # Plugin branding icon
 │
@@ -366,7 +367,8 @@ efface-magique-lr/
 │
 └── tests/                            # Automated test suite (150+ unit/integration tests)
     └── lua/
-        └── test_json_util.lua        # Plain-Lua tests for JsonUtil.lua
+        ├── test_json_util.lua        # Plain-Lua tests for JsonUtil.lua
+        └── test_import_guard.lua     # Plain-Lua tests for ImportGuard.lua
 ```
 
 ---
