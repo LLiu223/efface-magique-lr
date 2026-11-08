@@ -1916,27 +1916,28 @@ class MainWindow(QMainWindow):
         self.base_image16 = None
         self._drop_agent_proposal()  # a proposal belongs to the previous photo
         try:
-            pil_img = Image.open(file_path)
-            # Cache color profile and metadata
-            self.original_icc_profile = pil_img.info.get("icc_profile")
-            try:
-                self.original_exif = pil_img.getexif()
-            except Exception:
-                self.original_exif = None
-            self.original_dpi = pil_img.info.get("dpi")
+            # Closed on exit: on Windows an open handle makes the later save (os.replace) fail
+            with Image.open(file_path) as pil_img:
+                # Cache color profile and metadata
+                self.original_icc_profile = pil_img.info.get("icc_profile")
+                try:
+                    self.original_exif = pil_img.getexif()
+                except Exception:
+                    self.original_exif = None
+                self.original_dpi = pil_img.info.get("dpi")
 
-            display_img = None
-            tag = getattr(pil_img, "tag_v2", None)
-            if tag is not None and tuple(tag.get(258, ())) == (16, 16, 16):
-                # Decode a 16-bit TIFF once; its high bytes are exactly what Pillow's 8-bit decode gives
-                arr16 = read_rgb16(file_path)
-                if arr16 is not None and arr16.shape[:2] == (pil_img.height, pil_img.width):
-                    self.base_image16 = arr16
-                    display_img = Image.fromarray((arr16 >> 8).astype(np.uint8), "RGB")
-                else:
-                    logger.warning("16-bit decode unavailable or size differs from 8-bit decode; saving at 8 bits.")
-            if display_img is None:
-                display_img = pil_img.convert("RGB")
+                display_img = None
+                tag = getattr(pil_img, "tag_v2", None)
+                if tag is not None and tuple(tag.get(258, ())) == (16, 16, 16):
+                    # Decode a 16-bit TIFF once; its high bytes are exactly what Pillow's 8-bit decode gives
+                    arr16 = read_rgb16(file_path)
+                    if arr16 is not None and arr16.shape[:2] == (pil_img.height, pil_img.width):
+                        self.base_image16 = arr16
+                        display_img = Image.fromarray((arr16 >> 8).astype(np.uint8), "RGB")
+                    else:
+                        logger.warning("16-bit decode unavailable or size differs from 8-bit decode; saving at 8 bits.")
+                if display_img is None:
+                    display_img = pil_img.convert("RGB")
 
             self.canvas.load_image(display_img)  # keeps its own copies
             self.base_image = display_img

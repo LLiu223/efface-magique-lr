@@ -175,3 +175,13 @@ def test_16bit_preview_matches_pillow_decode(qtbot, tmp_path):
     assert np.array_equal(np.asarray(window.base_image), expected)
     assert np.array_equal(np.asarray(window.canvas.get_current_image()), expected)
     assert window._base_pixmap.width() == expected.shape[1]
+
+
+def test_16bit_load_releases_file(qtbot, tmp_path):
+    """Saving over the Lightroom export replaces it with os.replace; Windows refuses that while the file is open."""
+    src = str(tmp_path / "live_1.tif")
+    write_tiff16(src, _noisy16())
+    window = MainWindow(input_path=src)
+    qtbot.addWidget(window)
+    assert window.base_image16 is not None
+    write_tiff16(src, _noisy16())  # temp file + os.replace onto the loaded file
