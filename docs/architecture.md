@@ -23,7 +23,7 @@ flowchart LR
 
 1. The user starts **File > Plug-in Extras > AI Generative Eraser (Live Window)**. `LiveBridge.lua` pings `/api/ping`. If nothing answers with `EffaceMagique`, it launches `companion/app.py --live` as a detached process and pings again every 0.4 s, up to 25 times. It then POSTs `/api/focus`.
 2. The companion binds `127.0.0.1:51739` (`DEFAULT_BRIDGE_PORT`). If that port is busy it binds port 0 and the OS picks one.
-3. When the selection settles, the plugin exports the photo to `.tmp/live_<localIdentifier>.tif` and POSTs `/api/select` with `path`, `photo_id`, `original_path` and `title`.
+3. When the selection settles, on a cache miss the plugin first asks Lightroom's preview cache for a JPEG (`requestJpegThumbnail`, 2048 px box), waits at most 300 ms for it, writes it to `.tmp/preview_<localIdentifier>.jpg` and POSTs `/api/preview` with `path` and `photo_id`. The companion shows it as a read-only placeholder ("Loading full resolution…"). Then the plugin exports the photo to `.tmp/live_<localIdentifier>.tif` exactly as before, times the export and POSTs `/api/select` with `path`, `photo_id`, `original_path`, `title` and `export_ms`. A cache hit skips the preview and sends `export_ms: 0`. If the export produces no file after a preview was posted, the plugin POSTs `/api/preview` with `{"photo_id", "export_failed": true}`.
 4. The companion loads the TIFF. Erasing runs `InpaintingEngine.generate_variations` on a background `InpaintingWorker` thread: 3 seeded LaMa variations in "Generative AI" mode, or 1 pass in "Fast Spot Removal" mode.
 5. **Save & Sync** (`Ctrl+S`) calls `save_image_to_disk`, then `LiveBridgeServer.queue_import(path, original_path, photo_id)`.
 6. The plugin polls `/api/pending_imports`, copies the file next to the original, calls `catalog:addPhoto(path, original, 'above')` inside `withWriteAccessDo` (stacked above the original), selects the new photo and POSTs `/api/import_done`.
@@ -42,18 +42,20 @@ flowchart LR
 
 Rules the code follows:
 
-- **Signals carry bridge events to the UI.** `LiveBridgeServer` is a `QObject` with `photo_selected(dict)`, `focus_requested()`, `import_completed(dict)` and `close_requested()`. The request threads emit them. The receivers are `MainWindow` slots, and the main thread owns `MainWindow`, so Qt's default `AutoConnection` delivers them as queued calls on the UI thread. Request threads never touch widgets.
+- **Signals carry bridge events to the UI.** `LiveBridgeServer` is a `QObject` with `photo_selected(dict)`, `photo_previewed(dict)`, `focus_requested()`, `import_completed(dict)` and `close_requested()`. The request threads emit them. The receivers are `MainWindow` slots, and the main thread owns `MainWindow`, so Qt's default `AutoConnection` delivers them as queued calls on the UI thread. Request threads never touch widgets.
 - **`_pending_imports` is the only cross-thread queue.** It is a plain `list` guarded by a `threading.Lock`. `queue_import` (UI thread) appends to it and skips duplicate paths. `get_pending_imports` (request thread) returns a copy. `remove_pending_import` (request thread, on `/api/import_done`) filters it.
 - `active_image_path` is a plain attribute that `/api/select` writes and `/api/ping` reads. Nothing else depends on it.
 - `InpaintingEngine.load_model` holds an instance `threading.Lock` and checks `_is_loaded` twice, so the pre-warm thread and a first erase never build SimpleLama twice.
 - **The worker lifecycle is serialized.** While `self.worker` is set, a live selection is not applied. It is stored in `_pending_select` and replayed from `_on_worker_thread_finished`. While the "discard unsynced layers?" prompt is open, newer selections replace `_pending_select` instead of opening another prompt.
+- **Preview state.** `_on_live_photo_previewed` ignores a preview (and logs why) when the current photo has unsynced layers, a prompt is open, a worker runs, or the photo is already loaded. Otherwise it draws the JPEG over the canvas (`ImageCanvas.set_placeholder`, fit to the viewport, aspect kept) and sets `_preview`. The loaded photo, its layers, paths, recovery and autosave state are not touched. While `_preview` is set, Open, Erase, Save & Sync, Undo/Redo/Reset, the layers panel, the variations carousel and the assistant are disabled, their handlers return early (`_preview_blocks`), and the canvas refuses painting and its key shortcuts. Any `/api/select` ends the preview first (`_end_preview`), then loads the full file as before or, for the photo already loaded, simply shows it again. A newer preview replaces an older one. If no select arrives within `CONFIG.PREVIEW_TIMEOUT_MS` (30 s), or the plugin reports `export_failed`, the companion drops the preview and stays on the previously loaded photo. Because a preview is never shown over unsynced layers, the discard prompt still comes with the full select, and "No" keeps everything as it was.
+- **Timing log (INFO).** `preview shown photo_id=… (+N ms after receipt)` and `full loaded photo_id=… load_ms=… export_ms=… since_preview_ms=…`.
 - `ImageLoaderWorker` (a `QThread` in `app.py`) is defined but never instantiated. Images load synchronously on the UI thread.
 
 ### Plugin (Lua)
 
 - `LiveBridge.lua` runs once as one `LrTasks.startAsyncTask(runLiveBridge)` task with a cancelable `LrProgressScope`.
 - The main loop sleeps **30 ms** per tick (`LrTasks.sleep(0.03)`).
-- **Selection debounce is 80 ms** (`DEBOUNCE_DELAY = 0.08`, measured with `os.clock()`). A new target photo must stay selected for 80 ms. After that it is exported (unless cached) and sent with `/api/select`. The export runs synchronously in the loop (`doExportOnCurrentTask`), so the companion receives the photo after debounce plus a full TIFF export, not instantly.
+- **Selection debounce is 80 ms** (`DEBOUNCE_DELAY = 0.08`, measured with `os.clock()`). A new target photo must stay selected for 80 ms. After that, unless the export is cached, the preview JPEG is requested and posted (up to 300 ms wait, `PREVIEW_BUDGET`), then the photo is exported and sent with `/api/select`. The export runs synchronously in the loop (`doExportOnCurrentTask`), so the full photo arrives after debounce plus preview wait plus a full TIFF export; the preview bridges that gap. The `requestJpegThumbnail` callback timing inside Lightroom has not been measured yet.
 - **Import polling happens every 10th tick** (`tick % 10 == 0`, about 300 ms).
 - After 5 failed polls in a row (about 1.5 s) the plugin re-reads the port and pings. If the ping fails it leaves the loop.
 
@@ -68,7 +70,7 @@ Rules the code follows:
 ### Export (Lightroom -> companion)
 
 - The plugin exports to `.tmp/live_<localIdentifier>.tif` as a **16-bit, ProPhoto RGB, uncompressed TIFF**, unconstrained size, no output sharpening, EXIF included, overwrite on collision.
-- **Cache:** the plugin reuses an exported file only if it was exported in this session and the photo's `lastEditTime` has not changed. At most **5** `live_*.tif` exports (`MAX_CACHED_EXPORTS`) are kept per session. The oldest file is deleted when a 6th is added. When the loop ends, every `live_*.tif` in `.tmp` is deleted.
+- **Cache:** the plugin reuses an exported file only if it was exported in this session and the photo's `lastEditTime` has not changed. At most **5** `live_*.tif` exports (`MAX_CACHED_EXPORTS`) are kept per session. The oldest file is deleted when a 6th is added. When the loop ends, every `live_*.tif` and `preview_*.jpg` in `.tmp` is deleted. Each preview is overwritten per id, so previews need no other pruning.
 
 ### Bit depth on the companion side
 

@@ -36,6 +36,7 @@ class AppConfig:
     AUTO_GC_MEMORY: bool = True              # Automatically invoke garbage collection after inference
     LAYER_HISTORY_DEPTH: int = 20            # Max undoable layer ops (add/delete/toggle) kept per photo
     AUTOSAVE_INTERVAL_MS: int = 30000        # Crash-recovery autosave timer (only writes when something changed)
+    PREVIEW_TIMEOUT_MS: int = 30000          # Preview with no full /api/select by then: back to the loaded photo
 
     # Default Brush Settings
     DEFAULT_BRUSH_RADIUS: int = 30

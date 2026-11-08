@@ -23,7 +23,8 @@ DNS rebinding is the second attack. An attacker's hostname is made to resolve to
 | :--- | :--- | :--- |
 | GET | `/api/ping` | None. Returns `app: "EffaceMagique"`, version, the companion's PID and `active_image` (the last `/api/select` path) |
 | GET | `/api/pending_imports` | None. Returns the queued edits (`path`, `original_path`, `photo_id`) waiting for Lightroom to import |
-| POST | `/api/select` | Sets `active_image_path` and emits `photo_selected`. The companion then loads that file (and may first ask to discard unsynced layers). Requires `path` |
+| POST | `/api/select` | Sets `active_image_path` and emits `photo_selected`. The companion then loads that file (and may first ask to discard unsynced layers). Requires `path`; optional `export_ms` must be a non-negative integer (400 otherwise) |
+| POST | `/api/preview` | Emits `photo_previewed`; the companion shows the JPEG as a read-only placeholder. Does not change `active_image_path`. Requires `photo_id` (non-empty, `[A-Za-z0-9_-]` only) and an absolute `path` with no `..` segment whose folder is exactly `<project>/.tmp` (normcase/abspath compare, no prefix match) and whose leaf is exactly `preview_<photo_id>.jpg`, and the file must exist. Or `{"photo_id", "export_failed": true}` with no `path`, which ends that preview. Anything else is 400 |
 | POST | `/api/import_done` | Removes `path` from the pending-import queue and emits `import_completed` (status bar message) |
 | POST | `/api/focus` | Raises and activates the companion window |
 | POST | `/api/close` | Emits `close_requested`, so the companion window closes, stops the bridge and clears `.tmp` |

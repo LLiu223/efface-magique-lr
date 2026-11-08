@@ -222,6 +222,10 @@ class MainWindow(QMainWindow):
         self._pending_select: Optional[dict] = None
         # True while the discard prompt is open (its nested event loop keeps delivering selections)
         self._confirming_switch = False
+        # Lightroom preview shown as a read-only placeholder: {"photo_id", "shown_at"}; None otherwise
+        self._preview: Optional[dict] = None
+        # (photo_id, monotonic time) of the last preview shown, for the full-load timing log
+        self._last_preview_shown: Optional[tuple] = None
         # Last user-visible error message, shown in Copy diagnostics
         self.last_error: Optional[str] = None
 
@@ -279,6 +283,7 @@ class MainWindow(QMainWindow):
         self.live_bridge = LiveBridgeServer(preferred_port=bridge_port, parent=self)
         self.live_bridge_port = self.live_bridge.start()
         self.live_bridge.photo_selected.connect(self._on_live_photo_selected)
+        self.live_bridge.photo_previewed.connect(self._on_live_photo_previewed)
         self.live_bridge.focus_requested.connect(self._on_live_focus_requested)
         self.live_bridge.import_completed.connect(self._on_live_import_completed)
         self.live_bridge.close_requested.connect(self.close)
@@ -321,6 +326,12 @@ class MainWindow(QMainWindow):
         self._autosave_timer.setInterval(CONFIG.AUTOSAVE_INTERVAL_MS)
         self._autosave_timer.timeout.connect(self._on_autosave_timer)
         self._autosave_timer.start()
+
+        # A preview whose full export never arrives must not lock the app
+        self._preview_timer = QTimer(self)
+        self._preview_timer.setSingleShot(True)
+        self._preview_timer.setInterval(CONFIG.PREVIEW_TIMEOUT_MS)
+        self._preview_timer.timeout.connect(lambda: self._leave_preview("timed out"))
 
         # Asynchronously pre-warm inpainting models in background daemon thread (after the UI exists)
         import threading
@@ -630,6 +641,8 @@ class MainWindow(QMainWindow):
 
     def _on_view_base_photo(self):
         """Display the original unedited photo on canvas."""
+        if self._preview_blocks():
+            return
         if self.base_image:
             self.canvas.set_display_image(self.base_image, cached_pixmap=getattr(self, "_base_pixmap", None))
             self.canvas.clear_mask(save_state=False)
@@ -873,6 +886,8 @@ class MainWindow(QMainWindow):
 
     def _select_layer(self, index: int):
         """Select a modification layer to inspect or modify its mask, prompt, or variation."""
+        if self._preview_blocks():
+            return
         if not (0 <= index < len(self.modification_layers)):
             return
 
@@ -923,6 +938,8 @@ class MainWindow(QMainWindow):
 
     def _toggle_layer_visibility(self, index: int):
         """Toggle visibility on a specific modification layer and re-composite the stack."""
+        if self._preview_blocks():
+            return
         if 0 <= index < len(self.modification_layers):
             layer = self.modification_layers[index]
             layer.visible = not layer.visible
@@ -974,6 +991,8 @@ class MainWindow(QMainWindow):
 
     def _delete_layer(self, index: int):
         """Delete a modification layer and cleanly re-composite the stack."""
+        if self._preview_blocks():
+            return
         if 0 <= index < len(self.modification_layers):
             layer = self.modification_layers.pop(index)
             self._push_layer_op("delete", index, layer)
@@ -1107,6 +1126,8 @@ class MainWindow(QMainWindow):
 
     def _on_undo(self):
         """Ctrl+Z: unconsumed brush strokes first, then the last layer op."""
+        if self._preview_blocks():
+            return
         if self.canvas.has_mask() and len(self.canvas._mask_history) > 1:
             self.canvas.undo()
         else:
@@ -1114,12 +1135,16 @@ class MainWindow(QMainWindow):
 
     def _on_redo(self):
         """Ctrl+Y / Ctrl+Shift+Z: brush strokes first, then layer ops."""
+        if self._preview_blocks():
+            return
         if self.canvas._mask_redo_stack:
             self.canvas.redo()
         else:
             self._redo_layer_op()
 
     def _undo_layer_op(self):
+        if self._preview_blocks():
+            return
         if not self._layer_undo:
             self.statusBar().showMessage("Nothing to undo.", 3000)
             return
@@ -1128,6 +1153,8 @@ class MainWindow(QMainWindow):
         self._apply_layer_op(*entry, undo=True)
 
     def _redo_layer_op(self):
+        if self._preview_blocks():
+            return
         if not self._layer_redo:
             self.statusBar().showMessage("Nothing to redo.", 3000)
             return
@@ -1277,6 +1304,8 @@ class MainWindow(QMainWindow):
 
     def _on_new_layer_clicked(self):
         """Deselect active layer and return canvas to full composited view ready for new edits."""
+        if self._preview_blocks():
+            return
         self.active_layer_index = None
         if (
             self.modification_layers
@@ -1302,6 +1331,8 @@ class MainWindow(QMainWindow):
 
     def _on_delete_selected_layer(self):
         """Delete whichever layer is currently selected."""
+        if self._preview_blocks():
+            return
         if self.active_layer_index is not None and 0 <= self.active_layer_index < len(self.modification_layers):
             self._delete_layer(self.active_layer_index)
         elif self.modification_layers:
@@ -1729,6 +1760,8 @@ class MainWindow(QMainWindow):
 
     def _on_reset_all(self):
         """Reset canvas to original unedited photo and clear all variations and modification layers (undoable)."""
+        if self._preview_blocks():
+            return
         if self.modification_layers:
             self._push_layer_op("reset", 0, (list(self.modification_layers), self.active_layer_index))
         self._reset_layers_state()
@@ -1843,7 +1876,7 @@ class MainWindow(QMainWindow):
 
     def _set_run_controls_enabled(self, enabled: bool):
         """Erase button, Model dropdown and prompt field are locked together for the whole worker run."""
-        self.btn_erase.setEnabled(enabled)
+        self.btn_erase.setEnabled(enabled and self._preview is None)
         self.combo_model.setEnabled(enabled)
         self._update_prompt_enabled(enabled)
 
@@ -1981,6 +2014,8 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Error Opening Image", f"Could not load image:\n{e}")
 
     def _on_open_file(self):
+        if self._preview_blocks():
+            return
         if self.worker is not None:
             # The running erase would land its result on the newly opened photo
             self.statusBar().showMessage("Erase in progress; open another photo once it finishes.", 5000)
@@ -2028,6 +2063,8 @@ class MainWindow(QMainWindow):
 
     def _on_run_inpainting(self):
         """Trigger AI inpainting in a background worker thread."""
+        if self._preview_blocks():
+            return
         if self._model_switch_pending():  # Return/Enter shortcuts bypass the disabled Erase button
             return
         if self.agent_input.hasFocus():
@@ -2102,6 +2139,8 @@ class MainWindow(QMainWindow):
         return self._usage_store
 
     def _on_agent_ask(self):
+        if self._preview_blocks():
+            return
         if not self.agent_enabled:
             return
         text = self.agent_input.text().strip()
@@ -2208,6 +2247,8 @@ class MainWindow(QMainWindow):
         self.btn_agent_discard.setVisible(False)
 
     def _on_agent_discard(self):
+        if self._preview_blocks():
+            return
         prev = self._agent_prev_display
         if prev is not None and self._layer_state_key() == self._agent_state_key:
             self.canvas.set_display_image(prev)
@@ -2216,6 +2257,8 @@ class MainWindow(QMainWindow):
 
     def _on_agent_apply(self):
         """Commit the proposal through the same layer path as Erase (_on_inpainting_finished)."""
+        if self._preview_blocks():
+            return
         p = self._agent_proposal
         if p is None or self.worker is not None:
             return
@@ -2234,6 +2277,8 @@ class MainWindow(QMainWindow):
 
     def _start_inpainting_pipeline(self, current_img: Image.Image, mask_img: Image.Image, seed: Optional[int] = None):
         """Launch worker thread for single-pass or multi-variation generation."""
+        if self._preview_blocks():
+            return
         if self._model_switch_pending():  # covers Generate More, which skips _on_run_inpainting
             return
         self._set_run_controls_enabled(False)
@@ -2464,6 +2509,8 @@ class MainWindow(QMainWindow):
 
     def _on_select_variation(self, index: int):
         """User clicked a candidate variation thumbnail card."""
+        if self._preview_blocks():
+            return
         if not (0 <= index < len(self.current_variations)):
             return
 
@@ -2511,11 +2558,15 @@ class MainWindow(QMainWindow):
 
     def _on_accept_variation(self):
         """Lock in selected variation and hide carousel."""
+        if self._preview_blocks():
+            return
         self.carousel_panel.setVisible(False)
         self.statusBar().showMessage(f"Accepted Variation {self.active_variation_index + 1}.", 3000)
 
     def _on_generate_more_variations(self):
         """Generate 3 more candidate variations with a fresh seed."""
+        if self._preview_blocks():
+            return
         if self.worker is not None:
             return  # single worker slot (inpainting or assistant)
         if self.last_base_image and self.last_used_mask:
@@ -2543,8 +2594,90 @@ class MainWindow(QMainWindow):
         self.resize(size)
         self.statusBar().showMessage("Window pinned: Always on top" if pinned else "Window unpinned", 2500)
 
+    def _preview_blocks(self) -> bool:
+        """True (with a status hint) while a Lightroom preview is shown: it is never edited, saved or replaced."""
+        if self._preview is None:
+            return False
+        self.statusBar().showMessage("Loading full resolution… editing is disabled until the full photo arrives.")
+        return True
+
+    def _set_preview_lock(self, locked: bool):
+        """Disable every edit/save/open control while a preview is shown; handlers also refuse (shortcuts)."""
+        on = not locked
+        for w in (self.btn_open, self.btn_sync, self.btn_undo, self.btn_redo, self.btn_reset,
+                  self.layers_panel, self.carousel_panel, self.btn_agent_apply, self.btn_agent_discard):
+            w.setEnabled(on)
+        for w in (self.agent_input, self.btn_agent_ask):
+            w.setEnabled(on and self.agent_enabled)
+        # A preview is never shown while a worker runs, so only a deferred model switch can keep Erase locked
+        self.btn_erase.setEnabled(on and self._pending_model is None)
+
+    def _on_live_photo_previewed(self, payload: dict):
+        """Lightroom's cached JPEG of the photo being exported: a read-only placeholder until /api/select."""
+        photo_id = payload.get("photo_id")
+        if payload.get("export_failed"):
+            if self._preview is not None and self._preview["photo_id"] == photo_id:
+                self._leave_preview("failed")
+            return
+        if self.modification_layers and not self._layers_synced:
+            reason = "current photo has unsynced layers"
+        elif self._confirming_switch:
+            reason = "a prompt is open"
+        elif self.worker is not None:
+            reason = "a worker is running"
+        elif photo_id == self.current_photo_id:
+            reason = "photo already loaded"
+        else:
+            reason = None
+        if reason:
+            logger.info(f"preview ignored photo_id={photo_id}: {reason}")
+            return
+        pixmap = QPixmap(payload["path"])  # the bridge validated the path; decode only now
+        if pixmap.isNull():
+            logger.info(f"preview ignored photo_id={photo_id}: JPEG could not be decoded")
+            return
+        now = time.monotonic()
+        self._preview = {"photo_id": photo_id, "shown_at": now}
+        self._last_preview_shown = (photo_id, now)
+        self.canvas.set_placeholder(pixmap)
+        self._set_preview_lock(True)
+        self._preview_timer.start()  # restarts for a newer preview
+        if hasattr(self, "live_badge"):
+            self.live_badge.setText(" ⏳ Loading full resolution… ")
+        self.statusBar().showMessage("Loading full resolution… (Lightroom preview shown, editing disabled)")
+        received = payload.get("received_monotonic")
+        delay = f"+{int((now - received) * 1000)} ms after receipt" if isinstance(received, float) else "receipt time unknown"
+        logger.info(f"preview shown photo_id={photo_id} ({delay})")
+
+    def _end_preview(self) -> bool:
+        """Drop the placeholder and unlock the controls. The loaded photo was never touched. True if one was shown."""
+        if self._preview is None:
+            return False
+        self._preview = None
+        self._preview_timer.stop()
+        self.canvas.set_placeholder(None)
+        self._set_preview_lock(False)
+        if hasattr(self, "live_badge"):
+            self.live_badge.setText(" 🟢 Live Synced " if self.is_live_mode else " ⚡ Live Ready ")
+        return True
+
+    def _leave_preview(self, why: str):
+        """No full file will follow the preview (export failed / timed out): back to the previously loaded photo."""
+        photo_id = self._preview["photo_id"] if self._preview else None
+        if not self._end_preview():
+            return
+        logger.info(f"preview abandoned photo_id={photo_id}: export {why}")
+        if self.base_image is not None and self.input_path:
+            self.statusBar().showMessage(
+                f"Lightroom export failed or timed out; still on {os.path.basename(self.input_path)}", 8000)
+        else:
+            self.statusBar().showMessage(
+                "Lightroom export failed or timed out; no photo loaded. Open a file or select a photo in Lightroom.", 8000)
+
     def _on_live_photo_selected(self, payload: dict):
         """Called when Lightroom user selects another photo in Library or Develop module."""
+        # Any select ends a preview: below it either loads the full file or the loaded photo shows again
+        self._end_preview()
         new_path = payload.get("path")
         if not new_path or not os.path.isfile(new_path):
             logger.warning(f"Live selection path missing or invalid: {new_path}")
@@ -2581,7 +2714,13 @@ class MainWindow(QMainWindow):
         self.current_original_path = payload.get("original_path")
 
         # Load the newly selected photo seamlessly
+        t0 = time.monotonic()
         self.load_image_file(new_path)
+        load_ms = int((time.monotonic() - t0) * 1000)
+        shown = self._last_preview_shown
+        since = int((time.monotonic() - shown[1]) * 1000) if shown and shown[0] == self.current_photo_id else "none"
+        logger.info(f"full loaded photo_id={self.current_photo_id} load_ms={load_ms} "
+                    f"export_ms={payload.get('export_ms', 'none')} since_preview_ms={since}")
         self.canvas.fit_to_screen()
         if hasattr(self, "live_badge"):
             self.live_badge.setText(" 🟢 Live Synced ")
@@ -2607,6 +2746,8 @@ class MainWindow(QMainWindow):
         clipped) and written as a 16-bit TIFF via a temp file + os.replace. Preview is 8-bit.
         Every other input or output format is saved through Pillow at 8 bits per channel.
         """
+        if self._preview_blocks():
+            return
         current_img = self.canvas.get_current_image()
         if current_img is None:
             QMessageBox.information(self, "No Image", "There is no image to save.")
@@ -2694,6 +2835,8 @@ class MainWindow(QMainWindow):
 
     def _on_sync_to_lightroom(self):
         """Save image and queue for Lightroom auto-import while keeping window open."""
+        if self._preview_blocks():
+            return
         saved_path = self.save_image_to_disk()
         if saved_path:
             self.saved_successfully = True
