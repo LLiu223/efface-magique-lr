@@ -6,13 +6,14 @@ Provides:
 - Dark theme stylesheet (DARK_STYLE) and application brand assets
 - LoadingSpinnerOverlay: Smooth hardware-rendered loading spinner overlay for async tasks
 - HelpGuideDialog: Rich interactive User Guide, Installation, Shortcuts, and Packaging dialog
+- FlowLayout: left-to-right layout that wraps whole items onto new rows (responsive top bar)
 """
 
 import os
 import sys
 from typing import Optional
 
-from PyQt6.QtCore import Qt, QRect, QTimer, QUrl
+from PyQt6.QtCore import Qt, QPoint, QRect, QSize, QTimer, QUrl
 from PyQt6.QtGui import (
     QIcon,
     QColor,
@@ -24,6 +25,7 @@ from PyQt6.QtGui import (
 )
 from PyQt6.QtWidgets import (
     QWidget,
+    QLayout,
     QVBoxLayout,
     QHBoxLayout,
     QPushButton,
@@ -230,6 +232,90 @@ QLabel {
 # -----------------------------------------------------------------------------
 # Smooth Loading Spinner Overlay
 # -----------------------------------------------------------------------------
+
+class FlowLayout(QLayout):
+    """Port of Qt's FlowLayout example: items go left to right and wrap to a new row when full."""
+
+    def __init__(self, parent=None, spacing: int = 6, reserve_height: bool = False):
+        super().__init__(parent)
+        self._items = []
+        self._reserve_height = reserve_height
+        self.setContentsMargins(0, 0, 0, 0)
+        self.setSpacing(spacing)
+
+    def addItem(self, item):
+        self._items.append(item)
+
+    def count(self):
+        return len(self._items)
+
+    def itemAt(self, index):
+        return self._items[index] if 0 <= index < len(self._items) else None
+
+    def takeAt(self, index):
+        return self._items.pop(index) if 0 <= index < len(self._items) else None
+
+    def expandingDirections(self):
+        return Qt.Orientation(0)
+
+    def hasHeightForWidth(self):
+        return True
+
+    def heightForWidth(self, width):
+        return self._do_layout(QRect(0, 0, width, 0), test_only=True)
+
+    def setGeometry(self, rect):
+        super().setGeometry(rect)
+        needed = self._do_layout(rect, test_only=False)
+        # A short window would squeeze the bar below its wrapped height; reserve the rows instead
+        host = self.parentWidget()
+        if self._reserve_height and host is not None and host.minimumHeight() != needed:
+            host.setMinimumHeight(needed)
+
+    def sizeHint(self):
+        # Everything on one row; minimumSize() is the narrowest it can wrap to
+        items = [i for i in self._items if not i.isEmpty()]
+        size = QSize(sum(i.sizeHint().width() for i in items) + self.spacing() * max(0, len(items) - 1),
+                     max((i.sizeHint().height() for i in items), default=0))
+        m = self.contentsMargins()
+        return size + QSize(m.left() + m.right(), m.top() + m.bottom())
+
+    def minimumSize(self):
+        size = QSize()
+        for item in self._items:
+            size = size.expandedTo(item.minimumSize())
+        m = self.contentsMargins()
+        return size + QSize(m.left() + m.right(), m.top() + m.bottom())
+
+    def _do_layout(self, rect, test_only):
+        m = self.contentsMargins()
+        r = rect.adjusted(m.left(), m.top(), -m.right(), -m.bottom())
+        x, y, line_height = r.x(), r.y(), 0
+        row = []  # (item, x, w, h) of the current row, placed once its height is known
+
+        def flush():
+            # Centre each item vertically in its row, like QHBoxLayout does
+            if not test_only:
+                for item, ix, iw, ih in row:
+                    item.setGeometry(QRect(QPoint(ix, y + (line_height - ih) // 2), QSize(iw, ih)))
+            row.clear()
+
+        for item in self._items:
+            if item.isEmpty():  # hidden widgets take no room
+                continue
+            hint = item.sizeHint()
+            if x + hint.width() > r.right() + 1 and line_height > 0:
+                flush()
+                x, y, line_height = r.x(), y + line_height + self.spacing(), 0
+            # An item wider than the whole row gets the row width (a nested FlowLayout wraps inside it)
+            w = min(hint.width(), max(item.minimumSize().width(), r.right() + 1 - x))
+            h = item.heightForWidth(w) if item.hasHeightForWidth() else hint.height()
+            row.append((item, x, w, h))
+            x += w + self.spacing()
+            line_height = max(line_height, h)
+        flush()
+        return y + line_height - rect.y() + m.bottom()
+
 
 class LoadingSpinnerOverlay(QWidget):
     """

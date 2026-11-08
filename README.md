@@ -29,6 +29,7 @@
 - **⚡ Fast Spot Removal:** a single LaMa pass for dust, blemishes and thin wires.
 - **🎯 Object-Aware Erasing (Subject):** the subject detector tightens a rough brush mask to the object's contour inside the painted zone.
 - **📚 Non-Destructive Modification Layers:** every erase is a layer in the sidebar. Toggle it, re-edit its mask, or delete it with its `✕` button.
+- **🖥️ Fits any screen:** on a narrow window the top bar wraps onto extra rows instead of cutting labels; Erase and Save always stay on the right. Drag the sidebar edge to resize it. The window size, position and sidebar width are remembered.
 - **⚡ Live Window:** stays open while you browse photos in Lightroom. Save & Sync stacks the edit above the original in your catalog.
 - **🎨 Color & bit depth:** keeps the ICC profile and DPI. A 16-bit TIFF from Lightroom is saved as a 16-bit TIFF in which only the erased pixels change (they are computed in 8-bit). EXIF is not rewritten.
 - **🔒 Local only:** the plugin and companion talk over an HTTP bridge on `127.0.0.1`, with no cloud calls. See [SECURITY.md](SECURITY.md) for what it does and does not protect against.
