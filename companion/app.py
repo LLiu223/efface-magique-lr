@@ -18,6 +18,7 @@ Key Capabilities:
 - Headless CLI pipeline for automated testing
 """
 
+import html
 import os
 import sys
 import time
@@ -1807,7 +1808,7 @@ class MainWindow(QMainWindow):
         if names is None:
             url = self._settings.value(agent_pkg.KEY_OLLAMA_URL, "", type=str).strip() or agent_llm.DEFAULT_OLLAMA_URL
             hint = f"Ollama not reachable at {url}, so its models are not listed; type a model name or start Ollama."
-            self.ed_agent_model.setToolTip(f"{hint}\n({error})")
+            self.ed_agent_model.setToolTip(html.escape(f"{hint}\n({error})"))  # Qt may render tooltips as rich text
             if getattr(self, "_agent_models_user", False):
                 self.statusBar().showMessage(hint, 6000)
             self._set_agent_model_items([])

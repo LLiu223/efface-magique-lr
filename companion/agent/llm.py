@@ -29,9 +29,19 @@ def is_local_url(url: str) -> bool:
     return (urlparse(url).hostname or "").lower() in _LOCAL_HOSTS
 
 
-def _fetch_tags(url: str, timeout: float) -> bytes:
+def _local_opener():
+    """Opener that ignores HTTP(S)_PROXY and refuses redirects, so a localhost check stays local."""
     import urllib.request
-    with urllib.request.urlopen(url, timeout=timeout) as resp:  # noqa: S310 - local URL, checked by the caller
+
+    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *args, **kwargs):
+            return None  # urllib then raises HTTPError for the 3xx
+
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect)
+
+
+def _fetch_tags(url: str, timeout: float) -> bytes:
+    with _local_opener().open(url, timeout=timeout) as resp:  # noqa: S310 - local URL, checked by the caller
         return resp.read(1_000_000)
 
 

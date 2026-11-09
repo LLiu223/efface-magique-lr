@@ -175,3 +175,18 @@ def test_model_list_only_read_from_a_local_ollama(monkeypatch):
     monkeypatch.setattr(llm, "_fetch_tags", lambda *a: pytest.fail("must not connect"))
     with pytest.raises(ValueError):
         llm.list_ollama_models("http://10.0.0.5:11434")
+
+
+def test_ollama_model_list_ignores_proxy_and_redirects(monkeypatch):
+    """The localhost check must not be undone by HTTP(S)_PROXY or a redirect to another host."""
+    import urllib.request
+
+    from companion.agent import llm
+    monkeypatch.setenv("HTTP_PROXY", "http://proxy.invalid:8080")
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.invalid:8080")
+    opener = llm._local_opener()
+    # an empty ProxyHandler replaces the default env-reading one and has no methods, so none is listed
+    assert not [h for h in opener.handlers if isinstance(h, urllib.request.ProxyHandler)]
+    assert urllib.request.build_opener().handlers[0].proxies  # control: the default opener would use the proxy
+    redirect = next(h for h in opener.handlers if isinstance(h, urllib.request.HTTPRedirectHandler))
+    assert redirect.redirect_request(None, None, 302, "Found", {}, "http://evil.example/") is None
