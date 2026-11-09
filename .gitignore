@@ -41,3 +41,15 @@ factory/jobs/
 models/finetuned/
 *.pt
 *.ckpt
+
+# Local agent skills (not versioned on main); factory skill is tracked
+.claude/skills/*
+!.claude/skills/factory/
+.github/skills/
+# Local agent definitions (not versioned on main); the core factory agents are tracked
+.claude/agents/impeccable-*.md
+.github/agents/
+
+# Local, per-machine JSON settings (not versioned); impeccable hook config
+*.local.json
+.github/hooks/impeccable.json
