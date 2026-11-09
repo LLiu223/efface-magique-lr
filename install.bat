@@ -36,6 +36,9 @@ where uv >nul 2>nul
 if %errorlevel% equ 0 (
     echo [*] Installing dependencies with fast uv pip...
     uv pip install -r requirements.txt --python .venv\Scripts\python.exe
+    if !errorlevel! neq 0 goto :CORE_FAILED
+    uv pip install --no-deps simple-lama-inpainting==0.1.2 --python .venv\Scripts\python.exe
+    if !errorlevel! neq 0 goto :CORE_FAILED
 
     where nvidia-smi >nul 2>nul
     if !errorlevel! equ 0 (
@@ -49,6 +52,9 @@ echo [*] Installing dependencies with standard pip...
 call .venv\Scripts\activate.bat
 python -m pip install --upgrade pip
 pip install -r requirements.txt
+if !errorlevel! neq 0 goto :CORE_FAILED
+pip install --no-deps simple-lama-inpainting==0.1.2
+if !errorlevel! neq 0 goto :CORE_FAILED
 
 where nvidia-smi >nul 2>nul
 if !errorlevel! equ 0 (
@@ -56,6 +62,13 @@ if !errorlevel! equ 0 (
     pip install --force-reinstall --no-deps torch torchvision --index-url https://download.pytorch.org/whl/cu124
 )
 goto :INSTALL_COMPLETE
+
+:CORE_FAILED
+echo.
+echo [ERROR] Installing the core Python packages failed; see the message above.
+echo     The app will not run until this is fixed. Nothing else was changed.
+pause
+exit /b 1
 
 :INSTALL_COMPLETE
 :: ---------------------------------------------------------------------
