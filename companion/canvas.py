@@ -39,8 +39,6 @@ from PIL import Image
 
 from companion.config import CONFIG
 
-ERASE_HOLD_MS = 500  # long enough that a stray right click never starts an erase
-
 try:
     from PyQt6.QtOpenGLWidgets import QOpenGLWidget
     HAS_OPENGL = True
@@ -142,7 +140,6 @@ class ImageCanvas(QGraphicsView):
     brushFeatherChanged = pyqtSignal(float)
     statusMessage = pyqtSignal(str)
     strokeFinished = pyqtSignal()
-    eraseRequested = pyqtSignal()  # right button held ERASE_HOLD_MS over the photo
     splitCompareChanged = pyqtSignal(bool)
 
     def __init__(self, parent: Optional[QWidget] = None):
@@ -204,11 +201,9 @@ class ImageCanvas(QGraphicsView):
         self._stroke_timer.setInterval(CONFIG.CANVAS_THROTTLE_MS)
         self._stroke_timer.timeout.connect(self._flush_mask_pixmap)
 
-        # Right-click and hold erases the selection; a shorter press does nothing
-        self._erase_hold_timer = QTimer(self)
-        self._erase_hold_timer.setSingleShot(True)
-        self._erase_hold_timer.setInterval(ERASE_HOLD_MS)
-        self._erase_hold_timer.timeout.connect(self.eraseRequested.emit)
+        # Which button drew the current stroke; a right-button stroke uses the eraser brush until release
+        self._stroke_button = Qt.MouseButton.NoButton
+        self._eraser_before_stroke: bool = False
 
         # Feather interactive drag adjustment (Shift + mouse drag)
         self._is_adjusting_feather: bool = False
@@ -508,8 +503,9 @@ class ImageCanvas(QGraphicsView):
 
     def undo(self) -> bool:
         """Undo last active mask stroke or last AI inpainting step."""
-        # 1. If user has active drawn brush strokes that haven't been inpainted yet, undo the stroke
-        if self.has_mask() and len(self._mask_history) > 1:
+        # 1. Strokes since the last image change (history resets on each AI step) are undone first, even
+        # when a right-drag eraser stroke left the mask empty
+        if len(self._mask_history) > 1:
             self._mask_redo_stack.append(self._mask_history.pop())
             previous_mask = self._mask_history[-1].copy()
             self._mask_qimage = previous_mask
@@ -1019,18 +1015,15 @@ class ImageCanvas(QGraphicsView):
             event.accept()
             return
 
-        # 4. Right button held over the photo erases the selection (the app runs the normal Erase checks)
-        if event.button() == Qt.MouseButton.RightButton and not self._compare_mode and not self._split_compare_mode:
-            if self.has_mask() and self.scene.sceneRect().contains(self.mapToScene(event.pos())):
-                self._erase_hold_timer.start()
-                self.statusMessage.emit("Keep holding to erase the selection...")
-            event.accept()
-            return
-
-        # 5. Left click starts mask stroke
-        if event.button() == Qt.MouseButton.LeftButton and not self._compare_mode and not self._split_compare_mode:
+        # 4. Left drag paints the mask; right drag removes painted mask (the eraser brush for that stroke only)
+        if (event.button() in (Qt.MouseButton.LeftButton, Qt.MouseButton.RightButton)
+                and not self._is_drawing and not self._compare_mode and not self._split_compare_mode):
             scene_pos = self.mapToScene(event.pos())
             if self.scene.sceneRect().contains(scene_pos):
+                self._stroke_button = event.button()
+                if event.button() == Qt.MouseButton.RightButton:
+                    self._eraser_before_stroke, self.is_eraser = self.is_eraser, True
+                    self._update_cursor()
                 self._is_drawing = True
                 self._last_draw_pos = scene_pos
                 self._paint_stroke(scene_pos, scene_pos)
@@ -1091,11 +1084,6 @@ class ImageCanvas(QGraphicsView):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent):
-        if event.button() == Qt.MouseButton.RightButton:
-            self._erase_hold_timer.stop()  # released too early: nothing happens
-            event.accept()
-            return
-
         if self._is_dragging_split and event.button() == Qt.MouseButton.LeftButton:
             self._is_dragging_split = False
             self._update_cursor()
@@ -1114,12 +1102,15 @@ class ImageCanvas(QGraphicsView):
             event.accept()
             return
 
-        if event.button() == Qt.MouseButton.LeftButton and self._is_drawing:
+        if self._is_drawing and event.button() == self._stroke_button:
             if self._stroke_timer.isActive():
                 self._stroke_timer.stop()
             self._flush_mask_pixmap()
             self._is_drawing = False
             self._last_draw_pos = None
+            if self._stroke_button == Qt.MouseButton.RightButton:
+                self.is_eraser = self._eraser_before_stroke
+                self._update_cursor()
             self._save_mask_state()
             self.maskChanged.emit()
             self.strokeFinished.emit()

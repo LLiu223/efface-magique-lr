@@ -680,8 +680,8 @@ class HelpGuideDialog(QDialog):
                     <td><b>✨ Erase Object</b> (Run AI inpainting on marked areas)</td>
                 </tr>
                 <tr style="border-bottom: 1px solid #333333;">
-                    <td style="padding: 6px 10px;"><code>Right mouse (hold)</code></td>
-                    <td><b>✨ Erase Object</b> (hold half a second on the photo)</td>
+                    <td style="padding: 6px 10px;"><code>Right mouse drag</code></td>
+                    <td>Remove painted mask (eraser brush while held)</td>
                 </tr>
                 <tr style="border-bottom: 1px solid #333333;">
                     <td style="padding: 6px 10px;"><code>Ctrl + T</code></td>

@@ -1663,7 +1663,7 @@ class MainWindow(QMainWindow):
         # Primary Inpainting Button
         self.btn_erase = QPushButton("Erase Object")
         self.btn_erase.setObjectName("primaryAction")
-        self.btn_erase.setToolTip("Run AI inpainting on marked red areas (Enter, or hold the right mouse button on the photo)")
+        self.btn_erase.setToolTip("Run AI inpainting on marked red areas (Enter)")
         self.btn_erase.clicked.connect(self._on_run_inpainting)
         layout.addWidget(self.btn_erase)
 
@@ -1914,7 +1914,6 @@ class MainWindow(QMainWindow):
         self.canvas.brushSizeChanged.connect(self._on_brush_size_changed)
         self.canvas.splitCompareChanged.connect(self.btn_split.setChecked)
         self.canvas.strokeFinished.connect(self._on_stroke_finished)
-        self.canvas.eraseRequested.connect(self._on_run_inpainting)
         self.canvas.statusMessage.connect(lambda msg: self.statusBar().showMessage(msg, 4000))
 
         # Global window shortcuts for Undo / Redo / Save / Erase

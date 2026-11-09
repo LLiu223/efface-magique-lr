@@ -548,61 +548,50 @@ def test_telemetry_status_bar_and_timer(qtbot, sample_pil_image, tmp_path):
     assert "⚡" in window.timer_label.text()
     assert "s" in window.timer_label.text()
 
+def _drag(canvas, button, a, b):
+    """Press `button` at a, move to b, release: one stroke."""
+    canvas.mousePressEvent(QMouseEvent(QMouseEvent.Type.MouseButtonPress, QPointF(*a), button, button,
+                                       Qt.KeyboardModifier.NoModifier))
+    canvas.mouseMoveEvent(QMouseEvent(QMouseEvent.Type.MouseMove, QPointF(*b), Qt.MouseButton.NoButton, button,
+                                      Qt.KeyboardModifier.NoModifier))
+    canvas.mouseReleaseEvent(QMouseEvent(QMouseEvent.Type.MouseButtonRelease, QPointF(*b), button,
+                                         Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier))
 
 
+def _mask_px(canvas):
+    return int(np.count_nonzero(np.asarray(canvas.get_mask_image()) > 10))
 
 
-
-def _right(canvas, kind, buttons):
-    event = QMouseEvent(kind, QPointF(50, 50), Qt.MouseButton.RightButton, buttons, Qt.KeyboardModifier.NoModifier)
-    if kind == QMouseEvent.Type.MouseButtonPress:
-        canvas.mousePressEvent(event)
-    else:
-        canvas.mouseReleaseEvent(event)
-
-
-def _painted_canvas(qtbot, image):
+def test_right_drag_removes_painted_mask_and_left_drag_still_paints(qtbot, sample_pil_image):
     canvas = ImageCanvas()
     qtbot.addWidget(canvas)
-    canvas.load_image(image)
-    canvas._paint_stroke(QPointF(40, 40), QPointF(60, 60))
-    canvas._flush_mask_pixmap()
-    assert canvas.has_mask()
-    return canvas
+    canvas.load_image(sample_pil_image)
+    canvas.brush_radius = 6
+    strokes = []
+    canvas.strokeFinished.connect(lambda: strokes.append(1))
+
+    _drag(canvas, Qt.MouseButton.LeftButton, (20, 50), (80, 50))
+    painted = _mask_px(canvas)
+    assert painted > 0 and canvas.is_eraser is False
+
+    _drag(canvas, Qt.MouseButton.RightButton, (45, 50), (55, 50))  # wipe the middle of the line
+    left = _mask_px(canvas)
+    assert 0 < left < painted
+    assert canvas.is_eraser is False and not canvas._is_drawing  # back to painting after release
+    assert strokes == [1, 1]
+
+    _drag(canvas, Qt.MouseButton.LeftButton, (45, 50), (55, 50))  # left paints again
+    assert _mask_px(canvas) > left
 
 
-def test_right_button_held_on_the_photo_requests_erase(qtbot, sample_pil_image):
-    canvas = _painted_canvas(qtbot, sample_pil_image)
-    with qtbot.waitSignal(canvas.eraseRequested, timeout=2000):
-        _right(canvas, QMouseEvent.Type.MouseButtonPress, Qt.MouseButton.RightButton)
-    _right(canvas, QMouseEvent.Type.MouseButtonRelease, Qt.MouseButton.NoButton)
-
-
-def test_short_right_click_or_no_selection_does_not_erase(qtbot, sample_pil_image):
-    from companion.canvas import ERASE_HOLD_MS
-    canvas = _painted_canvas(qtbot, sample_pil_image)
-    fired = []
-    canvas.eraseRequested.connect(lambda: fired.append(1))
-    _right(canvas, QMouseEvent.Type.MouseButtonPress, Qt.MouseButton.RightButton)
-    _right(canvas, QMouseEvent.Type.MouseButtonRelease, Qt.MouseButton.NoButton)  # released at once
-    qtbot.wait(ERASE_HOLD_MS + 200)
-    assert fired == []
-
-    empty = ImageCanvas()
-    qtbot.addWidget(empty)
-    empty.load_image(sample_pil_image)
-    empty.eraseRequested.connect(lambda: fired.append(2))
-    _right(empty, QMouseEvent.Type.MouseButtonPress, Qt.MouseButton.RightButton)  # held, but nothing selected
-    qtbot.wait(ERASE_HOLD_MS + 200)
-    assert fired == [] and not empty._is_drawing
-
-
-def test_erase_requested_runs_the_erase_button_action(qtbot, monkeypatch, tmp_path):
-    calls = []
-    monkeypatch.setattr(MainWindow, "_on_run_inpainting", lambda self: calls.append(1))
-    path = str(tmp_path / "in.png")
-    Image.new("RGB", (64, 64), (120, 120, 120)).save(path)
-    window = MainWindow(input_path=path)
-    qtbot.addWidget(window)
-    window.canvas.eraseRequested.emit()
-    assert calls == [1]
+def test_right_drag_erase_is_one_undo_step(qtbot, sample_pil_image):
+    canvas = ImageCanvas()
+    qtbot.addWidget(canvas)
+    canvas.load_image(sample_pil_image)
+    canvas.brush_radius = 6
+    _drag(canvas, Qt.MouseButton.LeftButton, (20, 50), (80, 50))
+    painted = _mask_px(canvas)
+    _drag(canvas, Qt.MouseButton.RightButton, (20, 50), (80, 50))
+    assert _mask_px(canvas) < painted
+    canvas.undo()
+    assert _mask_px(canvas) == painted
