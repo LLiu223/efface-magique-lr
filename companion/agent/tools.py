@@ -24,7 +24,8 @@ from companion.utils.subject_detector import get_segmentation_model
 logger = logging.getLogger("EffaceMagiqueAgent")
 
 TOOL_NAMES = ("list_models", "select_model", "set_prompt", "detect_regions", "select_regions")
-MIN_REGION_SHARE = 0.002   # ignore specks below 0.2 % of the frame
+MIN_REGION_SHARE = 0.002   # ignore specks below 0.2 % of the frame (coarse VOC components)
+MIN_OUTLINE_SHARE = 0.0001  # SAM outlines are exact: keep objects down to 0.01 % (about 47x47 px on 22 MP)
 MAX_REGIONS = 20
 MAX_QUERY_LEN = 77         # a short noun phrase; far below Grounding DINO's 256-token text limit
 EDGE_MARGIN = 0.003        # region masks grow by 0.3 % of the long side to cover antialiased edges
@@ -32,6 +33,11 @@ EDGE_MARGIN = 0.003        # region masks grow by 0.3 % of the long side to cove
 GDINO_BOX_THRESHOLD = 0.35
 GDINO_TEXT_THRESHOLD = 0.25
 GDINO_MERGE_IOU = 0.7      # boxes overlapping more than this are one instance found twice
+# Grounding DINO's own input size (its processor caps the long side at 1333). The 512 px used for the
+# coarse VOC pass shrinks a 22 MP photo 11x, and small objects become a few pixels it cannot recognise.
+GDINO_INPUT_DIM = 1333
+GDINO_TILE = 2 * GDINO_INPUT_DIM   # photo px per tile, so objects get 2x the whole-view resolution...
+GDINO_TILE_OVERLAP = 0.25          # ...and anything smaller than a quarter tile is whole in some tile
 SAM_PAD = 0.15             # SAM sees the box plus 15 % of its long side as context
 SAM_MIN_COVERAGE = 0.3     # SAM must cover 30 % of a VOC region, else it missed it (thin wires)
 SAM_MAX_POINTS = 3
@@ -139,6 +145,22 @@ def _position(cx: float, cy: float, w: int, h: int) -> str:
     return f"{col}-{row}"
 
 
+def _tiles(w: int, h: int) -> list:
+    """Overlapping GDINO_TILE squares covering the photo, edge tiles flush with the border. [] when the
+    whole view already shows the photo at no less than half Grounding DINO's own resolution."""
+    if max(w, h) <= GDINO_TILE:
+        return []
+    stride = int(GDINO_TILE * (1 - GDINO_TILE_OVERLAP))
+
+    def starts(n: int) -> list:
+        if n <= GDINO_TILE:
+            return [0]
+        k = -(-(n - GDINO_TILE) // stride)  # ceil: last tile ends exactly at the border
+        return [round(i * (n - GDINO_TILE) / k) for i in range(k + 1)]
+
+    return [(x, y, min(w, x + GDINO_TILE), min(h, y + GDINO_TILE)) for y in starts(h) for x in starts(w)]
+
+
 @dataclass
 class Selection:
     """Regions the assistant selected; the app adds `mask` to the canvas brush mask. Nothing is erased."""
@@ -226,12 +248,11 @@ class AgentSession:
             detector = "grounding_dino"
             self.progress("Finding objects...")
             try:
-                for label, box in self._gdino_boxes(gdino, small, query)[:MAX_REGIONS]:
-                    box = box * (w / small.width)
+                for label, box in self._gdino_find(gdino, img, query)[:MAX_REGIONS]:
                     self.progress("Outlining...")
                     mask = self._sam_outline(img, box)
                     share = np.count_nonzero(mask) / mask.size
-                    if share >= MIN_REGION_SHARE:
+                    if share >= MIN_OUTLINE_SHARE:
                         outlined.append((share, label, mask,
                                          _position((box[0] + box[2]) / 2, (box[1] + box[3]) / 2, w, h)))
             except Exception as e:
@@ -313,12 +334,12 @@ class AgentSession:
         pad = SAM_PAD * long_side
         x0, y0 = max(0, int(x - pad)), max(0, int(y - pad))
         x1, y1 = min(w, int(x + bw + pad) + 1), min(h, int(y + bh + pad) + 1)
-        scale = min(1.0, CONFIG.NEURAL_CROP_MAX_DIM / max(x1 - x0, y1 - y0))
+        scale = min(1.0, GDINO_INPUT_DIM / max(x1 - x0, y1 - y0))
         crop = img.crop((x0, y0, x1, y1))
         crop = crop.resize((max(32, int(crop.width * scale)), max(32, int(crop.height * scale))),
                            Image.Resampling.BILINEAR)
         self.progress("Finding what they hold...")
-        found = [(lab, box) for lab, box in self._gdino_boxes(gdino, crop, HELD_QUERY) if not is_holder(lab)]
+        found = [(lab, box) for lab, box, _ in self._gdino_boxes(gdino, crop, HELD_QUERY) if not is_holder(lab)]
         if not found:
             return mask, []
         person = mask > 0
@@ -348,9 +369,36 @@ class AgentSession:
             return mask, []
         return union.astype(np.uint8) * 255, list(dict.fromkeys(labels))
 
+    def _gdino_find(self, gdino, img: Image.Image, query: str) -> list:
+        """[(label, xyxy box in photo px)], best score first: the whole photo at Grounding DINO's own size,
+        plus overlapping tiles on large photos so small objects get enough pixels."""
+        import torch
+        from torchvision.ops import nms
+        w, h = img.size
+        views = [(0, 0, w, h)] + _tiles(w, h)
+        labels, boxes, scores = [], [], []
+        for vx0, vy0, vx1, vy1 in views:
+            view = img.crop((vx0, vy0, vx1, vy1))
+            s = min(1.0, GDINO_INPUT_DIM / max(view.size))
+            view = view.resize((max(32, int(view.width * s)), max(32, int(view.height * s))), Image.Resampling.BILINEAR)
+            sx, sy = (vx1 - vx0) / view.width, (vy1 - vy0) / view.height
+            for label, box, score in self._gdino_boxes(gdino, view, query):
+                b = np.array([vx0 + box[0] * sx, vy0 + box[1] * sy, vx0 + box[2] * sx, vy0 + box[3] * sy])
+                # a box cut by a tile's inner edge is part of a larger object: the whole view or a neighbour has it
+                if (vx0, vy0, vx1, vy1) != (0, 0, w, h) and (
+                        (vx0 > 0 and b[0] <= vx0 + 2 * sx) or (vy0 > 0 and b[1] <= vy0 + 2 * sy)
+                        or (vx1 < w and b[2] >= vx1 - 2 * sx) or (vy1 < h and b[3] >= vy1 - 2 * sy)):
+                    continue
+                labels.append(label), boxes.append(b), scores.append(score)
+        if not boxes:
+            return []
+        keep = nms(torch.tensor(np.array(boxes), dtype=torch.float32), torch.tensor(scores, dtype=torch.float32),
+                   GDINO_MERGE_IOU).tolist()
+        return [(labels[i], boxes[i]) for i in keep]
+
     @staticmethod
     def _gdino_boxes(gdino, small: Image.Image, query: str) -> list:
-        """[(label, xyxy box in `small` px)], one per instance, best score first."""
+        """[(label, xyxy box in `small` px, score)], one per instance, best score first."""
         import torch
         from torchvision.ops import nms
         processor, model = gdino
@@ -366,8 +414,8 @@ class AgentSession:
         boxes[:, 1::2] = boxes[:, 1::2].clamp(0, small.height)
         labels = res.get("text_labels", res.get("labels"))
         # the text span can carry the "." separator and tokenizer markers such as [SEP]
-        return [(sanitize_text(re.sub(r"\[[A-Z]+\]|\.", " ", str(labels[i])), 60) or query, boxes[i].numpy())
-                for i in nms(boxes, scores, GDINO_MERGE_IOU).tolist()]
+        return [(sanitize_text(re.sub(r"\[[A-Z]+\]|\.", " ", str(labels[i])), 60) or query, boxes[i].numpy(),
+                 float(scores[i])) for i in nms(boxes, scores, GDINO_MERGE_IOU).tolist()]
 
     @staticmethod
     def _sam_outline(img: Image.Image, box, points=()) -> np.ndarray:

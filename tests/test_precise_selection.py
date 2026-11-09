@@ -391,3 +391,57 @@ def test_matte_error_keeps_the_outline_without_soft_edges(monkeypatch, caplog):
     m = _left_person(monkeypatch, (_Boom(), FakeVitMatteModel()))
     assert m[220, 120] and not m[76, 120]  # the SAM outline, no strand
     assert sum("ViTMatte failed, falling back" in r.message for r in caplog.records) == 1
+
+
+# --- small objects: native input size, tiles, low size floor ---------------------------------------------
+
+def _dark_box(label, min_px=0):
+    """Fake Grounding DINO: the bounding box of the dark pixels in the view it is given, or nothing when the
+    object spans fewer than `min_px` view pixels (too small for the real model to recognise)."""
+    def find(view):
+        dark_px = np.asarray(view.convert("L")) < 128
+        if not dark_px.any():
+            return []
+        ys, xs = np.nonzero(dark_px)
+        if min(xs.max() - xs.min(), ys.max() - ys.min()) + 1 < min_px:
+            return []
+        w, h = view.size
+        return [(label, xs.min() / w, ys.min() / h, (xs.max() + 1) / w, (ys.max() + 1) / h, 0.9)]
+    return find
+
+
+def test_tiles_cover_large_photos_and_skip_small_ones():
+    assert agent_tools._tiles(2000, 1500) == []
+    w, h = 3820, 5730
+    tiles = agent_tools._tiles(w, h)
+    covered = np.zeros((h, w), bool)
+    for x0, y0, x1, y1 in tiles:
+        assert 0 <= x0 < x1 <= w and 0 <= y0 < y1 <= h and max(x1 - x0, y1 - y0) <= agent_tools.GDINO_TILE
+        covered[y0:y1, x0:x1] = True
+    assert covered.all()
+
+
+def test_small_object_seen_only_at_tile_resolution_is_found_where_it_is(monkeypatch):
+    """A 40 px sign on a 4000x3000 photo: about 13 px in the whole view (missed), 20 px in a tile (found)."""
+    img = Image.new("RGB", (4000, 3000), (255, 255, 255))
+    ImageDraw.Draw(img).rectangle((3000, 2200, 3039, 2239), fill=(0, 0, 0))
+    gp = FakeGdinoProcessor({"sign.": _dark_box("sign", min_px=18)})
+    _install(monkeypatch, gdino=(gp, FakeGdinoModel()), sam=(FakeSamProcessor(), FakeSamModel()))
+    s = AgentSession(engine=FakeEngine(), image=img)
+    out = json.loads(s.detect_regions("sign"))
+    assert [(r["label"], r["position"]) for r in out["regions"]] == [("sign", "right-bottom")]
+    ys, xs = np.nonzero(s.region_masks["r1"])
+    assert 2990 <= xs.min() and xs.max() <= 3050 and 2190 <= ys.min() and ys.max() <= 2250
+    assert out["regions"][0]["area_share"] < agent_tools.MIN_REGION_SHARE  # below the old 0.2 % floor
+
+
+def test_object_cut_by_tile_edges_comes_back_once(monkeypatch):
+    """Every tile sees only part of a big object; those cut boxes are dropped and the whole view's box is kept."""
+    img = Image.new("RGB", (4000, 3000), (255, 255, 255))
+    ImageDraw.Draw(img).rectangle((1000, 500, 3499, 2499), fill=(0, 0, 0))
+    gp = FakeGdinoProcessor({"boat.": _dark_box("boat")})
+    _install(monkeypatch, gdino=(gp, FakeGdinoModel()), sam=(FakeSamProcessor(), FakeSamModel()))
+    s = AgentSession(engine=FakeEngine(), image=img)
+    out = json.loads(s.detect_regions("boat"))
+    assert len(out["regions"]) == 1 and out["regions"][0]["position"] == "centre-middle"
+    assert gp.texts.count("boat.") == 1 + len(agent_tools._tiles(4000, 3000))
