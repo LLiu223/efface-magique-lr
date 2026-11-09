@@ -161,13 +161,14 @@ def test_not_found_is_reported(env):
     w = env.window
     env.ask(call("detect_regions"), say("I found no bin, so nothing is selected."))
     assert not w.canvas.has_mask() and w.modification_layers == []
-    assert any("found no bin" in m for m in env.messages)
+    assert "found no bin" in w.agent_answer.text() and w.agent_answer_panel.isVisibleTo(w)
+    assert env.messages == []  # inline, not a modal box
 
 
 def test_abort_reason_is_shown_and_controls_restored(env):
     w = env.window
     env.ask(call("run_shell", {"cmd": "dir"}))
-    assert any("Refused tool call" in m for m in env.messages)
+    assert "Refused tool call" in w.agent_answer.text() and env.messages == []
     assert w.btn_erase.isEnabled() and w.btn_agent_ask.isEnabled() and w.btn_agent_cancel.isHidden()
 
 
@@ -217,11 +218,11 @@ def test_provider_and_model_saved_in_settings(qtbot, tmp_path, monkeypatch):
     w = app.MainWindow()
     qtbot.addWidget(w)
     w.combo_agent_provider.setCurrentText("anthropic")
-    w.ed_agent_model.setText("claude-sonnet-4-5")
+    w.ed_agent_model.setCurrentText("claude-sonnet-4-5")
     w2 = app.MainWindow()
     qtbot.addWidget(w2)
     assert w2.combo_agent_provider.currentText() == "anthropic"
-    assert w2.ed_agent_model.text() == "claude-sonnet-4-5"
+    assert w2.ed_agent_model.currentText() == "claude-sonnet-4-5"
 
 
 def test_assistant_prompt_shows_in_field_and_reaches_erase(env, qtbot):
@@ -246,7 +247,7 @@ def test_ollama_connect_error_explains_what_to_do(env):
     from companion.agent.harness import AgentResult
     w = env.window
     w.combo_agent_provider.setCurrentText("ollama")
-    w.ed_agent_model.setText("llama3.1")
+    w.ed_agent_model.setCurrentText("llama3.1")
     w._on_agent_result(AgentResult(ok=False, reason="Assistant error: ConnectError: [WinError 10061] refused"))
     msg = env.messages[-1]
     assert "Can't reach Ollama" in msg and "ollama pull llama3.1" in msg and "ConnectError" in msg
