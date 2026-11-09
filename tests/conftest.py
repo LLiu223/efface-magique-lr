@@ -27,3 +27,15 @@ def _no_ollama_network(monkeypatch):
         raise OSError("network disabled in tests")
 
     monkeypatch.setattr(llm, "_fetch_tags", offline)
+
+
+@pytest.fixture(autouse=True)
+def _no_precise_weights(tmp_path, monkeypatch):
+    """Grounding DINO / SAM 2 / ViTMatte weights a developer installed locally never change a test's result."""
+    pm = sys.modules.get("companion.utils.precise_models")
+    if pm is None:
+        return
+    for m in pm.STAGES.values():
+        monkeypatch.setattr(m, "weight_dir", lambda: str(tmp_path / "no-precise-weights"))
+        monkeypatch.setattr(m, "_model", None)
+        monkeypatch.setattr(m, "_error", None)

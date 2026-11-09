@@ -113,6 +113,58 @@ if /i "!ANSWER!"=="y" if "!PIP_OK!"=="1" (
     call :FETCH "!CS_URL!/model.safetensors" "!MODELS_DIR!\clipseg\model.safetensors" d00ca85d6b859f9d07b7cfb8ef26fe9771cb275b34c9368f2ecf603139307f55
 )
 
+:: Precise selection, all Apache-2.0, pinned revisions. SHA256 and size per file from the HF API
+:: (api/models/<id>/revision/<rev>?blobs=true: lfs.sha256 for weights; small files checked against their git blob id).
+::   grounding_dino  IDEA-Research/grounding-dino-tiny @ a2bb814dd30d776dcf7e30523b00659f4f141c71
+::     config.json 1644, preprocessor_config.json 457, tokenizer.json 711396, tokenizer_config.json 1237,
+::     special_tokens_map.json 125, vocab.txt 231508, added_tokens.json 82, model.safetensors 689359096 bytes
+::   sam2  facebook/sam2.1-hiera-small @ ee5bba1d82bb8749febdf90f45e84b687142ba03
+::     config.json 5698, preprocessor_config.json 683, processor_config.json 95, model.safetensors 184305280 bytes
+::   vitmatte  hustvl/vitmatte-small-composition-1k @ 6a58ad7646403c1df626fbd746900aec7361ea1d
+::     config.json 837, preprocessor_config.json 284, model.safetensors 103294572 bytes
+echo.
+echo [i] Precise selection makes the assistant's selections follow the object's real outline:
+echo     Grounding DINO finds one box per object, SAM 2.1 outlines it, ViTMatte keeps hair and fur edges.
+set "ANSWER="
+set /p "ANSWER=[?] Download Precise selection (Grounding DINO + SAM 2 + ViTMatte, about 980 MB, Apache-2.0)? [y/N]: "
+if /i "!ANSWER!"=="y" call :INSTALL_EXTRAS requirements-clipseg.txt "Precise selection"
+if /i "!ANSWER!"=="y" if "!PIP_OK!"=="1" (
+    set "GD_URL=https://huggingface.co/IDEA-Research/grounding-dino-tiny/resolve/a2bb814dd30d776dcf7e30523b00659f4f141c71"
+    call :FETCH "!GD_URL!/config.json" "!MODELS_DIR!\grounding_dino\config.json" eec82c5ab66e16df12a9a212e68ac011779927c2536cf9078658e35d85f0c67a
+    call :FETCH "!GD_URL!/preprocessor_config.json" "!MODELS_DIR!\grounding_dino\preprocessor_config.json" 8454179ba95e2ad22947835aad7b45862a601fc0055ab88bf1ee70892d3aea60
+    call :FETCH "!GD_URL!/tokenizer.json" "!MODELS_DIR!\grounding_dino\tokenizer.json" d241a60d5e8f04cc1b2b3e9ef7a4921b27bf526d9f6050ab90f9267a1f9e5c66
+    call :FETCH "!GD_URL!/tokenizer_config.json" "!MODELS_DIR!\grounding_dino\tokenizer_config.json" d40ab645b68211910b9170d22433d43186a6ec8ee6fd10ba170524b25bf4fb56
+    call :FETCH "!GD_URL!/special_tokens_map.json" "!MODELS_DIR!\grounding_dino\special_tokens_map.json" b6d346be366a7d1d48332dbc9fdf3bf8960b5d879522b7799ddba59e76237ee3
+    call :FETCH "!GD_URL!/vocab.txt" "!MODELS_DIR!\grounding_dino\vocab.txt" 07eced375cec144d27c900241f3e339478dec958f92fddbc551f295c992038a3
+    call :FETCH "!GD_URL!/added_tokens.json" "!MODELS_DIR!\grounding_dino\added_tokens.json" 909e96cb32d92ce728a01bc99850cbba26196d74115c17ebeb019275412588f2
+    call :FETCH "!GD_URL!/model.safetensors" "!MODELS_DIR!\grounding_dino\model.safetensors" 1a2412ef99bd74bcd3c2a246fa1e48581f8889a1300c9051974741314fc042f3
+    set "SAM_URL=https://huggingface.co/facebook/sam2.1-hiera-small/resolve/ee5bba1d82bb8749febdf90f45e84b687142ba03"
+    call :FETCH "!SAM_URL!/config.json" "!MODELS_DIR!\sam2\config.json" 97ff9f65b76d107acda4247885f0a5555d0048850ae3c5f97183df289aaecde9
+    call :FETCH "!SAM_URL!/preprocessor_config.json" "!MODELS_DIR!\sam2\preprocessor_config.json" 6ebf229ee259368ce4a8d4f2fe893a72b053023710853e257253939e601f583d
+    call :FETCH "!SAM_URL!/processor_config.json" "!MODELS_DIR!\sam2\processor_config.json" f8a68e865cfad115c1c2763f3d93eca7b1c622da06da2a9273eb437fb2389b6d
+    call :FETCH "!SAM_URL!/model.safetensors" "!MODELS_DIR!\sam2\model.safetensors" 0a4067b11ce1e23d5229203f11c718a823060d15a4b23fa2372a7d4b77cbbc60
+    set "VM_URL=https://huggingface.co/hustvl/vitmatte-small-composition-1k/resolve/6a58ad7646403c1df626fbd746900aec7361ea1d"
+    call :FETCH "!VM_URL!/config.json" "!MODELS_DIR!\vitmatte\config.json" ae1006f5a83227048b563b2e60709d4203e432b2276949ebef41a8cfeeeaf45f
+    call :FETCH "!VM_URL!/preprocessor_config.json" "!MODELS_DIR!\vitmatte\preprocessor_config.json" 0db558038b96a3f5c97e46d4ec8966fcc479e9aa58a391bca60b5094a5f7fee0
+    call :FETCH "!VM_URL!/model.safetensors" "!MODELS_DIR!\vitmatte\model.safetensors" bda9289db1bb6762d978b42d1c62ae3f34daf7497171a347a1d09657efd788cb
+)
+
+:: Recommended assistant model. Only offered when Ollama is already installed; this script never installs Ollama.
+where ollama >nul 2>nul
+if !errorlevel! equ 0 (
+    echo.
+    echo [i] The assistant works best with qwen3:8b ^(Apache-2.0^). Ollama keeps it in its own model folder.
+    set "ANSWER="
+    set /p "ANSWER=[?] Download the recommended assistant model with 'ollama pull qwen3:8b', about 5.2 GB? [y/N]: "
+    if /i "!ANSWER!"=="y" (
+        ollama pull qwen3:8b
+        if !errorlevel! neq 0 (
+            echo [ERROR] ollama pull qwen3:8b failed. Is Ollama running? Retry later with: ollama pull qwen3:8b
+            set /a FETCH_ERRORS+=1
+        )
+    )
+)
+
 if not "!FETCH_ERRORS!"=="0" (
     echo.
     echo [ERROR] !FETCH_ERRORS! optional model step^(s^) failed: package install, download or verification.

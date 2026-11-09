@@ -146,8 +146,8 @@ def test_ollama_models_listed_from_api_tags(qtbot, agent_on, monkeypatch):
     assert w.combo_agent_provider.currentText() == "ollama"
     qtbot.waitUntil(lambda: "qwen2.5:7b" in _items(w.ed_agent_model), timeout=3000)
     assert seen == [("http://localhost:11434/api/tags", 1.0)]
-    assert w.ed_agent_model.currentText() == "llama3.1"  # the saved value is kept and listed too
-    assert set(_items(w.ed_agent_model)) == {"llama3.1:latest", "qwen2.5:7b", "llama3.1"}
+    assert w.ed_agent_model.currentText() == "qwen3:8b"  # the default (job 023) is kept and listed too
+    assert set(_items(w.ed_agent_model)) == {"llama3.1:latest", "qwen2.5:7b", "qwen3:8b", "qwen3.5:4b"}
     w.ed_agent_model.setCurrentIndex(_items(w.ed_agent_model).index("qwen2.5:7b"))
     assert w._settings.value(app.agent_pkg.KEY_MODEL) == "qwen2.5:7b"
 
@@ -156,7 +156,7 @@ def test_unreachable_ollama_keeps_saved_value_with_hint(qtbot, agent_on, no_moda
     w = app.MainWindow()  # conftest makes every /api/tags call fail
     qtbot.addWidget(w)
     qtbot.waitUntil(lambda: "not reachable" in w.ed_agent_model.toolTip(), timeout=3000)
-    assert w.ed_agent_model.currentText() == "llama3.1"
+    assert w.ed_agent_model.currentText() == "qwen3:8b"
     w.combo_agent_provider.setCurrentText("anthropic")
     w.combo_agent_provider.setCurrentText("ollama")  # a user switch also says so in the status bar
     qtbot.waitUntil(lambda: "not reachable" in w.statusBar().currentMessage(), timeout=3000)

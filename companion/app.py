@@ -63,6 +63,7 @@ from PyQt6.QtWidgets import (
     QTextBrowser,
     QScrollArea,
     QSplitter,
+    QStyledItemDelegate,
 )
 
 from companion.ui import (
@@ -96,6 +97,7 @@ from companion.layers import ModificationLayer, create_layer_thumbnail
 from companion import __version__
 from companion.diagnostics import build_diagnostics
 from companion.utils import clipseg_detector
+from companion.utils import precise_models
 from companion.live_bridge import LiveBridgeServer
 from companion.config import CONFIG
 from companion import recovery
@@ -163,6 +165,19 @@ def restore_model_name(settings: QSettings) -> str:
     except KeyError:
         logger.warning(f"Saved model {name!r} is unknown; falling back to {DEFAULT_MODEL!r}.")
     return DEFAULT_MODEL
+
+
+_MODEL_NOTE_ROLE = Qt.ItemDataRole.UserRole + 1
+
+
+class _ModelNoteDelegate(QStyledItemDelegate):
+    """Shows "qwen3:8b  (recommended, 5.2 GB)" in the list; the item text (saved, sent to Ollama) stays the bare name."""
+
+    def initStyleOption(self, option, index):
+        super().initStyleOption(option, index)
+        note = index.data(_MODEL_NOTE_ROLE)
+        if note:
+            option.text = f"{option.text}  ({note})"
 
 
 # -----------------------------------------------------------------------------
@@ -425,6 +440,7 @@ class MainWindow(QMainWindow):
             "gpu_name": gpu_name,
             "lama_model": lama,
             "clipseg": clipseg_detector.status(),
+            **{name: m.status() for name, m in precise_models.STAGES.items()},
             "bridge_port": getattr(self, "live_bridge_port", None),
             "bridge_connected": bridge.is_connected if bridge is not None else None,
             "last_error": self.last_error,
@@ -1724,10 +1740,17 @@ class MainWindow(QMainWindow):
         self.ed_agent_model.setAccessibleName("Assistant model")
         self.ed_agent_model.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.ed_agent_model.setMinimumContentsLength(14)
+        self.ed_agent_model.setItemDelegate(_ModelNoteDelegate(self.ed_agent_model))
+        self._ollama_installed = None  # names from /api/tags; None = not known (other provider, unreachable)
+        self.agent_model_hint = QLabel()
+        self.agent_model_hint.setObjectName("agentModelHint")
+        self.agent_model_hint.setTextFormat(Qt.TextFormat.PlainText)  # the model name is user text
+        self.agent_model_hint.setVisible(False)
         self.ed_agent_model.setCurrentText(self._settings.value(agent_pkg.KEY_MODEL, agent_pkg.DEFAULT_AGENT_MODEL, type=str))
-        self._agent_model_tip = "Assistant LLM model: pick one or type a name (e.g. llama3.1, claude-sonnet-4-5, gpt-4o-mini)"
+        self._agent_model_tip = "Assistant LLM model: pick one or type a name (e.g. qwen3:8b, claude-sonnet-4-5, gpt-4o-mini)"
         self.ed_agent_model.setToolTip(self._agent_model_tip)
         self.ed_agent_model.currentTextChanged.connect(lambda t: self._settings.setValue(agent_pkg.KEY_MODEL, t.strip()))
+        self.ed_agent_model.currentTextChanged.connect(lambda _: self._update_agent_model_hint())
         self._agent_models_listed.connect(self._on_agent_models_listed)
         self.combo_agent_provider.currentTextChanged.connect(lambda _: self._refresh_agent_models(user=True))
         self.btn_agent_ask = QPushButton("Ask")
@@ -1747,7 +1770,7 @@ class MainWindow(QMainWindow):
         settings_label = QLabel("LLM")
         settings_label.setObjectName("assistantSettings")
         row.addWidget(settings_label)
-        for w in (self.combo_agent_provider, self.ed_agent_model, self.btn_agent_usage):
+        for w in (self.combo_agent_provider, self.ed_agent_model, self.agent_model_hint, self.btn_agent_usage):
             row.addWidget(w)
         self.btn_agent_cancel.setVisible(False)
         self.agent_enabled = agent_pkg.agent_available()
@@ -1782,6 +1805,7 @@ class MainWindow(QMainWindow):
         if not self.agent_enabled:
             return
         provider = self.combo_agent_provider.currentText()
+        self._ollama_installed = None
         if provider != "ollama":
             self._set_agent_model_items(agent_llm.CLOUD_MODELS.get(provider, []))
             self.ed_agent_model.setToolTip(self._agent_model_tip)
@@ -1814,16 +1838,33 @@ class MainWindow(QMainWindow):
             self._set_agent_model_items([])
             return
         self.ed_agent_model.setToolTip(self._agent_model_tip)
-        self._set_agent_model_items(names)
+        self._ollama_installed = set(names)
+        recommended = [n for n, _ in agent_pkg.RECOMMENDED_OLLAMA_MODELS]
+        self._set_agent_model_items(recommended + [n for n in names if n not in recommended],
+                                    dict(agent_pkg.RECOMMENDED_OLLAMA_MODELS))
 
-    def _set_agent_model_items(self, names):
-        """Replace the list without touching the chosen (saved) model; it stays in the list."""
+    def _set_agent_model_items(self, names, notes=None):
+        """Replace the list without touching the chosen (saved) model; it stays in the list.
+        `notes` {name: "recommended, 5.2 GB"} are shown next to the name in the list only."""
         current = self.ed_agent_model.currentText().strip()
         self.ed_agent_model.blockSignals(True)
         self.ed_agent_model.clear()
         self.ed_agent_model.addItems(list(names) + ([current] if current and current not in names else []))
+        for name, note in (notes or {}).items():
+            i = self.ed_agent_model.findText(name)
+            if i >= 0:
+                self.ed_agent_model.setItemData(i, note, _MODEL_NOTE_ROLE)
         self.ed_agent_model.setCurrentText(current)
         self.ed_agent_model.blockSignals(False)
+        self._update_agent_model_hint()
+
+    def _update_agent_model_hint(self):
+        """Ollama answered and the chosen model is not among its models: say how to get it."""
+        name = self.ed_agent_model.currentText().strip()
+        missing = (self._ollama_installed is not None and bool(name)
+                   and not {name, f"{name}:latest"} & self._ollama_installed)
+        self.agent_model_hint.setText(f"not installed: run ollama pull {name}" if missing else "")
+        self.agent_model_hint.setVisible(missing)
 
     def _show_agent_answer(self, text: str):
         self.agent_answer.setText(text)
@@ -2348,10 +2389,13 @@ class MainWindow(QMainWindow):
         if not result.ok:
             reason = result.reason
             needs_ollama = "ConnectError" in reason and self.combo_agent_provider.currentText() == "ollama"
+            model = self.ed_agent_model.currentText().strip()
+            if self.combo_agent_provider.currentText() == "ollama" and "not found" in reason.lower():
+                reason = f"{model} is not installed: run ollama pull {model}\n\n({result.reason})"  # Ollama's 404
             if needs_ollama:
                 url = self._settings.value(agent_pkg.KEY_OLLAMA_URL, "") or "http://localhost:11434"
                 reason = (f"Can't reach Ollama at {url}.\n\nInstall Ollama from ollama.com, make sure it is "
-                          f"running, and download the model once with:\n  ollama pull {self.ed_agent_model.currentText().strip()}"
+                          f"running, and download the model once with:\n  ollama pull {model}"
                           f"\n\n({result.reason})")
             self.statusBar().showMessage(f"Assistant stopped: {reason.splitlines()[0]}", 8000)
             if needs_ollama:

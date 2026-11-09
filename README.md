@@ -185,7 +185,8 @@ Optional weights live in the repo-root `models/` folder (`CONFIG.MODELS_DIR`, gi
 install.bat asks y/N per model (default N) and installs only that model's pinned requirements file
 (`requirements-migan.txt`: onnxruntime; `requirements-sd.txt`: diffusers, transformers, accelerate). A last
 optional step, "Enable finding any named object (CLIPSeg, about 600 MB, Apache-2.0)?", installs
-`requirements-clipseg.txt` (transformers) and the CLIPSeg files into `models/clipseg/` for the assistant. If that pip
+`requirements-clipseg.txt` (transformers) and the CLIPSeg files into `models/clipseg/` for the assistant. The
+"Precise selection" step uses the same requirements file for Grounding DINO, SAM 2 and ViTMatte (see Assistant). If that pip
 install fails, the model's weights are not downloaded. Downloads are pinned (HF revision), saved as `<file>.part`,
 checked against their SHA256 and only then moved to the final name, so an interrupted download never shows up as
 an installed model.
@@ -303,7 +304,8 @@ The assistant finds and **selects** what you named; it never erases. A LangChain
 ```
 Assistant box -> AgentWorker (QThread, harness.py: max steps / token budget / timeout / cancel / allow-list / 1 retry)
               -> tools.py: list_models, select_model, set_prompt, detect_regions, select_regions
-              -> registry.get + InpaintingEngine.set_model / get_segmentation_model / CLIPSeg (clipseg_detector)
+              -> registry.get + InpaintingEngine.set_model / detect: Grounding DINO or CLIPSeg or VOC
+                 -> outline: SAM 2 or sharp-crop refine -> soft edges: ViTMatte (people/animals)
               -> selected regions added to the red brush mask (one Ctrl+Z step) -> user clicks Erase as usual
 ```
 
@@ -319,6 +321,30 @@ Assistant box -> AgentWorker (QThread, harness.py: max steps / token budget / ti
   classes (person, car, bottle, dog, chair...) are found, and the assistant tells you to re-run install.bat and
   answer y to the find-any-object step. CLIPSeg can mark too much (for example sky for "power lines"): check the
   red selection and fix it with the brush or eraser before you click Erase.
+- **Precise selection (optional, install.bat step "Precise selection (Grounding DINO + SAM 2 + ViTMatte, about
+  980 MB)")**: three Apache-2.0 models, pinned and SHA256-checked, loaded lazily from `models/` with
+  `local_files_only=True`, never downloaded by the app. Each stage is optional and falls back to the one before:
+
+  | Stage | Model | Files | Without it |
+  |---|---|---|---|
+  | Find: one box per instance (two people = two regions) | Grounding DINO tiny (`IDEA-Research/grounding-dino-tiny`) | ~690 MB, `models/grounding_dino/` | CLIPSeg, then the 20 VOC classes |
+  | Outline: the mask for each box, on a full-resolution crop | SAM 2.1 small (`facebook/sam2.1-hiera-small`) | ~185 MB, `models/sam2/` | today's sharp-crop re-segmentation |
+  | Soft edges: hair and fur, for people and animals only | ViTMatte small (`hustvl/vitmatte-small-composition-1k`) | ~105 MB, `models/vitmatte/` | skipped |
+
+  Grounding DINO is used only together with SAM 2 (a box is not an outline). CLIPSeg/VOC regions are outlined by
+  SAM 2 too, from their bounding box and up to 3 interior points; if SAM covers less than 30 % of the region (it can
+  miss a thin wire) the region keeps the old result. ViTMatte never runs for objects like "power lines". The canvas
+  mask is binary, so matted hair is kept from alpha 0.1 up. Copy diagnostics lists each stage as not installed /
+  installed / loaded / failed. GPU memory: about 0.7 GB (Grounding DINO, fp32) + 0.1 GB (SAM 2, fp16) + 0.1 GB
+  (ViTMatte, fp32), loaded on first use and kept, next to the inpainting model.
+- **Recommended LLMs (Ollama):** the model picker lists them first, even before they are pulled, and says
+  "not installed: run ollama pull <name>" until you do. Qwen3 thinking is turned off for assistant calls, so answers
+  are fast. install.bat offers `ollama pull qwen3:8b` when Ollama is already installed (it never installs Ollama).
+
+  | Model | Download | Use |
+  |---|---|---|
+  | `qwen3:8b` (default) | 5.2 GB | recommended |
+  | `qwen3.5:4b` | 3.3 to 4 GB (ollama.com) | light option for smaller GPUs or CPU |
 - The selection is added to any strokes you already painted, as one undo step (Ctrl+Z removes it). The status bar
   says what was selected, e.g. "Assistant selected: power lines (r1). Adjust with the brush, then click Erase."
   Then erase with any model, variations and options as usual. If the photo or layers changed while the assistant
