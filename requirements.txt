@@ -2,7 +2,9 @@
 torch>=2.0.0
 torchvision>=0.15.0
 PyQt6>=6.5.0
-simple-lama-inpainting>=0.1.2
+# simple-lama-inpainting==0.1.2 is installed by install.bat with --no-deps: it pins pillow<10,
+# which conflicts with Pillow>=10 below; fire is its only other import not listed here.
+fire>=0.5,<0.6
 opencv-python>=4.8.0
 Pillow>=10,<13
-numpy>=1.24.0
+numpy>=1.24.0,<2  # simple-lama-inpainting declares numpy<2
