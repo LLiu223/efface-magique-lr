@@ -83,8 +83,9 @@ def test_two_people_give_two_regions_with_positions(monkeypatch):
     assert [(r["id"], r["label"], r["position"]) for r in out["regions"]] == [
         ("r1", "person", "left-middle"), ("r2", "person", "right-middle")]
     assert "note" not in out and s.detector == "grounding_dino"
-    assert gp.texts == ["two people."]  # sanitised, lowercased, one trailing "."
-    assert gp.thresholds == [(agent_tools.GDINO_BOX_THRESHOLD, agent_tools.GDINO_TEXT_THRESHOLD)] == [(0.35, 0.25)]
+    held = agent_tools.HELD_QUERY  # then one held-object pass per person; its "person" boxes are skipped
+    assert gp.texts == ["two people.", held, held]  # sanitised, lowercased, one trailing "."
+    assert gp.thresholds[0] == (agent_tools.GDINO_BOX_THRESHOLD, agent_tools.GDINO_TEXT_THRESHOLD) == (0.35, 0.25)
     assert len(sp.calls) == 2  # one SAM pass per instance, not per duplicate box
 
 

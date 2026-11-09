@@ -332,7 +332,10 @@ Assistant box -> AgentWorker (QThread, harness.py: max steps / token budget / ti
 
   Grounding DINO is used only together with SAM 2 (a box is not an outline). VOC regions are outlined by
   SAM 2 too, from their bounding box and up to 3 interior points; if SAM covers less than 30 % of the region (it can
-  miss a thin wire) the region keeps the old result. ViTMatte never runs for objects like "power lines". The canvas
+  miss a thin wire) the region keeps the old result. A person (or animal) region also takes what they hold, wear or
+  carry (drink, phone, bag, backpack, umbrella, hat, glasses, leash): one extra Grounding DINO pass on the person's
+  crop, and an object is merged only if it touches the person, lies inside their box, is under half their size and is
+  not another person; the result lists it as `"with": ["carton"]`. ViTMatte never runs for objects like "power lines". The canvas
   mask is binary, so matted hair is kept from alpha 0.1 up. Copy diagnostics lists each stage as not installed /
   installed / loaded / failed. GPU memory: about 0.7 GB (Grounding DINO, fp32) + 0.1 GB (SAM 2, fp16) + 0.1 GB
   (ViTMatte, fp32), loaded on first use and kept, next to the inpainting model.

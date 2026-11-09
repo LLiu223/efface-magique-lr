@@ -49,6 +49,8 @@ def photo_context(session: AgentSession) -> str:
     lines = [f"Photo: {w}x{h} px. Active inpainting model: {getattr(session.engine, 'model_name', '?')}."]
     if all(m.is_available() and not m.failed() for m in (precise.GROUNDING_DINO, precise.SAM2)):
         lines.append("detect_regions can find any named object, one region per instance (Grounding DINO).")
+        lines.append("A person region also covers what the person holds, wears or carries, listed in its \"with\" "
+                     "field (e.g. a bag); when you select it, say so in your answer.")
     else:
         from companion.agent.tools import voc_categories
         names = ", ".join(voc_categories()[1:])

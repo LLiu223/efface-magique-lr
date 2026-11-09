@@ -183,7 +183,8 @@ def test_blank_query_runs_voc_like_no_query(seg, precise):
     seg.boxes = [(PERSON, 0.0, 0.3)]
     s = _session()
     assert s.detect_regions("  \x00 ") == s.detect_regions() == s.detect_regions(None)
-    assert precise.texts == [] and json.loads(s.detect_regions())["regions"][0]["label"] == "person"
+    held = [agent_tools.HELD_QUERY]  # VOC found a person: only the fixed held-object query ran
+    assert precise.texts == held * 3 and json.loads(s.detect_regions())["regions"][0]["label"] == "person"
 
 
 def test_query_without_precise_selection_falls_back_to_voc_with_note(seg):
