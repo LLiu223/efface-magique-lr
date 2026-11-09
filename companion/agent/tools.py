@@ -27,6 +27,7 @@ MAX_QUERY_LEN = 77         # CLIP's text limit is 77 tokens, so 77 characters al
 # CLIPSeg predicts at 352x352, so thin wires come out blurred with peaks often below 0.5 while
 # background sits below 0.1; 0.3 keeps the thin peaks and still rejects the background.
 CLIPSEG_THRESHOLD = 0.3
+EDGE_MARGIN = 0.003        # region masks grow by 0.3 % of the long side to cover antialiased edges
 _CTRL = re.compile(r"[\x00-\x1f\x7f-\x9f\u200b-\u200f\u202a-\u202e\u2066-\u2069]")
 
 
@@ -34,6 +35,35 @@ def sanitize_text(text: object, max_len: int = 200) -> str:
     """Strip control/bidi characters, collapse whitespace, truncate. For untrusted text (EXIF, file names)."""
     s = _CTRL.sub(" ", str(text or ""))
     return " ".join(s.split())[:max_len]
+
+
+def refine_region(img: Image.Image, coarse: np.ndarray, segment: Callable[[Image.Image], np.ndarray],
+                  cell: float) -> np.ndarray:
+    """Re-run the detector on a sharp crop around one region. The first pass sees the whole photo at
+    NEURAL_CROP_MAX_DIM px, so on a 24 MP file each cell is ~11 px and edges come out blobby and shifted.
+    `segment(crop) -> bool mask at crop size`; `cell` = photo px per first-pass cell. Returns uint8 0/255."""
+    import cv2
+    h, w = coarse.shape
+    x, y, bw, bh = cv2.boundingRect(coarse)
+    pad = int(max(3 * cell, 0.15 * max(bw, bh)))
+    x0, y0, x1, y1 = max(0, x - pad), max(0, y - pad), min(w, x + bw + pad), min(h, y + bh + pad)
+    scale = min(1.0, CONFIG.NEURAL_CROP_MAX_DIM / max(x1 - x0, y1 - y0))
+    if 1.0 / scale > 0.8 * cell:  # the crop would not be meaningfully sharper than the first pass
+        return coarse
+    crop = img.crop((x0, y0, x1, y1))
+    crop = crop.resize((max(32, int(crop.width * scale)), max(32, int(crop.height * scale))), Image.Resampling.BILINEAR)
+    fine_small = np.asarray(segment(crop), dtype=np.uint8) * 255
+    fine = np.zeros_like(coarse)
+    fine[y0:y1, x0:x1] = cv2.resize(fine_small, (x1 - x0, y1 - y0), interpolation=cv2.INTER_LINEAR) > 127
+    # may grow/shrink by about two first-pass cells, never jump to a neighbouring object
+    r = max(3, int(2 * cell) | 1)
+    fine &= cv2.dilate(coarse, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (r, r))) > 0
+    n, labels = cv2.connectedComponents(fine.astype(np.uint8), connectivity=8)
+    keep = [i for i in np.unique(labels[(coarse > 0) & (labels > 0)])]
+    fine = np.isin(labels, keep)
+    if fine.sum() < 0.3 * np.count_nonzero(coarse):  # the sharp pass lost the object: keep the first one
+        return coarse
+    return fine.astype(np.uint8) * 255
 
 
 def voc_categories() -> List[str]:
@@ -121,6 +151,7 @@ class AgentSession:
         clipseg = clipseg_detector.get_clipseg() if query else None
         if clipseg is not None:
             found, (sh, sw) = self._clipseg_regions(clipseg, small, query), small.size[::-1]
+            segmenters = {query: lambda crop: self._clipseg_binary(clipseg, crop, query) > 0}
         else:
             if query:
                 notes.append(clipseg_detector.unavailable_note())
@@ -129,14 +160,19 @@ class AgentSession:
                 return self._out({"regions": [], "error": "segmentation model unavailable", **(
                     {"note": " ".join(notes)} if notes else {})})
             found, (sh, sw) = self._voc_regions(model, small)
+            names = voc_categories()
+            segmenters = {lab: (lambda crop, c=names.index(lab): self._voc_pred(model, crop) == c)
+                          for lab in {f[1] for f in found}}
 
-        k = max(3, int(0.01 * max(w, h)) | 1)  # small dilation so the inpaint covers object edges
+        # thin edge margin only: the engine widens the mask again before inpainting
+        k = max(3, int(EDGE_MARGIN * max(w, h)) | 1)
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
         self.regions, self.region_masks = {}, {}
         self.detector, self.query = ("clipseg" if clipseg is not None else "voc"), query
         for idx, (share, label, comp, (cx, cy)) in enumerate(found[:MAX_REGIONS], start=1):
             rid = f"r{idx}"
             full = cv2.resize(comp.astype(np.uint8) * 255, (w, h), interpolation=cv2.INTER_NEAREST)
+            full = refine_region(img, full, segmenters[label], max(w, h) / max(sw, sh))
             self.region_masks[rid] = cv2.dilate(full, kernel)
             self.regions[rid] = {"id": rid, "label": label, "area_share": round(float(share), 4),
                                  "position": _position(cx, cy, sw, sh)}
@@ -156,13 +192,17 @@ class AgentSession:
         return [(stats[i, cv2.CC_STAT_AREA] / binary.size, label, labels == i, cents[i]) for i in range(1, n)
                 if stats[i, cv2.CC_STAT_AREA] / binary.size >= MIN_REGION_SHARE]
 
-    def _voc_regions(self, model, small: Image.Image):
+    @staticmethod
+    def _voc_pred(model, small: Image.Image) -> np.ndarray:
         import torch
         import torchvision.transforms.functional as TF
         t = TF.normalize(TF.to_tensor(small), mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         device = next(model.parameters()).device
         with torch.inference_mode():
-            pred = torch.argmax(model(t.unsqueeze(0).to(device))["out"], dim=1)[0].cpu().numpy().astype(np.uint8)
+            return torch.argmax(model(t.unsqueeze(0).to(device))["out"], dim=1)[0].cpu().numpy().astype(np.uint8)
+
+    def _voc_regions(self, model, small: Image.Image):
+        pred = self._voc_pred(model, small)
         names = voc_categories()
         found = []
         for cls in np.unique(pred):
@@ -172,6 +212,10 @@ class AgentSession:
         return found, pred.shape
 
     def _clipseg_regions(self, clipseg, small: Image.Image, query: str) -> list:
+        return sorted(self._components(self._clipseg_binary(clipseg, small, query), query), key=lambda f: -f[0])
+
+    @staticmethod
+    def _clipseg_binary(clipseg, small: Image.Image, query: str) -> np.ndarray:
         import cv2
         import torch
         processor, model = clipseg
@@ -183,8 +227,7 @@ class AgentSession:
         heat = torch.sigmoid(logits.float()).reshape(logits.shape[-2:]).cpu().numpy()
         heat = cv2.resize(heat, small.size, interpolation=cv2.INTER_LINEAR)
         binary = (heat >= CLIPSEG_THRESHOLD).astype(np.uint8)
-        binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))  # join broken wire segments
-        return sorted(self._components(binary, query), key=lambda f: -f[0])
+        return cv2.morphologyEx(binary, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))  # join broken wire segments
 
     def select_regions(self, region_ids: List[str]) -> str:
         self.calls.append("select_regions")

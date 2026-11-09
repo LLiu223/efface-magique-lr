@@ -372,3 +372,41 @@ def test_prompt_gives_photo_size_model_and_detectable_classes(store, seg, no_cli
     _run(llm, _session(FakeEngine("migan")), store)
     system = llm.seen[0][0]
     assert "300x200" in system and "migan" in system and "person" in system and "select_regions" in system
+
+
+def _figure(w=2400, h=1600):
+    truth = np.zeros((h, w), np.uint8)
+    truth[400:1400, 1000:1300] = 255   # the person
+    truth[300:1400, 1330:1500] = 255   # a second person just beside them, 30 px away
+    return truth
+
+
+def test_refine_region_snaps_a_blobby_first_pass_to_the_object():
+    truth = _figure()
+    person = np.zeros_like(truth)
+    person[400:1400, 1000:1300] = 255
+    coarse = np.zeros_like(truth)
+    coarse[380:1420, 940:1310] = 255   # first pass: shifted ~60 px left, as on the owner's photo
+    seg = lambda crop: np.asarray(crop.convert("L")) > 127  # noqa: E731 - the "detector" sees the true shape
+    img = Image.fromarray(truth).convert("RGB")
+    out = agent_tools.refine_region(img, coarse, seg, cell=2400 / 512)
+    spill = np.count_nonzero((out > 0) & (person == 0))
+    assert spill < 0.1 * np.count_nonzero(coarse & ~person)       # most of the spill is gone
+    assert np.count_nonzero((out > 0) & (person > 0)) > 0.97 * np.count_nonzero(person)
+    assert not out[:, 1400:].any()                                 # the neighbour is not pulled in
+
+
+def test_refine_region_keeps_first_pass_when_sharp_pass_finds_nothing():
+    coarse = np.zeros((1600, 2400), np.uint8)
+    coarse[400:1400, 1000:1300] = 255
+    img = Image.new("RGB", (2400, 1600))
+    out = agent_tools.refine_region(img, coarse, lambda crop: np.zeros(crop.size[::-1], bool), cell=2400 / 512)
+    assert np.array_equal(out, coarse)
+
+
+def test_refine_region_skips_small_photos():
+    coarse = np.zeros((200, 300), np.uint8)
+    coarse[50:150, 100:200] = 255
+    called = []
+    out = agent_tools.refine_region(Image.new("RGB", (300, 200)), coarse, lambda c: called.append(1), cell=1.0)
+    assert out is coarse and not called
