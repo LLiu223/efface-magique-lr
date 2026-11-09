@@ -27,6 +27,7 @@ if _PROJECT_ROOT not in sys.path:
 from companion.layers import ModificationLayer
 from companion.model_engine import EngineMode
 from companion.app import MainWindow
+from companion.ui import TOKENS
 
 try:
     import simple_lama_inpainting  # noqa: F401
@@ -256,19 +257,19 @@ def test_layer_toggle_box_visibility_and_styling(qtbot, sample_test_image):
     card = window.layer_card_widgets[0]
     assert hasattr(card, "btn_toggle")
     assert card.btn_toggle.text() == "✓"
-    assert "0078d4" in card.btn_toggle.styleSheet() or "0f3d63" in card.btn_toggle.styleSheet()
+    assert TOKENS["accent"] in card.btn_toggle.styleSheet()
 
     # Toggle Layer 1 off
     card.btn_toggle.click()
     assert window.modification_layers[0].visible is False
     assert card.btn_toggle.text() == ""
-    assert "555555" in card.btn_toggle.styleSheet()
+    assert TOKENS["border_strong"] in card.btn_toggle.styleSheet()
 
     # Toggle Layer 1 back on
     card.btn_toggle.click()
     assert window.modification_layers[0].visible is True
     assert card.btn_toggle.text() == "✓"
-    assert "0078d4" in card.btn_toggle.styleSheet()
+    assert TOKENS["accent"] in card.btn_toggle.styleSheet()
 
 
 @_requires_lama

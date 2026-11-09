@@ -15,6 +15,7 @@ from PyQt6.QtCore import Qt
 
 from companion.model_engine import EngineMode
 from companion.config import CONFIG
+from companion.ui import TOKENS
 
 
 @dataclass
@@ -99,7 +100,7 @@ def create_layer_thumbnail(
 
     # Draw a rounded border on a fixed-size canvas
     final_pixmap = QPixmap(tw, th)
-    final_pixmap.fill(QColor(24, 24, 24))
+    final_pixmap.fill(QColor(TOKENS["control"]))
     painter = QPainter(final_pixmap)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
@@ -109,7 +110,7 @@ def create_layer_thumbnail(
     painter.drawPixmap(ox, oy, pix)
 
     # Subtle outline border
-    painter.setPen(QPen(QColor(60, 60, 60), 1))
+    painter.setPen(QPen(QColor(TOKENS["border"]), 1))
     painter.setBrush(Qt.GlobalColor.transparent)
     painter.drawRect(0, 0, tw - 1, th - 1)
     painter.end()

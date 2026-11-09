@@ -14,7 +14,7 @@ if _PROJECT_ROOT not in sys.path:
 import companion.app as app  # noqa: E402
 from companion.agent import llm  # noqa: E402
 from companion.agent.harness import AgentResult  # noqa: E402
-from companion.ui import DARK_STYLE, TOKENS  # noqa: E402
+from companion.ui import APP_STYLE, TOKENS  # noqa: E402
 
 
 def _luminance(hex_colour):
@@ -28,14 +28,18 @@ def contrast(fg, bg):
     return (hi + 0.05) / (lo + 0.05)
 
 
-# Every text/background pair the stylesheets use (disabled text is exempt from WCAG)
+# Every text/background pair the stylesheets, Help HTML, layer panel and canvas badges use
+# (disabled text is exempt from WCAG)
 TEXT_PAIRS = [
     ("text", "bg"), ("text", "surface"), ("text", "control"), ("text", "control_hover"),
-    ("text", "control_checked"), ("text", "field"),
-    ("text_muted", "surface"), ("text_muted", "control"), ("text_muted", "field"), ("text_muted", "status"),
-    ("on_accent", "accent"), ("on_accent", "accent_hover"), ("on_accent", "accent_pressed"),
-    ("success", "surface"), ("success", "control"), ("success", "control_hover"), ("success", "status"),
-    ("warning", "status"), ("warning", "surface"),
+    ("text", "control_checked"), ("text", "field"), ("text", "status"), ("text", "accent_tint"),
+    ("text_muted", "bg"), ("text_muted", "surface"), ("text_muted", "control"), ("text_muted", "control_hover"),
+    ("text_muted", "field"), ("text_muted", "status"),
+    ("on_accent", "accent"), ("on_accent", "accent_hover"), ("on_accent", "accent_pressed"), ("on_accent", "danger"),
+    ("accent", "bg"), ("accent", "surface"), ("accent", "accent_tint"),
+    ("success", "bg"), ("success", "surface"), ("success", "control"), ("success", "control_hover"),
+    ("success", "status"),
+    ("warning", "bg"), ("warning", "status"), ("warning", "surface"), ("warning", "control"),
 ]
 
 
@@ -45,21 +49,54 @@ def test_text_tokens_meet_wcag_aa(fg, bg):
 
 
 def test_focus_ring_is_visible_against_the_chrome():
-    for bg in ("surface", "control", "field"):
+    for bg in ("bg", "surface", "control", "field"):
         assert contrast("focus", bg) >= 3.0  # non-text UI component contrast
 
 
 def test_chrome_greys_are_neutral_and_stylesheet_is_built_from_tokens():
-    coloured = {"accent", "accent_hover", "accent_pressed", "accent_disabled", "focus", "success",
-                "success_border", "warning"}
+    coloured = {"accent", "accent_hover", "accent_pressed", "accent_disabled", "accent_tint", "focus", "success",
+                "success_border", "warning", "danger"}
     for name, value in TOKENS.items():
         if value.startswith("#") and name not in coloured:
             assert value[1:3] == value[3:5] == value[5:7], (name, value)
-    assert "$" not in DARK_STYLE
+    assert "$" not in APP_STYLE
     for state in ("hover", "pressed", "disabled", "focus"):
         for widget in ("QPushButton", "QComboBox", "QLineEdit"):
-            assert f"{widget}:{state}" in DARK_STYLE or f", {widget}:{state}" in DARK_STYLE, (widget, state)
-        assert f"QCheckBox::indicator:{state}" in DARK_STYLE, state
+            assert f"{widget}:{state}" in APP_STYLE or f", {widget}:{state}" in APP_STYLE, (widget, state)
+        assert f"QCheckBox::indicator:{state}" in APP_STYLE, state
+    for rule in ("QScrollBar:vertical", "QScrollBar:horizontal", "QScrollBar::handle:vertical",
+                 "QScrollBar::handle:horizontal", "QScrollBar::handle:vertical:hover", "QMessageBox"):
+        assert rule in APP_STYLE, rule
+
+
+def test_theme_is_light():
+    for name in ("bg", "surface", "field", "status"):
+        assert _luminance(TOKENS[name]) > 0.8, name
+    assert _luminance(TOKENS["text"]) < 0.05
+    assert TOKENS["canvas"] == "#d4d4d4"  # grey, not white: a high-key photo's edge stays visible
+
+
+def test_canvas_surround_uses_the_canvas_token(qtbot):
+    from companion.canvas import ImageCanvas
+    c = ImageCanvas()
+    qtbot.addWidget(c)
+    assert c.backgroundBrush().color().name() == TOKENS["canvas"]
+
+
+def test_brush_ring_has_a_dark_outline_under_it(qtbot):
+    from PIL import Image
+    from PyQt6.QtCore import QPointF
+    from companion.canvas import ImageCanvas
+    c = ImageCanvas()
+    qtbot.addWidget(c)
+    c.load_image(Image.new("RGB", (400, 300), (250, 250, 250)))
+    for eraser in (True, False):
+        c.set_eraser_mode(eraser)
+        c._update_brush_ring(QPointF(200, 150))
+        outline = c._brush_ring_outline
+        assert outline.parentItem() is c._brush_ring_item and outline.isVisible()
+        assert outline.rect() == c._brush_ring_item.rect()
+        assert outline.pen().color().lightness() < 30 and outline.pen().widthF() > c._brush_ring_item.pen().widthF()
 
 
 def _show(qtbot, size):
@@ -190,3 +227,22 @@ def test_ollama_model_list_ignores_proxy_and_redirects(monkeypatch):
     assert urllib.request.build_opener().handlers[0].proxies  # control: the default opener would use the proxy
     redirect = next(h for h in opener.handlers if isinstance(h, urllib.request.HTTPRedirectHandler))
     assert redirect.redirect_request(None, None, 302, "Found", {}, "http://evil.example/") is None
+
+
+def test_no_unfilled_token_left_in_any_rendered_style(qtbot):
+    """A leftover $ (e.g. $$token in an f-string fed to qss()) is an invalid rule Qt silently drops."""
+    from PyQt6.QtWidgets import QWidget
+    from companion.ui import _HELP_PAGE_STYLE, HelpGuideDialog
+    styles = {"APP_STYLE": APP_STYLE, "_HELP_PAGE_STYLE": _HELP_PAGE_STYLE}
+    styles.update({f"_LAYER_CARD_STYLE[{k}]": v for k, v in app._LAYER_CARD_STYLE.items()})
+    styles.update({f"_LAYER_TOGGLE_STYLE[{k}]": v for k, v in app._LAYER_TOGGLE_STYLE.items()})
+    assert len(styles) == 6
+    for name, sheet in styles.items():
+        assert "$" not in sheet, name
+    w = app.MainWindow()
+    qtbot.addWidget(w)
+    h = HelpGuideDialog(w)
+    qtbot.addWidget(h)
+    for root in (w, h):  # every inline style the windows set at runtime
+        for widget in [root, *root.findChildren(QWidget)]:
+            assert "$" not in widget.styleSheet(), (type(widget).__name__, widget.objectName())

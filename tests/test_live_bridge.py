@@ -38,7 +38,7 @@ if _PROJECT_ROOT not in sys.path:
 
 import companion
 from companion.live_bridge import LiveBridgeServer, BRIDGE_INFO_FILENAME
-from companion.app import MainWindow, HelpGuideDialog, _LOGO_PATH, _LOGO_ICO_PATH, _CHECKMARK_PATH, DARK_STYLE
+from companion.app import MainWindow, HelpGuideDialog, _LOGO_PATH, _LOGO_ICO_PATH, _CHECKMARK_PATH, APP_STYLE
 from package_release import create_release_zip
 from tests.test_plugin import lua_parse_pending_imports, lua_import_guard_validate
 
@@ -468,12 +468,12 @@ class TestMainWindowLiveIntegration:
                     pass
 
     def test_branding_checkbox_and_window_icon(self, qtbot, temp_image):
-        """Logo asset files exist, checkmark is wired in DARK_STYLE, and window has brand icon."""
+        """Logo asset files exist, checkmark is wired in APP_STYLE, and window has brand icon."""
         assert os.path.isfile(_LOGO_PATH), f"Missing logo: {_LOGO_PATH}"
         assert os.path.isfile(_LOGO_ICO_PATH), f"Missing logo ico: {_LOGO_ICO_PATH}"
         assert os.path.isfile(_CHECKMARK_PATH), f"Missing checkmark: {_CHECKMARK_PATH}"
-        assert "checkmark.png" in DARK_STYLE, "DARK_STYLE must include checkmark.png"
-        assert "QCheckBox::indicator:checked" in DARK_STYLE
+        assert "checkmark.png" in APP_STYLE, "APP_STYLE must include checkmark.png"
+        assert "QCheckBox::indicator:checked" in APP_STYLE
 
         window = MainWindow(input_path=temp_image, live_mode=False)
         qtbot.addWidget(window)
