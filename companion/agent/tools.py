@@ -41,6 +41,16 @@ MATTE_WORDS = frozenset(
     "person persons people man men woman women child children kid kids boy boys girl girls baby babies human humans "
     "face faces head heads hair fur beard animal animals pet pets bird birds cat cats cow cows dog dogs horse horses "
     "sheep puppy puppies kitten kittens".split())
+# people/animals that can hold, wear or carry things: MATTE_WORDS without the body parts
+HOLDER_WORDS = MATTE_WORDS - frozenset("face faces head heads hair fur beard".split())
+# a fixed list, never user text: Grounding DINO finds only what is named, so no ground or sky through gaps
+HELD_QUERY = "bag. backpack. handbag. drink. cup. bottle. carton. phone. umbrella. camera. hat. glasses. leash."
+MAX_HELD = 5               # SAM calls per person
+HELD_TOUCH = 0.02          # contact: the person mask dilated by 2 % of its long side (min 3 px)
+HELD_BOX_PAD = 0.1         # a held object lies >= 70 % inside the person's box grown by 10 % of its long side
+HELD_INSIDE = 0.7
+HELD_MAX_AREA = 0.5        # never more than half the person's area (ground, sky, a wall)
+HELD_MAX_OTHER = 0.5       # an object half covered by another person region is that person's
 _CTRL = re.compile(r"[\x00-\x1f\x7f-\x9f\u200b-\u200f\u202a-\u202e\u2066-\u2069]")
 
 
@@ -98,6 +108,11 @@ def interior_points(mask: np.ndarray, n: int = SAM_MAX_POINTS) -> list:
 def wants_matte(label: str) -> bool:
     """Soft hair/fur edges are worth ViTMatte only for people and animals."""
     return any(word in MATTE_WORDS for word in re.findall(r"[a-z]+", label.lower()))
+
+
+def is_holder(label: str) -> bool:
+    """People and animals get what they hold, wear or carry merged into their region."""
+    return any(word in HOLDER_WORDS for word in re.findall(r"[a-z]+", label.lower()))
 
 
 def voc_categories() -> List[str]:
@@ -252,8 +267,20 @@ class AgentSession:
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
         self.regions, self.region_masks = {}, {}
         self.detector, self.query = detector, query
+        holders = [f[2] for f in outlined if is_holder(f[1])]
         for idx, (share, label, full, position) in enumerate(outlined, start=1):
             rid = f"r{idx}"
+            held = []
+            if is_holder(label):
+                try:
+                    union, held = self._add_held(img, full, [m for m in holders if m is not full])
+                except Exception as e:
+                    stage_failed("Held objects", e)  # keep the plain person mask
+                if held:
+                    full = union
+                    share = np.count_nonzero(full) / full.size
+                    ys, xs = np.nonzero(full)
+                    position = _position(xs.mean(), ys.mean(), w, h)
             if wants_matte(label) and precise.VITMATTE.get() is not None:
                 self.progress("Refining hair and fur edges...")
                 try:
@@ -262,6 +289,8 @@ class AgentSession:
                     stage_failed("ViTMatte", e)  # keep the outline without soft edges
             self.region_masks[rid] = cv2.dilate(full, kernel)
             self.regions[rid] = {"id": rid, "label": label, "area_share": round(float(share), 4), "position": position}
+            if held:
+                self.regions[rid]["with"] = held
         out = {"regions": list(self.regions.values())}
         if not self.regions:
             notes.append(f"Tell the user nothing matching '{query}' found; do not guess a region." if detector != "voc" else
@@ -269,6 +298,55 @@ class AgentSession:
         if notes:
             out["note"] = " ".join(notes)
         return self._out(out)
+
+    def _add_held(self, img: Image.Image, mask: np.ndarray, others: List[np.ndarray]):
+        """(mask | held objects, [their labels]). One Grounding DINO call with HELD_QUERY on the person's crop,
+        one SAM call per candidate (MAX_HELD); kept only when touching the person, inside its box, small, and
+        not another person's. ([] when Grounding DINO or SAM is missing, or nothing was added.)"""
+        import cv2
+        gdino = precise.GROUNDING_DINO.get()
+        if gdino is None or precise.SAM2.get() is None or not mask.any():
+            return mask, []
+        h, w = mask.shape
+        x, y, bw, bh = cv2.boundingRect(mask)
+        long_side = max(bw, bh)
+        pad = SAM_PAD * long_side
+        x0, y0 = max(0, int(x - pad)), max(0, int(y - pad))
+        x1, y1 = min(w, int(x + bw + pad) + 1), min(h, int(y + bh + pad) + 1)
+        scale = min(1.0, CONFIG.NEURAL_CROP_MAX_DIM / max(x1 - x0, y1 - y0))
+        crop = img.crop((x0, y0, x1, y1))
+        crop = crop.resize((max(32, int(crop.width * scale)), max(32, int(crop.height * scale))),
+                           Image.Resampling.BILINEAR)
+        self.progress("Finding what they hold...")
+        found = [(lab, box) for lab, box in self._gdino_boxes(gdino, crop, HELD_QUERY) if not is_holder(lab)]
+        if not found:
+            return mask, []
+        person = mask > 0
+        r = max(3, int(HELD_TOUCH * long_side))
+        near = cv2.dilate(mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1, 2 * r + 1))) > 0
+        e = int(HELD_BOX_PAD * long_side)
+        bx0, by0, bx1, by1 = max(0, x - e), max(0, y - e), min(w, x + bw + e), min(h, y + bh + e)
+        other = np.zeros_like(person)
+        for o in others:
+            other |= o > 0
+        n_person = np.count_nonzero(person)
+        union, labels = person.copy(), []
+        fx, fy = (x1 - x0) / crop.width, (y1 - y0) / crop.height
+        for lab, box in found[:MAX_HELD]:
+            box = np.array([box[0] * fx + x0, box[1] * fy + y0, box[2] * fx + x0, box[3] * fy + y0])
+            m = self._sam_outline(img, box) > 0
+            n = np.count_nonzero(m)
+            if (n == 0 or not (m & near).any()                                    # (a) touches the person
+                    or np.count_nonzero(m[by0:by1, bx0:bx1]) < HELD_INSIDE * n    # (b) inside the box
+                    or n > HELD_MAX_AREA * n_person                               # (c) not ground or sky
+                    or np.count_nonzero(m & other) >= HELD_MAX_OTHER * n):        # (e) not someone else's
+                continue
+            if (m & ~union).any():
+                union |= m
+                labels.append("object" if lab == HELD_QUERY else lab)  # an empty span falls back to the query
+        if not labels:
+            return mask, []
+        return union.astype(np.uint8) * 255, list(dict.fromkeys(labels))
 
     @staticmethod
     def _gdino_boxes(gdino, small: Image.Image, query: str) -> list:
@@ -431,7 +509,7 @@ def make_tools(session: AgentSession) -> list:
         (select_model, "Make the inpainting model with this exact registry name active. Use a name from list_models."),
         (set_prompt, "Set the text prompt Erase will use (max 200 chars). Only models with uses_prompt=true use it."),
         (detect_regions, "Find objects in the photo. query = the user's object words, e.g. \"power lines\". "
-                         "Returns [{id, label, area_share, position}], position is left/centre/right x top/middle/bottom. "
+                         "Returns [{id, label, area_share, position}], position is left/centre/right x top/middle/bottom; a person region may list held items in \"with\". "
                          "Without a query only VOC classes (person, car, dog, ...) are found."),
         (select_regions, "Select the given region ids (from detect_regions) on the canvas. Nothing is "
                          "erased: the user adjusts the selection and clicks Erase."),

@@ -92,19 +92,23 @@ class _Param(torch.nn.Module):
 
 
 class FakeGdinoProcessor:
-    """`boxes` = [(label, x0, y0, x1, y1, score)] as fractions of the image; records texts and thresholds."""
+    """`boxes` = [(label, x0, y0, x1, y1, score)] as fractions of the image, for every text, or a dict
+    {text: boxes or callable(image) -> boxes} (a text not in it finds nothing); records texts and thresholds."""
 
     def __init__(self, boxes=()):
-        self.boxes, self.texts, self.thresholds = list(boxes), [], []
+        self.boxes, self.texts, self.thresholds = boxes if isinstance(boxes, dict) else list(boxes), [], []
 
     def __call__(self, images, text, return_tensors=None):
         self.texts.append(text)
+        self.image = images
         return {"input_ids": torch.zeros(1, 4, dtype=torch.long), "pixel_values": torch.zeros(1, 3, 8, 8)}
 
     def post_process_grounded_object_detection(self, outputs, input_ids, threshold, text_threshold, target_sizes):
         self.thresholds.append((threshold, text_threshold))
         h, w = target_sizes[0]
-        keep = [b for b in self.boxes if b[5] >= threshold]
+        boxes = self.boxes.get(self.texts[-1], []) if isinstance(self.boxes, dict) else self.boxes
+        boxes = boxes(self.image) if callable(boxes) else boxes
+        keep = [b for b in boxes if b[5] >= threshold]
         return [{"boxes": torch.tensor([[b[1] * w, b[2] * h, b[3] * w, b[4] * h] for b in keep]).reshape(-1, 4),
                  "scores": torch.tensor([b[5] for b in keep]), "text_labels": [b[0] for b in keep]}]
 
