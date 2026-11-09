@@ -38,6 +38,7 @@ from PyQt6.QtWidgets import (
 from PIL import Image
 
 from companion.config import CONFIG
+from companion.ui import TOKENS
 
 try:
     from PyQt6.QtOpenGLWidgets import QOpenGLWidget
@@ -167,8 +168,8 @@ class ImageCanvas(QGraphicsView):
         self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self.setMouseTracking(True)
 
-        # Background color (Lightroom dark grey #181818)
-        self.setBackgroundBrush(QBrush(QColor("#181818")))
+        # Photo surround: a light neutral grey, so the edge of a white photo stays visible
+        self.setBackgroundBrush(QBrush(QColor(TOKENS["canvas"])))
 
         # Image state
         self._orig_pil: Optional[Image.Image] = None
@@ -270,6 +271,13 @@ class ImageCanvas(QGraphicsView):
         self._brush_ring_item.setZValue(9999)
         self.scene.addItem(self._brush_ring_item)
         self._brush_ring_item.setVisible(False)
+        # Dark outline under the ring (child: follows its visibility) so it reads on light and dark photos
+        self._brush_ring_outline = QGraphicsEllipseItem(self._brush_ring_item)
+        outline_pen = QPen(QColor(0, 0, 0, 200), 3.5)
+        outline_pen.setCosmetic(True)
+        self._brush_ring_outline.setPen(outline_pen)
+        self._brush_ring_outline.setBrush(QBrush(Qt.GlobalColor.transparent))
+        self._brush_ring_outline.setFlag(QGraphicsItem.GraphicsItemFlag.ItemStacksBehindParent)
 
         # Inner core ring (shows solid core boundary when feathering is active)
         self._brush_inner_ring_item = QGraphicsEllipseItem()
@@ -723,6 +731,7 @@ class ImageCanvas(QGraphicsView):
 
         r = float(self.brush_radius)
         self._brush_ring_item.setRect(QRectF(scene_pos.x() - r, scene_pos.y() - r, r * 2.0, r * 2.0))
+        self._brush_ring_outline.setRect(self._brush_ring_item.rect())
 
         if self.is_eraser:
             pen = QPen(QColor(255, 255, 255, 240), 1.5)
@@ -823,7 +832,7 @@ class ImageCanvas(QGraphicsView):
             painter.save()
             painter.resetTransform()
             vp = self.viewport().rect()
-            painter.fillRect(vp, QColor("#181818"))
+            painter.fillRect(vp, QColor(TOKENS["canvas"]))
             pix = self._placeholder.scaled(vp.size(), Qt.AspectRatioMode.KeepAspectRatio,
                                            Qt.TransformationMode.SmoothTransformation)
             painter.drawPixmap((vp.width() - pix.width()) // 2, (vp.height() - pix.height()) // 2, pix)
@@ -840,7 +849,9 @@ class ImageCanvas(QGraphicsView):
             vx = int(pt_top.x())
             vh = self.viewport().height()
 
-            # Vertical divider line
+            # Vertical divider line, on a light outline so it shows on dark photos too
+            painter.setPen(QPen(QColor(255, 255, 255, 200), 4.0))
+            painter.drawLine(vx, 0, vx, vh)
             pen = QPen(QColor(0, 120, 212, 230), 2.0)
             painter.setPen(pen)
             painter.drawLine(vx, 0, vx, vh)
@@ -860,10 +871,10 @@ class ImageCanvas(QGraphicsView):
             painter.drawLine(vx + 5, cy, vx + 2, cy + 3)
 
             # "BEFORE" badge (Left)
-            painter.setBrush(QBrush(QColor(28, 28, 28, 220)))
-            painter.setPen(QPen(QColor(255, 255, 255, 60), 1))
+            painter.setBrush(QBrush(QColor(TOKENS["surface"])))
+            painter.setPen(QPen(QColor(TOKENS["border_strong"]), 1))
             painter.drawRoundedRect(vx - 90, 24, 76, 26, 6, 6)
-            painter.setPen(QColor(230, 230, 230))
+            painter.setPen(QColor(TOKENS["text"]))
             f = painter.font()
             f.setPointSize(9)
             f.setBold(True)
@@ -871,10 +882,10 @@ class ImageCanvas(QGraphicsView):
             painter.drawText(QRect(vx - 90, 24, 76, 26), Qt.AlignmentFlag.AlignCenter, "BEFORE")
 
             # "AFTER" badge (Right)
-            painter.setBrush(QBrush(QColor(0, 120, 212, 230)))
-            painter.setPen(QPen(QColor(255, 255, 255, 90), 1))
+            painter.setBrush(QBrush(QColor(TOKENS["accent"])))
+            painter.setPen(QPen(QColor(TOKENS["accent_pressed"]), 1))
             painter.drawRoundedRect(vx + 14, 24, 76, 26, 6, 6)
-            painter.setPen(QColor(255, 255, 255))
+            painter.setPen(QColor(TOKENS["on_accent"]))
             painter.drawText(QRect(vx + 14, 24, 76, 26), Qt.AlignmentFlag.AlignCenter, "AFTER")
 
             painter.restore()
@@ -892,9 +903,10 @@ class ImageCanvas(QGraphicsView):
             badge_x = (vw - badge_w) // 2
             badge_y = vh - 60
 
-            bg_col = QColor(24, 24, 24, int(225 * self._hud_opacity))
-            border_col = QColor(0, 120, 212, int(230 * self._hud_opacity))
-            text_col = QColor(255, 255, 255, int(255 * self._hud_opacity))
+            bg_col, border_col, text_col = (QColor(TOKENS[k]) for k in ("surface", "accent", "text"))
+            bg_col.setAlpha(int(240 * self._hud_opacity))
+            border_col.setAlpha(int(230 * self._hud_opacity))
+            text_col.setAlpha(int(255 * self._hud_opacity))
 
             painter.setBrush(QBrush(bg_col))
             painter.setPen(QPen(border_col, 1.5))

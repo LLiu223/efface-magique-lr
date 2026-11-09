@@ -3,7 +3,7 @@ ui.py
 Efface Magique LR - User Interface Components, Styling, and Overlays
 
 Provides:
-- Dark theme stylesheet (DARK_STYLE) and application brand assets
+- Light theme stylesheet (APP_STYLE) and application brand assets
 - LoadingSpinnerOverlay: Smooth hardware-rendered loading spinner overlay for async tasks
 - HelpGuideDialog: Rich interactive User Guide, Installation, Shortcuts, and Packaging dialog
 - FlowLayout: left-to-right layout that wraps whole items onto new rows (responsive top bar)
@@ -51,36 +51,39 @@ _LOGO_ICO_PATH = os.path.join(_ASSETS_DIR, "logo.ico").replace("\\", "/")
 
 
 # -----------------------------------------------------------------------------
-# Dark Theme Stylesheet
+# Light Theme Stylesheet
 # -----------------------------------------------------------------------------
 
 # Design tokens: the one place for chrome colours, spacing, radii and type sizes.
 # Greys are neutral (R=G=B) so the chrome never tints how the photo's colours are judged;
 # the accent is kept for the primary action, checked toggles, focus and selection.
 TOKENS = {
-    # Colours
-    "bg": "#1e1e1e",              # window ground
-    "surface": "#262626",         # top bar, assistant bar
-    "control": "#333333",         # secondary button / combo face
-    "control_hover": "#3d3d3d",
-    "control_pressed": "#1f1f1f",
-    "control_checked": "#474747",  # checked toggle: a lighter grey plus an accent edge
-    "field": "#1f1f1f",           # text fields sit one step below the bar
-    "border": "#424242",
-    "border_strong": "#5a5a5a",
-    "status": "#181818",          # status bar
-    "text": "#e8e8e8",
-    "text_muted": "#a8a8a8",
-    "text_disabled": "#666666",   # exempt from WCAG contrast
+    # Colours (light theme)
+    "bg": "#ffffff",              # window ground, dialogs, layer panel
+    "surface": "#f7f7f7",         # top bar, assistant bar, popups, tooltips
+    "control": "#ececec",         # secondary button / combo face
+    "control_hover": "#e0e0e0",
+    "control_pressed": "#d4d4d4",
+    "control_checked": "#dadada",  # checked toggle: a darker grey plus an accent edge
+    "field": "#ffffff",           # text fields
+    "border": "#c8c8c8",
+    "border_strong": "#a0a0a0",
+    "status": "#f0f0f0",          # status bar
+    "canvas": "#d4d4d4",          # photo surround: grey, not white, so a high-key photo's edge stays visible
+    "text": "#1f1f1f",
+    "text_muted": "#595959",
+    "text_disabled": "#a0a0a0",   # exempt from WCAG contrast
     "on_accent": "#ffffff",
     "accent": "#0a64c0",
     "accent_hover": "#1570cc",
     "accent_pressed": "#0b5aa8",
-    "accent_disabled": "#2a3440",
-    "focus": "#5ab0ff",
-    "success": "#6fcf97",         # Save to Lightroom label / Live badge text
-    "success_border": "#2f8f5b",
-    "warning": "#f0a030",
+    "accent_disabled": "#c5d8ee",
+    "accent_tint": "#e6f0fa",     # active layer card / editing banner / checked variation
+    "focus": "#1a73e8",
+    "success": "#17693a",         # Save to Lightroom label / Live badge text
+    "success_border": "#3a9a62",
+    "warning": "#8f4f00",
+    "danger": "#c62828",          # delete-layer hover fill
     # Spacing scale (px, 4-pt steps)
     "sp1": "4px", "sp2": "8px", "sp3": "12px", "sp4": "16px",
     # Radii
@@ -94,7 +97,7 @@ def qss(text: str) -> str:
     return Template(text).substitute(TOKENS)
 
 
-DARK_STYLE = qss("""
+APP_STYLE = qss("""
 QMainWindow, QDialog {
     background-color: $bg;
     color: $text;
@@ -247,7 +250,7 @@ QSlider::sub-page:horizontal {
     border-radius: 2px;
 }
 QSlider::handle:horizontal {
-    background: $text;
+    background: $bg;
     border: 1px solid $border_strong;
     width: 14px;
     margin-top: -5px;
@@ -255,7 +258,7 @@ QSlider::handle:horizontal {
     border-radius: 7px;
 }
 QSlider::handle:horizontal:hover {
-    background: $on_accent;
+    background: $control_hover;
 }
 QSlider::handle:horizontal:focus {
     border-color: $focus;
@@ -324,7 +327,62 @@ QToolTip {
     color: $text;
     border: 1px solid $border_strong;
 }
+QMessageBox {
+    background-color: $bg;
+}
+QMessageBox QLabel {
+    color: $text;
+}
+QSpinBox, QTableView {
+    background-color: $field;
+    color: $text;
+    border: 1px solid $border;
+    selection-background-color: $accent;
+    selection-color: $on_accent;
+}
+QHeaderView::section {
+    background-color: $surface;
+    color: $text;
+    border: none;
+    border-right: 1px solid $border;
+    border-bottom: 1px solid $border;
+    padding: 2px $sp1;
+}
+QScrollBar:vertical {
+    background: $surface;
+    width: 12px;
+    margin: 0;
+}
+QScrollBar:horizontal {
+    background: $surface;
+    height: 12px;
+    margin: 0;
+}
+QScrollBar::handle:vertical {
+    background: $border;
+    min-height: 24px;
+    border-radius: $r_md;
+    margin: 2px;
+}
+QScrollBar::handle:horizontal {
+    background: $border;
+    min-width: 24px;
+    border-radius: $r_md;
+    margin: 2px;
+}
+QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover {
+    background: $border_strong;
+}
+QScrollBar::add-line, QScrollBar::sub-line {
+    width: 0;
+    height: 0;
+}
+QScrollBar::add-page, QScrollBar::sub-page {
+    background: none;
+}
 """).replace("__CHECKMARK_URL__", _CHECKMARK_PATH)
+
+_HELP_PAGE_STYLE = qss("background-color: $bg; color: $text; border: none; padding: 12px; font-size: 12px;")
 
 
 # -----------------------------------------------------------------------------
@@ -475,8 +533,10 @@ class LoadingSpinnerOverlay(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        # Semi-transparent dark scrim background
-        painter.fillRect(self.rect(), QColor(18, 18, 18, 175))
+        # Semi-transparent light scrim background
+        scrim = QColor(TOKENS["bg"])
+        scrim.setAlpha(175)
+        painter.fillRect(self.rect(), scrim)
 
         cx = self.width() / 2.0
         cy = self.height() / 2.0 - 15.0
@@ -485,8 +545,8 @@ class LoadingSpinnerOverlay(QWidget):
         card_w = 320.0
         card_h = 130.0
         card_rect = QRect(int(cx - card_w / 2.0), int(cy - 40.0), int(card_w), int(card_h))
-        painter.setBrush(QBrush(QColor(28, 28, 30, 235)))
-        painter.setPen(QPen(QColor(0, 120, 212, 180), 1.5))
+        painter.setBrush(QBrush(QColor(TOKENS["surface"])))
+        painter.setPen(QPen(QColor(TOKENS["accent"]), 1.5))
         painter.drawRoundedRect(card_rect, 10, 10)
 
         # Draw rotating spinner arc
@@ -499,20 +559,20 @@ class LoadingSpinnerOverlay(QWidget):
         )
 
         # Background track
-        painter.setPen(QPen(QColor(50, 50, 55, 200), 3.5))
+        painter.setPen(QPen(QColor(TOKENS["border"]), 3.5))
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawEllipse(spinner_rect)
 
         # Rotating active arc
         painter.save()
-        painter.setPen(QPen(QColor(0, 150, 255), 3.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        painter.setPen(QPen(QColor(TOKENS["accent"]), 3.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
         start_angle = int(self._angle * 16)
         span_angle = int(90 * 16)
         painter.drawArc(spinner_rect, start_angle, span_angle)
         painter.restore()
 
         # Draw progress text
-        painter.setPen(QColor(240, 240, 240))
+        painter.setPen(QColor(TOKENS["text"]))
         font = painter.font()
         font.setPointSize(11)
         font.setBold(True)
@@ -521,7 +581,7 @@ class LoadingSpinnerOverlay(QWidget):
         painter.drawText(text_rect, Qt.AlignmentFlag.AlignCenter, self._message)
 
         if self._subtext:
-            painter.setPen(QColor(160, 160, 160))
+            painter.setPen(QColor(TOKENS["text_muted"]))
             font.setPointSize(9)
             font.setBold(False)
             painter.setFont(font)
@@ -560,13 +620,13 @@ class HelpGuideDialog(QDialog):
 
         header_text = QVBoxLayout()
         title = QLabel("Efface Magique LR (LaMa Variations Eraser)")
-        title.setStyleSheet("font-size: 18px; font-weight: bold; color: #ffffff;")
+        title.setStyleSheet(qss("font-size: 18px; font-weight: bold; color: $text;"))
         subtitle = QLabel("Local, private AI inpainting companion for Adobe Lightroom Classic")
-        subtitle.setStyleSheet("font-size: 12px; color: #0078d4; font-weight: 500;")
+        subtitle.setStyleSheet(qss("font-size: 12px; color: $accent; font-weight: 500;"))
         header_text.addWidget(title)
         header_text.addWidget(subtitle)
         self.version_label = QLabel(f"Version {__version__}")
-        self.version_label.setStyleSheet("font-size: 11px; color: #888888;")
+        self.version_label.setStyleSheet(qss("font-size: 11px; color: $text_muted;"))
         header_text.addWidget(self.version_label)
         header.addLayout(header_text)
         header.addStretch(1)
@@ -574,15 +634,15 @@ class HelpGuideDialog(QDialog):
 
         # Tabs
         self.tabs = QTabWidget(self)
-        self.tabs.setStyleSheet("""
+        self.tabs.setStyleSheet(qss("""
             QTabWidget::pane {
-                border: 1px solid #3c3c3c;
-                background-color: #242424;
+                border: 1px solid $border;
+                background-color: $bg;
                 border-radius: 4px;
             }
             QTabBar::tab {
-                background-color: #1e1e1e;
-                color: #aaaaaa;
+                background-color: $control;
+                color: $text_muted;
                 padding: 8px 18px;
                 border-top-left-radius: 4px;
                 border-top-right-radius: 4px;
@@ -590,50 +650,50 @@ class HelpGuideDialog(QDialog):
                 font-size: 12px;
             }
             QTabBar::tab:selected {
-                background-color: #2d2d2d;
-                color: #ffffff;
-                border-bottom: 2px solid #0078d4;
+                background-color: $bg;
+                color: $text;
+                border-bottom: 2px solid $accent;
             }
             QTabBar::tab:hover {
-                color: #ffffff;
+                color: $text;
             }
-        """)
+        """))
 
         # Tab 1: Installation
         tab_install = QTextBrowser()
         tab_install.setOpenExternalLinks(True)
-        tab_install.setStyleSheet("background-color: #242424; color: #dddddd; border: none; padding: 12px; font-size: 12px;")
-        tab_install.setHtml("""
-            <h2 style="color: #4ade80; margin-top: 0;">🚀 Installation &amp; Setup Guide</h2>
+        tab_install.setStyleSheet(_HELP_PAGE_STYLE)
+        tab_install.setHtml(qss("""
+            <h2 style="color: $success; margin-top: 0;">🚀 Installation &amp; Setup Guide</h2>
             <p>Efface Magique LR runs 100% locally and privately on your machine, integrating natively with Adobe Lightroom Classic.</p>
             
-            <h3 style="color: #60a5fa;">Step 1: Install Dependencies (1-Click)</h3>
+            <h3 style="color: $accent;">Step 1: Install Dependencies (1-Click)</h3>
             <ul>
                 <li><b>Windows:</b> Double-click <code>install.bat</code> in the app directory, or run it in Command Prompt / PowerShell.</li>
                 <li><b>macOS / Linux:</b> Open Terminal in the app folder and run <code>chmod +x install.sh && ./install.sh</code>.</li>
             </ul>
-            <p style="color: #888888;"><i>The installer automatically configures a local Python virtual environment (<code>.venv</code>) with all AI PyTorch and Simple-LaMa dependencies.</i></p>
+            <p style="color: $text_muted;"><i>The installer automatically configures a local Python virtual environment (<code>.venv</code>) with all AI PyTorch and Simple-LaMa dependencies.</i></p>
 
-            <h3 style="color: #60a5fa;">Step 2: Add the Plugin to Adobe Lightroom Classic</h3>
+            <h3 style="color: $accent;">Step 2: Add the Plugin to Adobe Lightroom Classic</h3>
             <ol>
                 <li>Open <b>Adobe Lightroom Classic</b>.</li>
                 <li>Open the Plug-in Manager by going to: <b>File &gt; Plug-in Manager...</b> (or press <code>Ctrl + Alt + Shift + ,</code> on Windows / <code>Cmd + Opt + Shift + ,</code> on Mac).</li>
                 <li>Click the <b>Add</b> button at the bottom-left corner of the dialog.</li>
-                <li>Select the plugin folder: <br/><code style="background-color: #181818; padding: 2px 6px; color: #f59e0b;">plugin/ai_eraser.lrplugin</code></li>
-                <li>Verify that the status dot is <b style="color: #4ade80;">🟢 Installed and running</b>.</li>
+                <li>Select the plugin folder: <br/><code style="background-color: $surface; padding: 2px 6px; color: $warning;">plugin/ai_eraser.lrplugin</code></li>
+                <li>Verify that the status dot is <b style="color: $success;">🟢 Installed and running</b>.</li>
                 <li>Click <b>Done</b>. The plugin is now active!</li>
             </ol>
-        """)
+        """))
         self.tabs.addTab(tab_install, "🚀 Installation")
 
         # Tab 2: How to Use
         tab_usage = QTextBrowser()
         tab_usage.setOpenExternalLinks(True)
-        tab_usage.setStyleSheet("background-color: #242424; color: #dddddd; border: none; padding: 12px; font-size: 12px;")
-        tab_usage.setHtml("""
-            <h2 style="color: #4ade80; margin-top: 0;">✨ How to Use Efface Magique LR</h2>
+        tab_usage.setStyleSheet(_HELP_PAGE_STYLE)
+        tab_usage.setHtml(qss("""
+            <h2 style="color: $success; margin-top: 0;">✨ How to Use Efface Magique LR</h2>
 
-            <h3 style="color: #60a5fa;">⚡ Quick Start Guide</h3>
+            <h3 style="color: $accent;">⚡ Quick Start Guide</h3>
             <ol>
                 <li>In Lightroom Classic, select: <b>File &gt; Plug-in Extras &gt; ⚡ AI Generative Eraser (Live Window)...</b></li>
                 <li>The companion window appears displaying your active photo.</li>
@@ -646,7 +706,7 @@ class HelpGuideDialog(QDialog):
                 <li>Click <b>📌 Pin</b> (<code>Ctrl + T</code>) to keep the companion floating on top of Lightroom while you work.</li>
             </ol>
 
-            <h3 style="color: #60a5fa;">Assistant (optional)</h3>
+            <h3 style="color: $accent;">Assistant (optional)</h3>
             <p>Install <code>requirements-agent.txt</code>, pick a provider (ollama, anthropic, openai, gemini) and a model
             name, then type a request such as <i>remove the person on the left</i> and press <b>Ask</b>.
             The assistant detects objects, proposes an erase and shows a preview; nothing is added to your layers
@@ -658,69 +718,69 @@ class HelpGuideDialog(QDialog):
             EXIF are never sent. Ollama on localhost stays on this computer; Anthropic, OpenAI and Gemini are cloud
             services. API keys are read only from ANTHROPIC_API_KEY, OPENAI_API_KEY and GOOGLE_API_KEY.
             <b>Usage</b> shows tokens and cost per call.</p>
-        """)
+        """))
         self.tabs.addTab(tab_usage, "✨ How to Use")
 
         # Tab 3: Shortcuts
         tab_shortcuts = QTextBrowser()
-        tab_shortcuts.setStyleSheet("background-color: #242424; color: #dddddd; border: none; padding: 12px; font-size: 12px;")
-        tab_shortcuts.setHtml("""
-            <h2 style="color: #4ade80; margin-top: 0;">⌨ Keyboard Shortcuts Reference</h2>
-            <table width="100%" cellpadding="6" cellspacing="0" style="border-collapse: collapse; border: 1px solid #3c3c3c;">
-                <tr style="background-color: #1a1a1a; color: #ffffff; border-bottom: 2px solid #0078d4;">
+        tab_shortcuts.setStyleSheet(_HELP_PAGE_STYLE)
+        tab_shortcuts.setHtml(qss("""
+            <h2 style="color: $success; margin-top: 0;">⌨ Keyboard Shortcuts Reference</h2>
+            <table width="100%" cellpadding="6" cellspacing="0" style="border-collapse: collapse; border: 1px solid $border;">
+                <tr style="background-color: $surface; color: $text; border-bottom: 2px solid $accent;">
                     <th align="left" style="padding: 6px 10px;">Shortcut</th>
                     <th align="left" style="padding: 6px 10px;">Action</th>
                 </tr>
-                <tr style="border-bottom: 1px solid #333333;">
+                <tr style="border-bottom: 1px solid $border;">
                     <td style="padding: 6px 10px;"><code>Ctrl + S</code> / <code>Ctrl + Shift + S</code></td>
                     <td><b>⚡ Save &amp; Sync to Lightroom</b> (Auto-stacks into catalog &amp; stays open)</td>
                 </tr>
-                <tr style="border-bottom: 1px solid #333333;">
+                <tr style="border-bottom: 1px solid $border;">
                     <td style="padding: 6px 10px;"><code>Enter</code> / <code>Return</code></td>
                     <td><b>✨ Erase Object</b> (Run AI inpainting on marked areas)</td>
                 </tr>
-                <tr style="border-bottom: 1px solid #333333;">
+                <tr style="border-bottom: 1px solid $border;">
                     <td style="padding: 6px 10px;"><code>Right mouse drag</code></td>
                     <td>Remove painted mask (eraser brush while held)</td>
                 </tr>
-                <tr style="border-bottom: 1px solid #333333;">
+                <tr style="border-bottom: 1px solid $border;">
                     <td style="padding: 6px 10px;"><code>Ctrl + T</code></td>
                     <td><b>📌 Toggle Pin (Always on Top)</b> floating above Lightroom</td>
                 </tr>
-                <tr style="border-bottom: 1px solid #333333;">
+                <tr style="border-bottom: 1px solid $border;">
                     <td style="padding: 6px 10px;"><code>[</code> / <code>]</code></td>
                     <td>Decrease / Increase Brush Radius</td>
                 </tr>
-                <tr style="border-bottom: 1px solid #333333;">
+                <tr style="border-bottom: 1px solid $border;">
                     <td style="padding: 6px 10px;"><code>Ctrl + Z</code></td>
                     <td>↶ Undo stroke or inpainting step</td>
                 </tr>
-                <tr style="border-bottom: 1px solid #333333;">
+                <tr style="border-bottom: 1px solid $border;">
                     <td style="padding: 6px 10px;"><code>Ctrl + Y</code> / <code>Ctrl + Shift + Z</code></td>
                     <td>↷ Redo stroke or inpainting step</td>
                 </tr>
-                <tr style="border-bottom: 1px solid #333333;">
+                <tr style="border-bottom: 1px solid $border;">
                     <td style="padding: 6px 10px;"><code>Spacebar</code> (Hold) / <code>\\</code></td>
                     <td>👁 Instant Before / After Comparison</td>
                 </tr>
-                <tr style="border-bottom: 1px solid #333333;">
+                <tr style="border-bottom: 1px solid $border;">
                     <td style="padding: 6px 10px;"><code>Y</code></td>
                     <td>◫ Interactive Split-Screen Comparison Slider</td>
                 </tr>
-                <tr style="border-bottom: 1px solid #333333;">
+                <tr style="border-bottom: 1px solid $border;">
                     <td style="padding: 6px 10px;"><code>Ctrl + 0</code> / <code>F</code></td>
                     <td>🔍 Fit photo to screen view</td>
                 </tr>
-                <tr style="border-bottom: 1px solid #333333;">
+                <tr style="border-bottom: 1px solid $border;">
                     <td style="padding: 6px 10px;"><code>Ctrl + 1</code></td>
                     <td>1:1 View at 100% pixel scale</td>
                 </tr>
-                <tr style="border-bottom: 1px solid #333333;">
+                <tr style="border-bottom: 1px solid $border;">
                     <td style="padding: 6px 10px;"><code>F1</code></td>
                     <td>💡 Open this User Guide &amp; Setup Dialog</td>
                 </tr>
             </table>
-        """)
+        """))
         self.tabs.addTab(tab_shortcuts, "⌨ Shortcuts")
 
         # Tab 4: Download & Share
@@ -731,9 +791,9 @@ class HelpGuideDialog(QDialog):
 
         share_text = QTextBrowser()
         share_text.setOpenExternalLinks(True)
-        share_text.setStyleSheet("background-color: transparent; color: #dddddd; border: none; font-size: 12px;")
-        share_text.setHtml("""
-            <h2 style="color: #4ade80; margin-top: 0;">📥 Easy Download &amp; Share for Other Users</h2>
+        share_text.setStyleSheet(qss("background-color: transparent; color: $text; border: none; font-size: 12px;"))
+        share_text.setHtml(qss("""
+            <h2 style="color: $success; margin-top: 0;">📥 Easy Download &amp; Share for Other Users</h2>
             <p>You can easily distribute Efface Magique LR to other photographers or friends without requiring Git:</p>
             <ol>
                 <li>Click the button below to package a clean, portable <b>Efface-Magique-LR.zip</b> archive.</li>
@@ -741,23 +801,23 @@ class HelpGuideDialog(QDialog):
                 <li>The recipient simply unzips the folder and double-clicks <code>install.bat</code> (Windows) or <code>./install.sh</code> (macOS/Linux).</li>
                 <li>In Lightroom, they add <code>plugin/ai_eraser.lrplugin</code> and they are ready to edit!</li>
             </ol>
-        """)
+        """))
         share_vbox.addWidget(share_text)
 
         btn_package = QPushButton("📦 Package Distribution ZIP for Other Users")
-        btn_package.setStyleSheet("""
+        btn_package.setStyleSheet(qss("""
             QPushButton {
-                background-color: #0078d4;
-                color: #ffffff;
+                background-color: $accent;
+                color: $on_accent;
                 font-weight: bold;
                 padding: 10px 20px;
                 border-radius: 4px;
                 font-size: 13px;
             }
             QPushButton:hover {
-                background-color: #1084d8;
+                background-color: $accent_hover;
             }
-        """)
+        """))
         btn_package.clicked.connect(self._on_package_distribution)
         share_vbox.addWidget(btn_package)
         share_vbox.addStretch(1)

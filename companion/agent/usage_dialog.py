@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (
 from companion.agent import KEY_OLLAMA_URL, KEY_STORE_PROMPTS, KEY_TOKEN_BUDGET
 from companion.agent.llm import DEFAULT_OLLAMA_URL, is_local_url
 from companion.config import CONFIG
-from companion.ui import DARK_STYLE
+from companion.ui import APP_STYLE, qss
 
 TOTAL_COLS = ["day", "provider", "model", "calls", "input_tokens", "output_tokens", "cost", "avg_latency_ms", "errors"]
 RECENT_COLS = ["ts", "request_id", "provider", "model", "input_tokens", "output_tokens", "latency_ms", "cost", "status"]
@@ -34,14 +34,14 @@ class UsageDialog(QDialog):
         self.store, self.settings = store, settings
         self.setWindowTitle("Assistant usage")
         self.resize(900, 620)
-        self.setStyleSheet(DARK_STYLE)
+        self.setStyleSheet(APP_STYLE)
         layout = QVBoxLayout(self)
 
         form = QFormLayout()
         self.ed_ollama = QLineEdit(settings.value(KEY_OLLAMA_URL, DEFAULT_OLLAMA_URL, type=str))
         self.ed_ollama.textChanged.connect(self._update_url_warning)
         self.lbl_url_warn = QLabel("")
-        self.lbl_url_warn.setStyleSheet("color: #f59e0b;")
+        self.lbl_url_warn.setStyleSheet(qss("color: $warning;"))
         self.spin_budget = QSpinBox()
         self.spin_budget.setRange(1000, 1_000_000)
         self.spin_budget.setSingleStep(1000)
