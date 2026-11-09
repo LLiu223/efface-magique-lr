@@ -156,6 +156,8 @@ You can also use Efface Magique as a standalone desktop photo eraser:
 | **`Mouse Scroll Wheel`** | **Zoom** | Smooth zooming centered at cursor position |
 | **`F1`** | **💡 Help & Guide** | Opens interactive in-app guide, shortcuts, and distribution packager |
 
+Dark/Light toggle: the Dark button in the top bar or Ctrl+Shift+D; the choice is remembered.
+
 ---
 
 ## 🧠 Technology & Engine Modes

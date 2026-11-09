@@ -38,7 +38,8 @@ if _PROJECT_ROOT not in sys.path:
 
 import companion
 from companion.live_bridge import LiveBridgeServer, BRIDGE_INFO_FILENAME
-from companion.app import MainWindow, HelpGuideDialog, _LOGO_PATH, _LOGO_ICO_PATH, _CHECKMARK_PATH, APP_STYLE
+from companion.app import MainWindow, HelpGuideDialog, _LOGO_PATH, _LOGO_ICO_PATH, _CHECKMARK_PATH
+from companion.ui import APP_STYLE
 from package_release import create_release_zip
 from tests.test_plugin import lua_parse_pending_imports, lua_import_guard_validate
 
