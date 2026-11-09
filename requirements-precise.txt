@@ -1,3 +1,3 @@
-# Efface Magique LR - optional "find any named object" (CLIPSeg) dependency for the assistant.
+# Efface Magique LR - optional "Precise selection" dependency for the assistant (Grounding DINO, SAM 2, ViTMatte).
 # install.bat installs this file when you opt in to that step. Same pin as requirements-sd.txt.
 transformers==5.22.2

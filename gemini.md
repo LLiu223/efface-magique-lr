@@ -114,7 +114,7 @@ The assistant finds and **selects** what you named; it never erases. A LangChain
 ```
 Assistant box -> AgentWorker (QThread, harness.py: max steps / token budget / timeout / cancel / allow-list / 1 retry)
               -> tools.py: list_models, select_model, set_prompt, detect_regions, select_regions
-              -> registry.get + InpaintingEngine.set_model / get_segmentation_model / CLIPSeg (clipseg_detector)
+              -> registry.get + InpaintingEngine.set_model / Grounding DINO + SAM 2 + ViTMatte (precise_models), else get_segmentation_model
               -> selected regions added to the red brush mask (one Ctrl+Z step) -> user clicks Erase as usual
 ```
 
@@ -122,8 +122,8 @@ Assistant box -> AgentWorker (QThread, harness.py: max steps / token budget / ti
   it the app runs as before and the assistant fields are disabled with the tooltip "install requirements-agent.txt".
 - Providers: `ollama` (default, `http://localhost:11434`), `anthropic`, `openai`, `gemini`. Keys are read only from
   `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`; they are never written to settings, logs or the usage DB.
-- `detect_regions(query)` finds any named object with the optional CLIPSeg detector; without it (or without a
-  query) only the 20 VOC classes (person, car, bottle, dog, chair...) are found.
+- `detect_regions(query)` finds any named object with the optional Precise selection models (Grounding DINO + SAM 2,
+  ViTMatte for hair/fur); without them (or without a query) only the 20 VOC classes (person, car, bottle, dog, chair...) are found.
 - The selection is added to any strokes you already painted, as one undo step (Ctrl+Z removes it). The status bar
   says what was selected, e.g. "Assistant selected: power lines (r1). Adjust with the brush, then click Erase."
   Then erase with any model, variations and options as usual. If the photo or layers changed while the assistant

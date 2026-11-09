@@ -4,7 +4,7 @@
 - SAM 2.1         facebook/sam2.1-hiera-small            (Apache-2.0)  box (+points) -> outline
 - ViTMatte        hustvl/vitmatte-small-composition-1k   (Apache-2.0)  trimap -> soft hair/fur alpha
 
-Same contract as clipseg_detector: never downloads (local_files_only=True), loads lazily on first use, cached;
+Never downloads (local_files_only=True), loads lazily on first use, cached;
 a load failure is logged once and cached. CUDA when available.
 """
 
@@ -97,3 +97,11 @@ SAM2 = LocalModel("SAM 2.1", "sam2", ("config.json", "preprocessor_config.json",
 VITMATTE = LocalModel("ViTMatte", "vitmatte", ("config.json", "preprocessor_config.json", "model.safetensors"),
                       _vitmatte, fp16=False)
 STAGES = {"grounding_dino": GROUNDING_DINO, "sam2": SAM2, "vitmatte": VITMATTE}
+
+
+def unavailable_note(runtime_error: bool = False) -> str:
+    """Tool-result note when a query was given but Grounding DINO + SAM 2 could not be used."""
+    if runtime_error or GROUNDING_DINO.failed() or SAM2.failed():
+        return "Precise selection failed (see the log); only VOC classes were searched. Tell the user."
+    return ("Precise selection is not installed: install the optional Precise selection step (install.bat). "
+            "Only VOC classes were searched. Tell the user.")

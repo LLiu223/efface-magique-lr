@@ -96,7 +96,6 @@ from companion.models import registry as model_registry, DEFAULT_MODEL
 from companion.layers import ModificationLayer, create_layer_thumbnail
 from companion import __version__
 from companion.diagnostics import build_diagnostics
-from companion.utils import clipseg_detector
 from companion.utils import precise_models
 from companion.live_bridge import LiveBridgeServer
 from companion.config import CONFIG
@@ -439,7 +438,6 @@ class MainWindow(QMainWindow):
             "device": dev.type,
             "gpu_name": gpu_name,
             "lama_model": lama,
-            "clipseg": clipseg_detector.status(),
             **{name: m.status() for name, m in precise_models.STAGES.items()},
             "bridge_port": getattr(self, "live_bridge_port", None),
             "bridge_connected": bridge.is_connected if bridge is not None else None,

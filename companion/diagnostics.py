@@ -28,7 +28,6 @@ def build_diagnostics(info: Dict[str, Any]) -> str:
         f"PyQt6: {_val(info, 'pyqt6')}",
         f"Device: {device}",
         f"LaMa model: {_val(info, 'lama_model')}",
-        f"Open-vocabulary detector: {_val(info, 'clipseg')}",
         f"Grounding DINO (find): {_val(info, 'grounding_dino')}",
         f"SAM 2 (outline): {_val(info, 'sam2')}",
         f"ViTMatte (soft edges): {_val(info, 'vitmatte')}",

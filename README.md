@@ -184,9 +184,8 @@ The dropdown is locked while an erase runs. The bridge accepts an optional `"mod
 Optional weights live in the repo-root `models/` folder (`CONFIG.MODELS_DIR`, gitignored, never packaged).
 install.bat asks y/N per model (default N) and installs only that model's pinned requirements file
 (`requirements-migan.txt`: onnxruntime; `requirements-sd.txt`: diffusers, transformers, accelerate). A last
-optional step, "Enable finding any named object (CLIPSeg, about 600 MB, Apache-2.0)?", installs
-`requirements-clipseg.txt` (transformers) and the CLIPSeg files into `models/clipseg/` for the assistant. The
-"Precise selection" step uses the same requirements file for Grounding DINO, SAM 2 and ViTMatte (see Assistant). If that pip
+optional step, "Precise selection", installs `requirements-precise.txt` (transformers) and Grounding DINO, SAM 2
+and ViTMatte for the assistant (see Assistant). If that pip
 install fails, the model's weights are not downloaded. Downloads are pinned (HF revision), saved as `<file>.part`,
 checked against their SHA256 and only then moved to the final name, so an interrupted download never shows up as
 an installed model.
@@ -304,7 +303,7 @@ The assistant finds and **selects** what you named; it never erases. A LangChain
 ```
 Assistant box -> AgentWorker (QThread, harness.py: max steps / token budget / timeout / cancel / allow-list / 1 retry)
               -> tools.py: list_models, select_model, set_prompt, detect_regions, select_regions
-              -> registry.get + InpaintingEngine.set_model / detect: Grounding DINO or CLIPSeg or VOC
+              -> registry.get + InpaintingEngine.set_model / detect: Grounding DINO, else the 20 VOC classes
                  -> outline: SAM 2 or sharp-crop refine -> soft edges: ViTMatte (people/animals)
               -> selected regions added to the red brush mask (one Ctrl+Z step) -> user clicks Erase as usual
 ```
@@ -314,24 +313,24 @@ Assistant box -> AgentWorker (QThread, harness.py: max steps / token budget / ti
 - Providers: `ollama` (default, `http://localhost:11434`), `anthropic`, `openai`, `gemini`. Keys are read only from
   `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`; they are never written to settings, logs or the usage DB.
 - **Named objects:** the assistant passes your object words ("power lines", "the sign on the left", "trash bag")
-  to `detect_regions` as `query`. With the optional CLIPSeg step of install.bat (`CIDAS/clipseg-rd64-refined`,
-  Apache-2.0, loaded from `models/clipseg/` with `local_files_only=True`, never downloaded by the app) it finds any
-  named object, thin wires included; with several matches it picks by position (left/centre/right, top/middle/bottom).
-  The first query loads the model, which takes a few seconds (longer on CPU). Without CLIPSeg only the 20 VOC
-  classes (person, car, bottle, dog, chair...) are found, and the assistant tells you to re-run install.bat and
-  answer y to the find-any-object step. CLIPSeg can mark too much (for example sky for "power lines"): check the
-  red selection and fix it with the brush or eraser before you click Erase.
+  to `detect_regions` as `query`. With the optional Precise selection step below it finds any named object, one
+  region per instance; with several matches it picks by position (left/centre/right, top/middle/bottom). The first
+  query loads the models, which takes a few seconds (longer on CPU). Without it only the 20 VOC classes (person,
+  car, bottle, dog, chair...) are found, and the assistant tells you to install the optional Precise selection step
+  (install.bat). Always check the red selection and fix it with the brush or eraser before you click Erase.
+- **CLIPSeg is gone (job 023).** Earlier versions had an optional CLIPSeg step. The app no longer uses it; if you
+  installed it, you can delete the `models\clipseg` folder (about 600 MB). install.bat leaves it alone.
 - **Precise selection (optional, install.bat step "Precise selection (Grounding DINO + SAM 2 + ViTMatte, about
   980 MB)")**: three Apache-2.0 models, pinned and SHA256-checked, loaded lazily from `models/` with
   `local_files_only=True`, never downloaded by the app. Each stage is optional and falls back to the one before:
 
   | Stage | Model | Files | Without it |
   |---|---|---|---|
-  | Find: one box per instance (two people = two regions) | Grounding DINO tiny (`IDEA-Research/grounding-dino-tiny`) | ~690 MB, `models/grounding_dino/` | CLIPSeg, then the 20 VOC classes |
+  | Find: one box per instance (two people = two regions) | Grounding DINO tiny (`IDEA-Research/grounding-dino-tiny`) | ~690 MB, `models/grounding_dino/` | the 20 VOC classes |
   | Outline: the mask for each box, on a full-resolution crop | SAM 2.1 small (`facebook/sam2.1-hiera-small`) | ~185 MB, `models/sam2/` | today's sharp-crop re-segmentation |
   | Soft edges: hair and fur, for people and animals only | ViTMatte small (`hustvl/vitmatte-small-composition-1k`) | ~105 MB, `models/vitmatte/` | skipped |
 
-  Grounding DINO is used only together with SAM 2 (a box is not an outline). CLIPSeg/VOC regions are outlined by
+  Grounding DINO is used only together with SAM 2 (a box is not an outline). VOC regions are outlined by
   SAM 2 too, from their bounding box and up to 3 interior points; if SAM covers less than 30 % of the region (it can
   miss a thin wire) the region keeps the old result. ViTMatte never runs for objects like "power lines". The canvas
   mask is binary, so matted hair is kept from alpha 0.1 up. Copy diagnostics lists each stage as not installed /
@@ -370,7 +369,7 @@ efface-magique-lr/
 ├── companion.sh                      # Unix launcher for companion app
 ├── requirements.txt                  # Python dependencies
 ├── requirements-agent.txt            # Optional assistant (LangChain) dependencies, pinned
-├── requirements-clipseg.txt          # Optional assistant "find any named object" dependency (transformers), pinned
+├── requirements-precise.txt          # Optional assistant "Precise selection" dependency (transformers), pinned
 ├── requirements-migan.txt            # Optional MI-GAN dependency (onnxruntime), pinned
 ├── requirements-sd.txt               # Optional Stable Diffusion dependencies (diffusers, transformers, accelerate), pinned
 ├── README.md                         # Documentation & user guide

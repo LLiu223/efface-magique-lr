@@ -18,7 +18,6 @@ from PIL import Image
 
 from companion.config import CONFIG
 from companion.models import registry
-from companion.utils import clipseg_detector
 from companion.utils import precise_models as precise
 from companion.utils.subject_detector import get_segmentation_model
 
@@ -27,17 +26,14 @@ logger = logging.getLogger("EffaceMagiqueAgent")
 TOOL_NAMES = ("list_models", "select_model", "set_prompt", "detect_regions", "select_regions")
 MIN_REGION_SHARE = 0.002   # ignore specks below 0.2 % of the frame
 MAX_REGIONS = 20
-MAX_QUERY_LEN = 77         # CLIP's text limit is 77 tokens, so 77 characters always fit
-# CLIPSeg predicts at 352x352, so thin wires come out blurred with peaks often below 0.5 while
-# background sits below 0.1; 0.3 keeps the thin peaks and still rejects the background.
-CLIPSEG_THRESHOLD = 0.3
+MAX_QUERY_LEN = 77         # a short noun phrase; far below Grounding DINO's 256-token text limit
 EDGE_MARGIN = 0.003        # region masks grow by 0.3 % of the long side to cover antialiased edges
 # Grounding DINO's model card and paper defaults (box_threshold=0.35, text_threshold=0.25)
 GDINO_BOX_THRESHOLD = 0.35
 GDINO_TEXT_THRESHOLD = 0.25
 GDINO_MERGE_IOU = 0.7      # boxes overlapping more than this are one instance found twice
 SAM_PAD = 0.15             # SAM sees the box plus 15 % of its long side as context
-SAM_MIN_COVERAGE = 0.3     # SAM must cover 30 % of a CLIPSeg/VOC region, else it missed it (thin wires)
+SAM_MIN_COVERAGE = 0.3     # SAM must cover 30 % of a VOC region, else it missed it (thin wires)
 SAM_MAX_POINTS = 3
 MATTE_KEEP = 0.1           # the canvas is binary (> 10): a low cut keeps stray hairs
 MATTE_MAX_DIM = 1024
@@ -151,7 +147,7 @@ class AgentSession:
     regions: Dict[str, dict] = field(default_factory=dict)
     region_masks: Dict[str, np.ndarray] = field(default_factory=dict)
     selection: Optional[Selection] = None
-    detector: str = ""          # "grounding_dino", "clipseg" or "voc": which detector made `regions`
+    detector: str = ""          # "grounding_dino" or "voc": which detector made `regions`
     query: str = ""             # the last detect_regions query
     calls: List[str] = field(default_factory=list)
 
@@ -198,6 +194,7 @@ class AgentSession:
         scale = min(1.0, CONFIG.NEURAL_CROP_MAX_DIM / max(w, h))
         small = img.resize((max(32, int(w * scale)), max(32, int(h * scale))), Image.Resampling.BILINEAR)
         notes = []
+        precise_error = False
         outlined = []  # (share, label, full-size uint8 0/255 mask, position)
         warned = set()
 
@@ -224,25 +221,20 @@ class AgentSession:
                                          _position((box[0] + box[2]) / 2, (box[1] + box[3]) / 2, w, h)))
             except Exception as e:
                 stage_failed("Grounding DINO / SAM 2", e)
-                gdino, outlined = None, []  # run the CLIPSeg/VOC path instead
+                gdino, outlined, precise_error = None, [], True  # run the VOC path instead
             outlined.sort(key=lambda f: -f[0])
         if gdino is None:
-            clipseg = clipseg_detector.get_clipseg() if query else None
-            if clipseg is not None:
-                found, (sh, sw) = self._clipseg_regions(clipseg, small, query), small.size[::-1]
-                segmenters = {query: lambda crop: self._clipseg_binary(clipseg, crop, query) > 0}
-            else:
-                if query:
-                    notes.append(clipseg_detector.unavailable_note())
-                model = get_segmentation_model()
-                if model is None:
-                    return self._out({"regions": [], "error": "segmentation model unavailable", **(
-                        {"note": " ".join(notes)} if notes else {})})
-                found, (sh, sw) = self._voc_regions(model, small)
-                names = voc_categories()
-                segmenters = {lab: (lambda crop, c=names.index(lab): self._voc_pred(model, crop) == c)
-                              for lab in {f[1] for f in found}}
-            detector = "clipseg" if clipseg is not None else "voc"
+            if query:
+                notes.append(precise.unavailable_note(precise_error))
+            model = get_segmentation_model()
+            if model is None:
+                return self._out({"regions": [], "error": "segmentation model unavailable", **(
+                    {"note": " ".join(notes)} if notes else {})})
+            found, (sh, sw) = self._voc_regions(model, small)
+            names = voc_categories()
+            segmenters = {lab: (lambda crop, c=names.index(lab): self._voc_pred(model, crop) == c)
+                          for lab in {f[1] for f in found}}
+            detector = "voc"
             for share, label, comp, (cx, cy) in found[:MAX_REGIONS]:
                 coarse = cv2.resize(comp.astype(np.uint8) * 255, (w, h), interpolation=cv2.INTER_NEAREST)
                 self.progress("Outlining...")
@@ -322,7 +314,7 @@ class AgentSession:
         return full
 
     def _sam_refine(self, img: Image.Image, coarse: np.ndarray) -> Optional[np.ndarray]:
-        """SAM 2 outline of a CLIPSeg/VOC region from its bounding box and interior points. None when SAM is
+        """SAM 2 outline of a VOC region from its bounding box and interior points. None when SAM is
         missing or missed the region (covers < SAM_MIN_COVERAGE of it): the caller then uses refine_region."""
         import cv2
         if precise.SAM2.get() is None:
@@ -391,24 +383,6 @@ class AgentSession:
                 found += self._components(pred == cls, names[cls])
         found.sort(key=lambda f: -f[0])
         return found, pred.shape
-
-    def _clipseg_regions(self, clipseg, small: Image.Image, query: str) -> list:
-        return sorted(self._components(self._clipseg_binary(clipseg, small, query), query), key=lambda f: -f[0])
-
-    @staticmethod
-    def _clipseg_binary(clipseg, small: Image.Image, query: str) -> np.ndarray:
-        import cv2
-        import torch
-        processor, model = clipseg
-        device = next(model.parameters()).device
-        inputs = processor(text=[query], images=[small], padding=True, return_tensors="pt")
-        with torch.inference_mode():
-            logits = model(**{k: v.to(device) for k, v in inputs.items()}).logits
-        # transformers squeezes the batch dim for a single prompt: accept (H,W) and (1,H,W)
-        heat = torch.sigmoid(logits.float()).reshape(logits.shape[-2:]).cpu().numpy()
-        heat = cv2.resize(heat, small.size, interpolation=cv2.INTER_LINEAR)
-        binary = (heat >= CLIPSEG_THRESHOLD).astype(np.uint8)
-        return cv2.morphologyEx(binary, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))  # join broken wire segments
 
     def select_regions(self, region_ids: List[str]) -> str:
         self.calls.append("select_regions")

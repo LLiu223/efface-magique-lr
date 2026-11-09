@@ -19,7 +19,7 @@ pytest.importorskip("langchain.agents")
 
 import numpy as np  # noqa: E402
 
-from agent_fakes import (PERSON, FakeClipSegModel, FakeClipSegProcessor, FakeEngine, FakeGdinoModel,  # noqa: E402
+from agent_fakes import (BOTTLE, PERSON, FakeEngine, FakeGdinoModel,  # noqa: E402
                          FakeGdinoProcessor, FakeSamModel, FakeSamProcessor, FakeSegNet, FakeVitMatteModel,
                          FakeVitMatteProcessor, dark)
 from companion.agent import tools as agent_tools  # noqa: E402
@@ -50,19 +50,22 @@ def _install(monkeypatch, gdino=None, sam=None, matte=None):
 
 
 @pytest.fixture
-def no_clipseg(monkeypatch):
-    from companion.utils import clipseg_detector as cd
-    monkeypatch.setattr(cd, "_CLIPSEG", None)
-    monkeypatch.setattr(cd, "_LOAD_ERROR", None)
-    monkeypatch.setattr(cd, "is_available", lambda: False)
-    return cd
+def voc(monkeypatch):
+    """The VOC fallback sees one person rectangle on the left."""
+    net = FakeSegNet([(PERSON, 0.05, 0.35)])
+    monkeypatch.setattr(agent_tools, "get_segmentation_model", lambda *a, **k: net)
+    return net
 
 
-@pytest.fixture
-def clipseg(monkeypatch):
-    proc, model = FakeClipSegProcessor(), FakeClipSegModel(np.zeros((352, 352)))
-    monkeypatch.setattr(agent_tools.clipseg_detector, "get_clipseg", lambda: (proc, model))
-    return model, proc
+class _WireNet(FakeSegNet):
+    """VOC logits with one 3-px horizontal 'bottle' band: a thin object in a long box."""
+
+    def forward(self, x):
+        _, _, h, w = x.shape
+        out = torch.zeros(1, 21, h, w)
+        out[:, 0] = 1.0
+        out[:, BOTTLE, 100:103, :] = 5.0
+        return {"out": out}
 
 
 TWO_PEOPLE = [("person", 0.1, 0.2, 0.3, 0.9, 0.8), ("person. [SEP]", 0.7, 0.25, 0.9, 0.9, 0.7),  # raw span: cleaned to "person"
@@ -72,7 +75,7 @@ TWO_PEOPLE = [("person", 0.1, 0.2, 0.3, 0.9, 0.8), ("person. [SEP]", 0.7, 0.25, 
 
 # --- find: Grounding DINO ---------------------------------------------------------------------------
 
-def test_two_people_give_two_regions_with_positions(monkeypatch, no_clipseg):
+def test_two_people_give_two_regions_with_positions(monkeypatch):
     gp, sp = FakeGdinoProcessor(TWO_PEOPLE), FakeSamProcessor()
     _install(monkeypatch, gdino=(gp, FakeGdinoModel()), sam=(sp, FakeSamModel()))
     s = AgentSession(engine=FakeEngine(), image=_people())
@@ -85,7 +88,7 @@ def test_two_people_give_two_regions_with_positions(monkeypatch, no_clipseg):
     assert len(sp.calls) == 2  # one SAM pass per instance, not per duplicate box
 
 
-def test_gdino_regions_are_sam_outlines_not_boxes(monkeypatch, no_clipseg):
+def test_gdino_regions_are_sam_outlines_not_boxes(monkeypatch):
     img = _people()
     _install(monkeypatch, gdino=(FakeGdinoProcessor(TWO_PEOPLE[:1]), FakeGdinoModel()),
              sam=(FakeSamProcessor(), FakeSamModel()))
@@ -98,7 +101,7 @@ def test_gdino_regions_are_sam_outlines_not_boxes(monkeypatch, no_clipseg):
     assert np.count_nonzero(m & ~truth) < 0.1 * np.count_nonzero(truth)  # only the thin EDGE_MARGIN
 
 
-def test_sam_runs_on_a_padded_crop_around_the_box(monkeypatch, no_clipseg):
+def test_sam_runs_on_a_padded_crop_around_the_box(monkeypatch):
     sp = FakeSamProcessor()
     _install(monkeypatch, gdino=(FakeGdinoProcessor(TWO_PEOPLE[:1]), FakeGdinoModel()), sam=(sp, FakeSamModel()))
     AgentSession(engine=FakeEngine(), image=_people()).detect_regions("person")
@@ -107,7 +110,7 @@ def test_sam_runs_on_a_padded_crop_around_the_box(monkeypatch, no_clipseg):
     assert cw < 600 and ch <= 400                       # a crop, not the whole photo
 
 
-def test_photo_context_and_auto_select_know_grounding_dino(monkeypatch, no_clipseg):
+def test_photo_context_and_auto_select_know_grounding_dino(monkeypatch):
     _install(monkeypatch, gdino=(FakeGdinoProcessor(TWO_PEOPLE), FakeGdinoModel()),
              sam=(FakeSamProcessor(), FakeSamModel()))
     s = AgentSession(engine=FakeEngine(), image=_people())
@@ -116,9 +119,9 @@ def test_photo_context_and_auto_select_know_grounding_dino(monkeypatch, no_clips
     assert _fallback_select(s, "remove them") and s.selection.region_ids == ["r1", "r2"]
 
 
-# --- outline: SAM 2 on CLIPSeg / VOC regions --------------------------------------------------------
+# --- outline: SAM 2 on VOC regions --------------------------------------------------------
 
-def test_sam_outline_replaces_the_coarse_voc_mask(monkeypatch, no_clipseg):
+def test_sam_outline_replaces_the_coarse_voc_mask(monkeypatch):
     net = FakeSegNet([(PERSON, 0.05, 0.35)])  # a rectangle around the left person
     monkeypatch.setattr(agent_tools, "get_segmentation_model", lambda *a, **k: net)
     monkeypatch.setattr(agent_tools, "refine_region", lambda *a: pytest.fail("SAM present: refine_region not used"))
@@ -142,58 +145,53 @@ def test_interior_points_are_inside_and_apart():
     assert min(abs(a[0] - b[0]) for i, a in enumerate(pts) for b in pts[i + 1:]) > 50
 
 
-def test_thin_wire_keeps_refine_result_when_sam_misses_it(monkeypatch, clipseg, no_clipseg):
+def test_thin_wire_keeps_refine_result_when_sam_misses_it(monkeypatch):
     """SAM on a long thin box can return a blob next to the wire: the 30 % coverage guard falls back."""
-    model, _ = clipseg
-    heat = np.zeros((352, 352))
-    heat[100:103, :] = 0.9
-    model.heat = heat
+    net = _WireNet([])
+    monkeypatch.setattr(agent_tools, "get_segmentation_model", lambda *a, **k: net)
     blob = lambda crop: np.pad(np.ones((4, 4), bool), ((0, crop.height - 4), (0, crop.width - 4)))  # noqa: E731
     _install(monkeypatch, sam=(FakeSamProcessor(segment=blob), FakeSamModel()))
     refined = []
     real = agent_tools.refine_region
     monkeypatch.setattr(agent_tools, "refine_region", lambda *a: refined.append(1) or real(*a))
     s = AgentSession(engine=FakeEngine(), image=Image.new("RGB", (352, 352)))
-    out = json.loads(s.detect_regions("power lines"))
+    out = json.loads(s.detect_regions())
     assert len(out["regions"]) == 1 and refined == [1]
     assert s.region_masks["r1"][101, 200] and s.region_masks["r1"][101, 20]  # the whole wire is still selected
 
 
 # --- fallback order -----------------------------------------------------------------------------------
 
-def test_gdino_missing_uses_clipseg(monkeypatch, clipseg):
-    model, _ = clipseg
-    model.heat = np.full((352, 352), 0.9)
-    _install(monkeypatch, sam=(FakeSamProcessor(segment=lambda c: np.ones(c.size[::-1], bool)), FakeSamModel()))
+def test_gdino_missing_uses_voc_outlined_by_sam(monkeypatch, voc):
+    _install(monkeypatch, sam=(FakeSamProcessor(), FakeSamModel()))
     s = AgentSession(engine=FakeEngine(), image=_people())
-    out = json.loads(s.detect_regions("sign"))
-    assert s.detector == "clipseg" and out["regions"][0]["label"] == "sign"
+    out = json.loads(s.detect_regions("person"))
+    assert s.detector == "voc" and out["regions"][0]["label"] == "person"
+    assert "install the optional Precise selection step (install.bat)" in out["note"]
 
 
-def test_gdino_load_failure_falls_back_to_clipseg_then_voc(monkeypatch, clipseg, caplog):
-    model, _ = clipseg
-    model.heat = np.full((352, 352), 0.9)
+def test_gdino_load_failure_falls_back_to_voc_and_says_failed(monkeypatch, voc, caplog):
     _install(monkeypatch, sam=(FakeSamProcessor(), FakeSamModel()))
     monkeypatch.setattr(pm.GROUNDING_DINO, "is_available", lambda: True)
     monkeypatch.setattr(pm.GROUNDING_DINO, "_loader", lambda path: (_ for _ in ()).throw(OSError("corrupt")))
     s = AgentSession(engine=FakeEngine(), image=_people())
     s.detect_regions("sign")
-    s.detect_regions("sign")
-    assert s.detector == "clipseg" and pm.GROUNDING_DINO.status() == "failed (OSError: corrupt)"
+    out = json.loads(s.detect_regions("sign"))
+    assert s.detector == "voc" and pm.GROUNDING_DINO.status() == "failed (OSError: corrupt)"
+    assert "Precise selection failed" in out["note"]
     assert sum("Could not load Grounding DINO" in r.message for r in caplog.records) == 1
     assert "any named object" not in photo_context(s)
 
 
-def test_gdino_without_sam_is_not_used(monkeypatch, clipseg):
-    model, _ = clipseg
-    model.heat = np.full((352, 352), 0.9)
+def test_gdino_without_sam_is_not_used(monkeypatch, voc):
     _install(monkeypatch, gdino=(FakeGdinoProcessor(TWO_PEOPLE), FakeGdinoModel()))
     s = AgentSession(engine=FakeEngine(), image=_people())
     s.detect_regions("person")
-    assert s.detector == "clipseg"  # boxes alone are not an outline
+    assert s.detector == "voc"  # boxes alone are not an outline
+    assert "any named object" not in photo_context(s)
 
 
-def test_nothing_installed_is_todays_voc_path_with_its_note(monkeypatch, no_clipseg):
+def test_nothing_installed_is_todays_voc_path_with_its_note(monkeypatch):
     net = FakeSegNet([(PERSON, 0.0, 0.3)])
     monkeypatch.setattr(agent_tools, "get_segmentation_model", lambda *a, **k: net)
     called = []
@@ -201,7 +199,7 @@ def test_nothing_installed_is_todays_voc_path_with_its_note(monkeypatch, no_clip
     monkeypatch.setattr(agent_tools, "refine_region", lambda *a: called.append(1) or real(*a))
     s = AgentSession(engine=FakeEngine(), image=_people())
     out = json.loads(s.detect_regions("person"))
-    assert s.detector == "voc" and called == [1] and "re-run install.bat" in out["note"]
+    assert s.detector == "voc" and called == [1] and "Precise selection step (install.bat)" in out["note"]
     assert all(m.status() == "not installed" for m in pm.STAGES.values())
 
 
@@ -215,7 +213,7 @@ def _left_person(monkeypatch, matte):
     return s.region_masks["r1"] > 0
 
 
-def test_matte_keeps_a_one_pixel_strand_beyond_the_sam_edge(monkeypatch, no_clipseg):
+def test_matte_keeps_a_one_pixel_strand_beyond_the_sam_edge(monkeypatch):
     vp = FakeVitMatteProcessor()
     with_matte = _left_person(monkeypatch, (vp, FakeVitMatteModel()))
     tri = vp.trimaps[0]
@@ -224,15 +222,12 @@ def test_matte_keeps_a_one_pixel_strand_beyond_the_sam_edge(monkeypatch, no_clip
     assert not _left_person(monkeypatch, "missing")[76, 120]  # without ViTMatte the strand is missed (skip, no error)
 
 
-def test_matte_never_runs_for_power_lines(monkeypatch, clipseg):
-    model, _ = clipseg
-    heat = np.zeros((352, 352))
-    heat[100:103, :] = 0.9
-    model.heat = heat
-    _install(monkeypatch, sam=(FakeSamProcessor(segment=lambda c: np.ones(c.size[::-1], bool)), FakeSamModel()))
+def test_matte_never_runs_for_power_lines(monkeypatch):
+    _install(monkeypatch, gdino=(FakeGdinoProcessor([("power lines", 0.0, 0.28, 1.0, 0.3, 0.9)]), FakeGdinoModel()),
+             sam=(FakeSamProcessor(segment=lambda c: np.ones(c.size[::-1], bool)), FakeSamModel()))
     monkeypatch.setattr(pm.VITMATTE, "get", lambda: pytest.fail("ViTMatte must not load for power lines"))
     s = AgentSession(engine=FakeEngine(), image=Image.new("RGB", (352, 352)))
-    assert json.loads(s.detect_regions("power lines"))["regions"]
+    assert json.loads(s.detect_regions("power lines"))["regions"][0]["label"] == "power lines"
     assert agent_tools.wants_matte("the woman on the left") and agent_tools.wants_matte("dogs")
     assert not agent_tools.wants_matte("power lines") and not agent_tools.wants_matte("manhole")
 
@@ -327,10 +322,27 @@ def test_install_bat_fetches_every_precise_file_pinned_and_hashed(name, var, rep
                          text), f
 
 
+def test_install_bat_has_no_stray_control_bytes():
+    """A "\\t" or "\\v" expanded while writing the file once turned a models\\...\\tokenizer_config.json path into a TAB."""
+    with open(os.path.join(_PROJECT_ROOT, "install.bat"), "rb") as f:
+        raw = f.read()
+    for n, line in enumerate(raw.split(b"\r\n"), start=1):
+        body = line.lstrip(b" \t")  # TAB is only allowed as indentation
+        bad = [b for b in body if b < 0x20 or b == 0x7F]
+        assert not bad, f"install.bat:{n} has control byte(s) {bad}"
+
+
+def test_install_bat_has_no_clipseg_step_and_pins_transformers():
+    text = _install_bat()
+    assert "clipseg" not in text.lower() and not os.path.exists(os.path.join(_PROJECT_ROOT, "requirements-clipseg.txt"))
+    with open(os.path.join(_PROJECT_ROOT, "requirements-precise.txt")) as f:
+        assert f.read().count("transformers==5.22.2") == 1
+
+
 def test_install_bat_precise_step_is_one_optional_step():
     text = _install_bat()
     assert text.count("Precise selection (Grounding DINO + SAM 2 + ViTMatte, about 980 MB") == 1
-    assert 'call :INSTALL_EXTRAS requirements-clipseg.txt "Precise selection"' in text
+    assert 'call :INSTALL_EXTRAS requirements-precise.txt "Precise selection"' in text
     assert "trust_remote_code" not in text
 
 
@@ -352,7 +364,7 @@ class _Boom:
         raise RuntimeError("CUDA out of memory")
 
 
-def test_sam_error_on_voc_regions_falls_back_to_refine_with_one_warning(monkeypatch, no_clipseg, caplog):
+def test_sam_error_on_voc_regions_falls_back_to_refine_with_one_warning(monkeypatch, caplog):
     net = FakeSegNet([(PERSON, 0.05, 0.35), (PERSON, 0.65, 0.95)])
     monkeypatch.setattr(agent_tools, "get_segmentation_model", lambda *a, **k: net)
     _install(monkeypatch, sam=(_Boom(), FakeSamModel()))
@@ -365,17 +377,16 @@ def test_sam_error_on_voc_regions_falls_back_to_refine_with_one_warning(monkeypa
     assert sum("SAM 2 failed, falling back" in r.message for r in caplog.records) == 1
 
 
-def test_gdino_stage_error_falls_back_to_clipseg(monkeypatch, clipseg, caplog):
-    model, _ = clipseg
-    model.heat = np.full((352, 352), 0.9)
+def test_gdino_stage_error_falls_back_to_voc(monkeypatch, voc, caplog):
     _install(monkeypatch, gdino=(FakeGdinoProcessor(TWO_PEOPLE), FakeGdinoModel()), sam=(_Boom(), FakeSamModel()))
     s = AgentSession(engine=FakeEngine(), image=_people())
     out = json.loads(s.detect_regions("person"))
-    assert s.detector == "clipseg" and out["regions"][0]["label"] == "person"
+    assert s.detector == "voc" and out["regions"][0]["label"] == "person"
+    assert "Precise selection failed" in out["note"]
     assert sum("Grounding DINO / SAM 2 failed" in r.message for r in caplog.records) == 1
 
 
-def test_matte_error_keeps_the_outline_without_soft_edges(monkeypatch, no_clipseg, caplog):
+def test_matte_error_keeps_the_outline_without_soft_edges(monkeypatch, caplog):
     m = _left_person(monkeypatch, (_Boom(), FakeVitMatteModel()))
     assert m[220, 120] and not m[76, 120]  # the SAM outline, no strand
     assert sum("ViTMatte failed, falling back" in r.message for r in caplog.records) == 1
