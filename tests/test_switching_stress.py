@@ -233,8 +233,8 @@ class Harness:
     # ---- invariants ----------------------------------------------------
     def check(self, before_layers, synced_before):
         w = self.window
-        after_ids = {id(l) for l in w.modification_layers}
-        lost = [l for l in before_layers if id(l) not in after_ids]
+        after_ids = {id(layer) for layer in w.modification_layers}
+        lost = [layer for layer in before_layers if id(layer) not in after_ids]
         assert not lost or self.yes_this_step or synced_before or not before_layers, "layers lost without Yes"  # 3a
         assert not self.prompt_log, f"unexpected prompts: {self.prompt_log}"
         assert (self.key_of.get(os.path.abspath(w.input_path)) if w.input_path else None) == self.photo
@@ -268,8 +268,8 @@ class Harness:
         else:
             assert w.worker is None
         # 3f: every layer on screen came from an erase of the loaded photo
-        for l in w.modification_layers:
-            assert l.inpainted_image.getpixel((40, 30)) == RESULT[self.photo], "erase result applied to wrong photo"
+        for layer in w.modification_layers:
+            assert layer.inpainted_image.getpixel((40, 30)) == RESULT[self.photo], "erase result applied to wrong photo"
 
 
 EVENTS = [("ev_select", 30), ("ev_open", 15), ("ev_erase_start", 18), ("ev_erase_finish", 18), ("ev_sync", 12)]

@@ -137,7 +137,7 @@ def test_round_trip_restores_layers(qtbot, photos, ask):
     qtbot.addWidget(w2)
     assert ask.calls == ["Restore 2 unsaved layers from a previous session?"]
     assert len(w2.modification_layers) == 2
-    assert [l.visible for l in w2.modification_layers] == [False, True]
+    assert [layer.visible for layer in w2.modification_layers] == [False, True]
     for l1, l2 in zip(w1.modification_layers, w2.modification_layers):
         assert np.array_equal(np.asarray(l1.mask), np.asarray(l2.mask))
         assert (l1.layer_id, l1.name, l1.engine_mode) == (l2.layer_id, l2.name, l2.engine_mode)

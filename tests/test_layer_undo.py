@@ -166,7 +166,7 @@ def test_undo_redo_reset_all(window):
     window._on_undo()
     layers = window.modification_layers
     assert len(layers) == 3 and all(x is y for x, y in zip(layers, (a, b, c)))
-    assert [l.visible for l in layers] == [True, False, True]
+    assert [layer.visible for layer in layers] == [True, False, True]
     assert window.active_layer_index == 2
     window._on_new_layer_clicked()  # leave edit mode: the canvas then shows the full stack
     assert np.array_equal(np.asarray(window.canvas.get_current_image().convert("RGB")), expected)

@@ -101,7 +101,6 @@ from companion.live_bridge import LiveBridgeServer
 from companion.config import CONFIG
 from companion import recovery
 from companion.utils.tiff16 import read_rgb16, write_tiff16, merge_into_16bit
-from companion.config import CONFIG
 from companion import agent as agent_pkg
 from companion.agent.harness import AgentWorker
 from companion.agent import llm as agent_llm
