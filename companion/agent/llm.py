@@ -17,8 +17,32 @@ class AgentConfigError(ValueError):
     """User-facing, one-line configuration problem (bad provider, missing key)."""
 
 
+# shortcut: a hand-kept list of model ids, will date; the picker stays editable for any other id
+CLOUD_MODELS = {
+    "anthropic": ["claude-sonnet-4-5", "claude-opus-4-1", "claude-haiku-4-5"],
+    "openai": ["gpt-4o-mini", "gpt-4o", "gpt-4.1", "gpt-4.1-mini"],
+    "gemini": ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.5-flash-lite"],
+}
+
+
 def is_local_url(url: str) -> bool:
     return (urlparse(url).hostname or "").lower() in _LOCAL_HOSTS
+
+
+def _fetch_tags(url: str, timeout: float) -> bytes:
+    import urllib.request
+    with urllib.request.urlopen(url, timeout=timeout) as resp:  # noqa: S310 - local URL, checked by the caller
+        return resp.read(1_000_000)
+
+
+def list_ollama_models(base_url: Optional[str] = None, timeout: float = 1.0) -> list:
+    """Names of the models installed in a local Ollama (GET /api/tags). Raises OSError/ValueError when unreachable."""
+    base = (base_url or DEFAULT_OLLAMA_URL).rstrip("/")
+    if not is_local_url(base):
+        raise ValueError(f"{base} is not localhost; the model list is only read from a local Ollama")
+    import json
+    data = json.loads(_fetch_tags(base + "/api/tags", timeout))
+    return sorted({str(m["name"]) for m in data.get("models", []) if isinstance(m, dict) and m.get("name")})
 
 
 def scrub(text: object, max_len: int = 300) -> str:

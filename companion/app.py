@@ -73,6 +73,7 @@ from companion.ui import (
     FlowLayout,
     HelpGuideDialog,
     LoadingSpinnerOverlay,
+    qss,
 )
 from companion.canvas import ImageCanvas, pil_to_qimage, set_source_icc
 from companion.device import (
@@ -101,6 +102,7 @@ from companion.utils.tiff16 import read_rgb16, write_tiff16, merge_into_16bit
 from companion.config import CONFIG
 from companion import agent as agent_pkg
 from companion.agent.harness import AgentWorker
+from companion.agent import llm as agent_llm
 from companion.agent.llm import PROVIDERS as AGENT_PROVIDERS, is_local_url
 from companion.agent.tools import AgentSession
 
@@ -193,6 +195,7 @@ class MainWindow(QMainWindow):
     # Emitted from the prewarm thread; AutoConnection queues it onto the GUI thread
     modelLoadFailed = pyqtSignal(str)
     _prewarm_finished = pyqtSignal()  # emitted from the warm-up daemon thread, delivered queued on the GUI thread
+    _agent_models_listed = pyqtSignal(str, object, str)  # provider, model names or None, error; from a daemon thread
 
     def __init__(
         self,
@@ -296,6 +299,8 @@ class MainWindow(QMainWindow):
         self.canvas = ImageCanvas(self)
         self.top_bar = self._create_top_bar()
         central_layout.addWidget(self.top_bar)
+        self.assistant_bar = self._create_assistant_bar()
+        central_layout.addWidget(self.assistant_bar)
 
         # Middle splitter: Canvas (center) + resizable Modifications Layers Sidebar (right)
         self.middle_splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -349,6 +354,7 @@ class MainWindow(QMainWindow):
 
         self.setMinimumSize(960, 540)
         self._restore_window_layout()
+        self.canvas.setFocus()  # start on the photo, not with a focus ring on the first toolbar button
 
         # Load initial image if provided
         if self.input_path and os.path.isfile(self.input_path):
@@ -1438,19 +1444,24 @@ class MainWindow(QMainWindow):
         """Create the Lightroom-style top control bar."""
         bar = QFrame(self)
         bar.setObjectName("topBar")
-        bar.setStyleSheet("""
+        bar.setStyleSheet(qss("""
             QFrame#topBar {
-                background-color: #242424;
-                border-bottom: 1px solid #333333;
+                background-color: $surface;
+                border-bottom: 1px solid $border;
             }
             QFrame#topBar QLabel {
-                color: #cccccc;
-                font-size: 11px;
+                color: $text_muted;
+                font-size: $fs_sm;
             }
-        """)
+            QFrame#toolGroup {
+                border-width: 0 0 0 1px;
+                border-style: solid;
+                border-color: $border;
+            }
+        """))
         # Groups wrap onto extra rows in a FlowLayout; Erase / Save stay pinned on the right
         bar_layout = QHBoxLayout(bar)
-        bar_layout.setContentsMargins(10, 5, 10, 5)
+        bar_layout.setContentsMargins(10, 6, 10, 6)
         bar_layout.setSpacing(12)
         flow_host = QWidget()
         self.top_flow = FlowLayout(flow_host, spacing=12, reserve_height=True)
@@ -1458,10 +1469,13 @@ class MainWindow(QMainWindow):
         bar_layout.addWidget(flow_host, stretch=1)
 
         def new_group(parent_layout=self.top_flow):
-            group = QWidget()
+            group = QFrame()
             # Flow groups stay on one row and only wrap inside when wider than a whole row (huge fonts)
             group_layout = FlowLayout(group, spacing=6) if parent_layout is self.top_flow else QHBoxLayout(group)
-            group_layout.setContentsMargins(0, 0, 0, 0)
+            separated = parent_layout is self.top_flow and bool(self.top_bar_groups)
+            if separated:  # a 1px rule before every group after the first: file | brush | view | history | window
+                group.setObjectName("toolGroup")
+            group_layout.setContentsMargins(12 if separated else 0, 0, 0, 0)
             group_layout.setSpacing(6)
             parent_layout.addWidget(group)
             self.top_bar_groups.append(group)
@@ -1479,7 +1493,7 @@ class MainWindow(QMainWindow):
             layout.addWidget(self.logo_label)
 
         # Open file button (for standalone mode)
-        self.btn_open = QPushButton("📂 Open")
+        self.btn_open = QPushButton("Open…")
         self.btn_open.setToolTip("Open Photo from computer")
         self.btn_open.clicked.connect(self._on_open_file)
         layout.addWidget(self.btn_open)
@@ -1518,7 +1532,7 @@ class MainWindow(QMainWindow):
         self._update_prompt_enabled()
         layout.addWidget(self.txt_prompt)
 
-        layout = new_group()  # options + brush
+        layout = new_group()  # brush + options
 
         # Detect Subject (Object-Aware) toggle
         self.chk_detect_subject = QCheckBox("Subject")
@@ -1533,7 +1547,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.chk_grain)
 
         # Brush Radius slider
-        layout.addWidget(QLabel("Size:"))
+        layout.addWidget(QLabel("Size"))
         self.size_slider = QSlider(Qt.Orientation.Horizontal)
         self.size_slider.setRange(5, 200)
         self.size_slider.setValue(self.canvas.brush_radius)
@@ -1596,18 +1610,18 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.btn_pin)
 
         # Live Status Badge
-        self.live_badge = QLabel(" 🟢 Live Synced " if self.is_live_mode else " ⚡ Live Ready ")
-        self.live_badge.setStyleSheet("""
+        self.live_badge = QLabel("Live Synced" if self.is_live_mode else "Live Ready")
+        self.live_badge.setStyleSheet(qss("""
             QLabel {
-                background-color: #103820;
-                color: #4ade80;
-                border: 1px solid #166534;
-                border-radius: 4px;
+                background-color: transparent;
+                color: $success;
+                border: 1px solid $success_border;
+                border-radius: $r_md;
                 font-weight: bold;
-                font-size: 11px;
+                font-size: $fs_sm;
                 padding: 2px 6px;
             }
-        """)
+        """))
         self.live_badge.setToolTip("Lightroom Classic Live IPC Bridge status")
         layout.addWidget(self.live_badge)
 
@@ -1625,9 +1639,6 @@ class MainWindow(QMainWindow):
         self.btn_layers_toggle.toggled.connect(self._toggle_layers_panel)
         layout.addWidget(self.btn_layers_toggle)
 
-        layout = new_group()  # assistant
-        self._create_assistant_widgets(layout)
-
         # Primary actions: outside the flow, so they are never wrapped or squeezed
         layout = new_group(bar_layout)  # a plain QHBoxLayout
         self.top_bar_groups.pop()
@@ -1642,7 +1653,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.btn_erase)
 
         # Save to Lightroom Button with download icon
-        self.btn_sync = QPushButton("📥 Save to Lightroom")
+        self.btn_sync = QPushButton("Save to Lightroom")
         self.btn_sync.setObjectName("syncAction")
         self.btn_sync.setToolTip("Save photo into Lightroom without closing window (Ctrl+S)")
         self.btn_sync.clicked.connect(self._on_sync_to_lightroom)
@@ -1653,38 +1664,169 @@ class MainWindow(QMainWindow):
 
         return bar
 
-    def _create_assistant_widgets(self, layout):
-        """Assistant input + provider/model fields; disabled when requirements-agent.txt is missing."""
+    def _create_assistant_bar(self) -> QFrame:
+        """Assistant strip under the top bar: ask field + Ask, quieter provider/model settings, inline answer."""
+        bar = QFrame(self)
+        bar.setObjectName("assistantBar")
+        bar.setStyleSheet(qss("""
+            QFrame#assistantBar {
+                background-color: $surface;
+                border-bottom: 1px solid $border;
+            }
+            QLabel#assistantTitle {
+                color: $text;
+                font-size: $fs_md;
+                font-weight: bold;
+            }
+            QLabel#assistantSettings, QFrame#assistantBar QComboBox, QPushButton#agentUsage {
+                font-size: $fs_sm;
+                color: $text_muted;
+            }
+            QFrame#agentAnswerPanel {
+                background-color: $control;
+                border: 1px solid $border_strong;
+                border-radius: $r_md;
+            }
+            QLabel#agentAnswer {
+                color: $text;
+                font-size: $fs_md;
+            }
+        """))
+        outer = QVBoxLayout(bar)
+        outer.setContentsMargins(10, 6, 10, 6)
+        outer.setSpacing(6)
+        row = QHBoxLayout()
+        row.setSpacing(6)
+        outer.addLayout(row)
+
+        title = QLabel("Assistant")
+        title.setObjectName("assistantTitle")
+        row.addWidget(title)
+        row.addSpacing(6)
+
         self.agent_input = QLineEdit()
-        self.agent_input.setPlaceholderText("Assistant: e.g. remove the person on the left")
+        self.agent_input.setPlaceholderText("Describe what to select, e.g. the person on the left")
+        self.agent_input.setAccessibleName("Assistant request")
         self.agent_input.setMinimumWidth(180)
         self.agent_input.returnPressed.connect(self._on_agent_ask)
         self.combo_agent_provider = QComboBox()
+        self.combo_agent_provider.setAccessibleName("Assistant provider")
         self.combo_agent_provider.addItems(AGENT_PROVIDERS)
         saved = self._settings.value(agent_pkg.KEY_PROVIDER, agent_pkg.DEFAULT_PROVIDER, type=str)
         self.combo_agent_provider.setCurrentIndex(max(0, self.combo_agent_provider.findText(saved)))
         self.combo_agent_provider.currentTextChanged.connect(lambda t: self._settings.setValue(agent_pkg.KEY_PROVIDER, t))
-        self.ed_agent_model = QLineEdit(self._settings.value(agent_pkg.KEY_MODEL, agent_pkg.DEFAULT_AGENT_MODEL, type=str))
-        self.ed_agent_model.setMinimumWidth(self.ed_agent_model.fontMetrics().averageCharWidth() * 14)
-        self.ed_agent_model.setToolTip("Assistant LLM model name (e.g. llama3.1, claude-sonnet-4-5, gpt-4o-mini, gemini-2.5-flash)")
-        self.ed_agent_model.textChanged.connect(lambda t: self._settings.setValue(agent_pkg.KEY_MODEL, t.strip()))
+        # A picker (installed Ollama models, or known cloud ids) that still accepts any typed name
+        self.ed_agent_model = QComboBox()
+        self.ed_agent_model.setEditable(True)
+        self.ed_agent_model.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.ed_agent_model.setObjectName("agentModel")
+        self.ed_agent_model.setAccessibleName("Assistant model")
+        self.ed_agent_model.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.ed_agent_model.setMinimumContentsLength(14)
+        self.ed_agent_model.setCurrentText(self._settings.value(agent_pkg.KEY_MODEL, agent_pkg.DEFAULT_AGENT_MODEL, type=str))
+        self._agent_model_tip = "Assistant LLM model: pick one or type a name (e.g. llama3.1, claude-sonnet-4-5, gpt-4o-mini)"
+        self.ed_agent_model.setToolTip(self._agent_model_tip)
+        self.ed_agent_model.currentTextChanged.connect(lambda t: self._settings.setValue(agent_pkg.KEY_MODEL, t.strip()))
+        self._agent_models_listed.connect(self._on_agent_models_listed)
+        self.combo_agent_provider.currentTextChanged.connect(lambda _: self._refresh_agent_models(user=True))
         self.btn_agent_ask = QPushButton("Ask")
         self.btn_agent_ask.clicked.connect(self._on_agent_ask)
         self.btn_agent_cancel = QPushButton("Stop")
         self.btn_agent_cancel.setToolTip("Cancel the assistant request")
         self.btn_agent_cancel.clicked.connect(self._on_agent_cancel)
         self.btn_agent_usage = QPushButton("Usage")
+        self.btn_agent_usage.setObjectName("agentUsage")
         self.btn_agent_usage.setToolTip("Assistant usage: tokens, cost, settings")
         self.btn_agent_usage.clicked.connect(self._on_show_agent_usage)
-        for w in (self.agent_input, self.combo_agent_provider, self.ed_agent_model, self.btn_agent_ask,
-                  self.btn_agent_cancel, self.btn_agent_usage):
-            layout.addWidget(w)
+        row.addWidget(self.agent_input, stretch=1)
+        row.addWidget(self.btn_agent_ask)
+        row.addWidget(self.btn_agent_cancel)
+        row.addSpacing(16)
+        # Set once and rarely touched: smaller and muted, after the main controls
+        settings_label = QLabel("LLM")
+        settings_label.setObjectName("assistantSettings")
+        row.addWidget(settings_label)
+        for w in (self.combo_agent_provider, self.ed_agent_model, self.btn_agent_usage):
+            row.addWidget(w)
         self.btn_agent_cancel.setVisible(False)
         self.agent_enabled = agent_pkg.agent_available()
         if not self.agent_enabled:
             for w in (self.agent_input, self.combo_agent_provider, self.ed_agent_model, self.btn_agent_ask):
                 w.setEnabled(False)
                 w.setToolTip(agent_pkg.MISSING_TOOLTIP)
+        self._refresh_agent_models()
+
+        # Inline answer: non-modal, kept until the next Ask or Dismiss
+        self.agent_answer_panel = QFrame()
+        self.agent_answer_panel.setObjectName("agentAnswerPanel")
+        answer_row = QHBoxLayout(self.agent_answer_panel)
+        answer_row.setContentsMargins(10, 6, 6, 6)
+        self.agent_answer = QLabel()
+        self.agent_answer.setObjectName("agentAnswer")
+        self.agent_answer.setTextFormat(Qt.TextFormat.PlainText)  # LLM text: never rich text or links
+        self.agent_answer.setWordWrap(True)
+        self.agent_answer.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse
+                                                  | Qt.TextInteractionFlag.TextSelectableByKeyboard)
+        answer_row.addWidget(self.agent_answer, stretch=1)
+        self.btn_agent_answer_close = QPushButton("Dismiss")
+        self.btn_agent_answer_close.setToolTip("Hide the assistant's answer")
+        self.btn_agent_answer_close.clicked.connect(self.agent_answer_panel.hide)
+        answer_row.addWidget(self.btn_agent_answer_close, alignment=Qt.AlignmentFlag.AlignTop)
+        self.agent_answer_panel.setVisible(False)
+        outer.addWidget(self.agent_answer_panel)
+        return bar
+
+    def _refresh_agent_models(self, user: bool = False):
+        """Fill the model picker for the current provider; Ollama is asked on a daemon thread, never blocking the UI."""
+        if not self.agent_enabled:
+            return
+        provider = self.combo_agent_provider.currentText()
+        if provider != "ollama":
+            self._set_agent_model_items(agent_llm.CLOUD_MODELS.get(provider, []))
+            self.ed_agent_model.setToolTip(self._agent_model_tip)
+            return
+        url = self._settings.value(agent_pkg.KEY_OLLAMA_URL, "", type=str).strip() or None
+        self._agent_models_user = user
+
+        def fetch():
+            try:
+                names, error = agent_llm.list_ollama_models(url), ""
+            except Exception as e:  # unreachable, refused, bad JSON: keep the saved value
+                names, error = None, str(e) or type(e).__name__
+            try:
+                self._agent_models_listed.emit(provider, names, error)
+            except RuntimeError:  # the window was closed meanwhile
+                pass
+
+        import threading
+        threading.Thread(target=fetch, name="ollama-tags", daemon=True).start()
+
+    def _on_agent_models_listed(self, provider: str, names, error: str):
+        if provider != self.combo_agent_provider.currentText():
+            return  # the provider changed while Ollama was asked
+        if names is None:
+            url = self._settings.value(agent_pkg.KEY_OLLAMA_URL, "", type=str).strip() or agent_llm.DEFAULT_OLLAMA_URL
+            hint = f"Ollama not reachable at {url}, so its models are not listed; type a model name or start Ollama."
+            self.ed_agent_model.setToolTip(f"{hint}\n({error})")
+            if getattr(self, "_agent_models_user", False):
+                self.statusBar().showMessage(hint, 6000)
+            self._set_agent_model_items([])
+            return
+        self.ed_agent_model.setToolTip(self._agent_model_tip)
+        self._set_agent_model_items(names)
+
+    def _set_agent_model_items(self, names):
+        """Replace the list without touching the chosen (saved) model; it stays in the list."""
+        current = self.ed_agent_model.currentText().strip()
+        self.ed_agent_model.blockSignals(True)
+        self.ed_agent_model.clear()
+        self.ed_agent_model.addItems(list(names) + ([current] if current and current not in names else []))
+        self.ed_agent_model.setCurrentText(current)
+        self.ed_agent_model.blockSignals(False)
+
+    def _show_agent_answer(self, text: str):
+        self.agent_answer.setText(text)
+        self.agent_answer_panel.setVisible(True)
 
     def _create_statusbar(self):
         statusbar = QStatusBar(self)
@@ -1692,7 +1834,7 @@ class MainWindow(QMainWindow):
 
         # Dimensions & Megapixels
         self.dim_label = QLabel(" 0 × 0 px ")
-        self.dim_label.setStyleSheet("color: #888888; font-size: 11px; margin-right: 12px;")
+        self.dim_label.setStyleSheet(qss("color: $text_muted; font-size: $fs_sm; margin-right: $sp3;"))
         statusbar.addPermanentWidget(self.dim_label)
 
         # Progress bar
@@ -1703,17 +1845,17 @@ class MainWindow(QMainWindow):
 
         # Generation Elapsed Time Badge
         self.timer_label = QLabel("")
-        self.timer_label.setStyleSheet("color: #00d26a; font-weight: bold; font-size: 11px; margin-right: 12px;")
+        self.timer_label.setStyleSheet(qss("color: $success; font-weight: bold; font-size: $fs_sm; margin-right: $sp3;"))
         statusbar.addPermanentWidget(self.timer_label)
 
         # Device & Hardware Acceleration Indicator
         self.dev_label = QLabel(f" {get_device_telemetry(self.engine.device)} ")
-        self.dev_label.setStyleSheet("color: #0078d4; font-weight: bold; font-size: 11px;")
+        self.dev_label.setStyleSheet(qss("color: $text_muted; font-weight: bold; font-size: $fs_sm;"))
         statusbar.addPermanentWidget(self.dev_label)
 
         # Persistent LaMa load-failure warning (hidden unless the prewarm fails)
         self.model_warning_label = QLabel("")
-        self.model_warning_label.setStyleSheet("color: #f59e0b; font-weight: bold; font-size: 11px; margin-left: 8px;")
+        self.model_warning_label.setStyleSheet(qss("color: $warning; font-weight: bold; font-size: $fs_sm; margin-left: $sp2;"))
         self.model_warning_label.setVisible(False)
         statusbar.addPermanentWidget(self.model_warning_label)
 
@@ -1900,7 +2042,7 @@ class MainWindow(QMainWindow):
     def _on_stroke_finished(self):
         """Called when a brush stroke is completed."""
         if self.canvas.has_mask() and self.worker is None:
-            self.statusBar().showMessage("Mask painted. Click '✨ Erase Object' (or press Enter) to run AI removal.", 4000)
+            self.statusBar().showMessage("Mask painted. Click Erase Object (or press Enter) to run AI removal.", 4000)
 
     def _on_show_agent_usage(self):
         from companion.agent.usage_dialog import UsageDialog
@@ -2146,7 +2288,7 @@ class MainWindow(QMainWindow):
         from companion.agent.usage import make_usage_callback
 
         provider = self.combo_agent_provider.currentText()
-        model = self.ed_agent_model.text().strip()
+        model = self.ed_agent_model.currentText().strip()
         url = self._settings.value(agent_pkg.KEY_OLLAMA_URL, "", type=str).strip() or None
         budget = self._settings.value(agent_pkg.KEY_TOKEN_BUDGET, CONFIG.AGENT_TOKEN_BUDGET, type=int)
         store_prompts = self._settings.value(agent_pkg.KEY_STORE_PROMPTS, False, type=bool)
@@ -2169,6 +2311,7 @@ class MainWindow(QMainWindow):
         self.worker.finished.connect(self._on_agent_thread_finished)
         self.worker.finished.connect(self._on_worker_thread_finished)
         self._set_run_controls_enabled(False)
+        self.agent_answer_panel.setVisible(False)  # an answer stays until the next Ask or Dismiss
         self.btn_agent_ask.setEnabled(False)
         self.btn_agent_cancel.setVisible(True)
         self.statusBar().showMessage("Assistant: Thinking...")
@@ -2203,19 +2346,23 @@ class MainWindow(QMainWindow):
             self.txt_prompt.setText(session.prompt or "")
         if not result.ok:
             reason = result.reason
-            if "ConnectError" in reason and self.combo_agent_provider.currentText() == "ollama":
+            needs_ollama = "ConnectError" in reason and self.combo_agent_provider.currentText() == "ollama"
+            if needs_ollama:
                 url = self._settings.value(agent_pkg.KEY_OLLAMA_URL, "") or "http://localhost:11434"
                 reason = (f"Can't reach Ollama at {url}.\n\nInstall Ollama from ollama.com, make sure it is "
-                          f"running, and download the model once with:\n  ollama pull {self.ed_agent_model.text().strip()}"
+                          f"running, and download the model once with:\n  ollama pull {self.ed_agent_model.currentText().strip()}"
                           f"\n\n({result.reason})")
             self.statusBar().showMessage(f"Assistant stopped: {reason.splitlines()[0]}", 8000)
-            QMessageBox.information(self, "Assistant", reason)
+            if needs_ollama:
+                QMessageBox.information(self, "Assistant", reason)  # needs action outside the app
+            else:
+                self._show_agent_answer(reason)
             return
         sel = result.selection
         if sel is None:
             msg = result.text or "Nothing matching was found, so nothing was selected."
             self.statusBar().showMessage(f"Assistant: {msg}", 8000)
-            QMessageBox.information(self, "Assistant", msg)
+            self._show_agent_answer(msg)
             return
         if self._preview is not None:  # never draw over a Lightroom preview (job 019)
             self.statusBar().showMessage("Assistant selection dropped: a Lightroom preview is shown; ask again.", 6000)
@@ -2596,7 +2743,7 @@ class MainWindow(QMainWindow):
         self._set_preview_lock(True)
         self._preview_timer.start()  # restarts for a newer preview
         if hasattr(self, "live_badge"):
-            self.live_badge.setText(" ⏳ Loading full resolution… ")
+            self.live_badge.setText("Loading full resolution…")
         self.statusBar().showMessage("Loading full resolution… (Lightroom preview shown, editing disabled)")
         received = payload.get("received_monotonic")
         delay = f"+{int((now - received) * 1000)} ms after receipt" if isinstance(received, float) else "receipt time unknown"
@@ -2611,7 +2758,7 @@ class MainWindow(QMainWindow):
         self.canvas.set_placeholder(None)
         self._set_preview_lock(False)
         if hasattr(self, "live_badge"):
-            self.live_badge.setText(" 🟢 Live Synced " if self.is_live_mode else " ⚡ Live Ready ")
+            self.live_badge.setText("Live Synced" if self.is_live_mode else "Live Ready")
         return True
 
     def _leave_preview(self, why: str):
@@ -2676,7 +2823,7 @@ class MainWindow(QMainWindow):
                     f"export_ms={payload.get('export_ms', 'none')} since_preview_ms={since}")
         self.canvas.fit_to_screen()
         if hasattr(self, "live_badge"):
-            self.live_badge.setText(" 🟢 Live Synced ")
+            self.live_badge.setText("Live Synced")
         self.statusBar().showMessage(f"⚡ Live Synced photo: {os.path.basename(new_path)}", 4000)
 
     def _on_live_focus_requested(self):
@@ -2803,8 +2950,8 @@ class MainWindow(QMainWindow):
             )
             self.statusBar().showMessage(f"✓ Saved & Synced to Lightroom: {os.path.basename(saved_path)}", 5000)
             if hasattr(self, "live_badge"):
-                self.live_badge.setText(" ✓ Synced ")
-                reset_text = " 🟢 Live Synced " if self.is_live_mode else " ⚡ Live Ready "
+                self.live_badge.setText("Synced")
+                reset_text = "Live Synced" if self.is_live_mode else "Live Ready"
                 def _safe_reset():
                     try:
                         if hasattr(self, "live_badge") and self.live_badge is not None:

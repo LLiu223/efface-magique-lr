@@ -133,7 +133,7 @@ Work through your entire photoshoot without ever relaunching or closing the edit
 You can also use Efface Magique as a standalone desktop photo eraser:
 - **Windows:** Double-click `companion.bat`.
 - **macOS / Linux:** Run `./companion.sh`.
-- Click **📂 Open** in the toolbar to load any JPG, PNG, TIFF, or WebP photo.
+- Click **Open…** in the toolbar to load any JPG, PNG, TIFF, or WebP photo.
 
 ---
 
@@ -293,7 +293,10 @@ memorised them: a small set can overfit, so trust the held-out report and the co
 ---
 
 ### Assistant (optional, `companion/agent/`)
-Type a request such as "remove the person on the left" in the **Assistant** box in the top bar and press **Ask**.
+Type a request such as "remove the person on the left" in the **Assistant** bar under the toolbar and press **Ask**.
+The assistant's reply (for example "nothing matching was found") shows in a panel under that bar until your next
+Ask or **Dismiss**; only "Ollama not reachable" opens a dialog. The model picker lists the models installed in your
+local Ollama (read from `/api/tags`) or known ids for the cloud providers, and you can still type any model name.
 The assistant finds and **selects** what you named; it never erases. A LangChain agent
 (`langchain.agents.create_agent`) works only through five tools and never replaces the engine:
 

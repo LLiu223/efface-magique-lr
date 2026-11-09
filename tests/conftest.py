@@ -14,3 +14,16 @@ def _isolated_recovery_root(tmp_path, monkeypatch):
 
         ini = str(tmp_path / "isolated_settings.ini")
         monkeypatch.setattr(app, "_open_settings", lambda: QSettings(ini, QSettings.Format.IniFormat))
+
+
+@pytest.fixture(autouse=True)
+def _no_ollama_network(monkeypatch):
+    """The assistant model picker asks a local Ollama for its models; tests never reach the network."""
+    llm = sys.modules.get("companion.agent.llm")
+    if llm is None:  # not imported by this test module: nothing can ask Ollama
+        return
+
+    def offline(url, timeout):
+        raise OSError("network disabled in tests")
+
+    monkeypatch.setattr(llm, "_fetch_tags", offline)

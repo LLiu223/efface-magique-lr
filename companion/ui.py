@@ -11,6 +11,7 @@ Provides:
 
 import os
 import sys
+from string import Template
 from typing import Optional
 
 from PyQt6.QtCore import Qt, QPoint, QRect, QSize, QTimer, QUrl
@@ -53,180 +54,277 @@ _LOGO_ICO_PATH = os.path.join(_ASSETS_DIR, "logo.ico").replace("\\", "/")
 # Dark Theme Stylesheet
 # -----------------------------------------------------------------------------
 
-DARK_STYLE = """
-QMainWindow {
-    background-color: #1e1e1e;
-    color: #e0e0e0;
+# Design tokens: the one place for chrome colours, spacing, radii and type sizes.
+# Greys are neutral (R=G=B) so the chrome never tints how the photo's colours are judged;
+# the accent is kept for the primary action, checked toggles, focus and selection.
+TOKENS = {
+    # Colours
+    "bg": "#1e1e1e",              # window ground
+    "surface": "#262626",         # top bar, assistant bar
+    "control": "#333333",         # secondary button / combo face
+    "control_hover": "#3d3d3d",
+    "control_pressed": "#1f1f1f",
+    "control_checked": "#474747",  # checked toggle: a lighter grey plus an accent edge
+    "field": "#1f1f1f",           # text fields sit one step below the bar
+    "border": "#424242",
+    "border_strong": "#5a5a5a",
+    "status": "#181818",          # status bar
+    "text": "#e8e8e8",
+    "text_muted": "#a8a8a8",
+    "text_disabled": "#666666",   # exempt from WCAG contrast
+    "on_accent": "#ffffff",
+    "accent": "#0a64c0",
+    "accent_hover": "#1570cc",
+    "accent_pressed": "#0b5aa8",
+    "accent_disabled": "#2a3440",
+    "focus": "#5ab0ff",
+    "success": "#6fcf97",         # Save to Lightroom label / Live badge text
+    "success_border": "#2f8f5b",
+    "warning": "#f0a030",
+    # Spacing scale (px, 4-pt steps)
+    "sp1": "4px", "sp2": "8px", "sp3": "12px", "sp4": "16px",
+    # Radii
+    "r_sm": "3px", "r_md": "4px",
+    # Font sizes
+    "fs_sm": "11px", "fs_md": "12px", "fs_lg": "13px",
+}
+
+def qss(text: str) -> str:
+    """Fill $token placeholders in a stylesheet from TOKENS."""
+    return Template(text).substitute(TOKENS)
+
+
+DARK_STYLE = qss("""
+QMainWindow, QDialog {
+    background-color: $bg;
+    color: $text;
 }
 QWidget {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 }
 QToolBar {
-    background-color: #252526;
-    border-bottom: 1px solid #333333;
+    background-color: $surface;
+    border-bottom: 1px solid $border;
     padding: 6px 10px;
-    spacing: 8px;
+    spacing: $sp2;
 }
 QStatusBar {
-    background-color: #181818;
-    border-top: 1px solid #2d2d2d;
-    color: #999999;
-    font-size: 11px;
+    background-color: $status;
+    border-top: 1px solid $border;
+    color: $text_muted;
+    font-size: $fs_sm;
 }
 QPushButton {
-    background-color: #2d2d2d;
-    color: #ffffff;
-    border: 1px solid #3c3c3c;
-    border-radius: 4px;
-    padding: 6px 12px;
-    font-size: 12px;
+    background-color: $control;
+    color: $text;
+    border: 1px solid $border;
+    border-radius: $r_md;
+    padding: 5px $sp3;
+    font-size: $fs_md;
     font-weight: 500;
 }
 QPushButton:hover {
-    background-color: #383838;
-    border-color: #4a4a4a;
+    background-color: $control_hover;
+    border-color: $border_strong;
 }
 QPushButton:pressed {
-    background-color: #202020;
+    background-color: $control_pressed;
 }
 QPushButton:checked {
-    background-color: #0078d4;
-    border-color: #0086f0;
-    color: #ffffff;
-    font-weight: bold;
+    background-color: $control_checked;
+    border-color: $accent;
+    color: $text;
+}
+QPushButton:focus {
+    border-color: $focus;
 }
 QPushButton:disabled {
-    background-color: #242424;
-    color: #555555;
-    border-color: #303030;
+    background-color: $surface;
+    color: $text_disabled;
+    border-color: $border;
 }
 QPushButton#primaryAction {
-    background-color: #0078d4;
-    color: #ffffff;
+    background-color: $accent;
+    color: $on_accent;
     font-weight: bold;
-    border: 1px solid #0086f0;
-    padding: 7px 18px;
-    border-radius: 4px;
+    border: 1px solid $accent;
+    padding: 6px $sp4;
 }
 QPushButton#primaryAction:hover {
-    background-color: #1084d8;
+    background-color: $accent_hover;
+    border-color: $accent_hover;
+}
+QPushButton#primaryAction:pressed {
+    background-color: $accent_pressed;
+}
+QPushButton#primaryAction:focus {
+    border-color: $focus;
 }
 QPushButton#primaryAction:disabled {
-    background-color: #1b354b;
-    color: #6688aa;
-    border-color: #23425d;
+    background-color: $accent_disabled;
+    color: $text_disabled;
+    border-color: $accent_disabled;
 }
 QPushButton#saveAction, QPushButton#syncAction {
-    background-color: #107c41;
-    color: #ffffff;
+    color: $success;
     font-weight: bold;
-    border: 1px solid #169b52;
-    padding: 7px 18px;
-    border-radius: 4px;
+    border: 1px solid $success_border;
+    padding: 6px $sp4;
 }
 QPushButton#saveAction:hover, QPushButton#syncAction:hover {
-    background-color: #148f4b;
+    background-color: $control_hover;
+    border-color: $success;
+}
+QPushButton#saveAction:pressed, QPushButton#syncAction:pressed {
+    background-color: $control_pressed;
+}
+QPushButton#saveAction:focus, QPushButton#syncAction:focus {
+    border-color: $focus;
+}
+QPushButton#saveAction:disabled, QPushButton#syncAction:disabled {
+    color: $text_disabled;
+    border-color: $border;
 }
 QComboBox {
-    background-color: #2d2d2d;
-    color: #ffffff;
-    border: 1px solid #3c3c3c;
-    border-radius: 4px;
-    padding: 4px 10px;
-    font-size: 12px;
-    font-weight: 500;
+    background-color: $control;
+    color: $text;
+    border: 1px solid $border;
+    border-radius: $r_md;
+    padding: 4px $sp2;
+    font-size: $fs_md;
 }
 QComboBox:hover {
-    border-color: #0078d4;
+    background-color: $control_hover;
+    border-color: $border_strong;
+}
+QComboBox:pressed, QComboBox:on {
+    background-color: $control_pressed;
+}
+QComboBox:focus {
+    border-color: $focus;
+}
+QComboBox:disabled {
+    background-color: $surface;
+    color: $text_disabled;
+    border-color: $border;
 }
 QComboBox QAbstractItemView {
-    background-color: #252526;
-    color: #ffffff;
-    selection-background-color: #0078d4;
-    selection-color: #ffffff;
-    border: 1px solid #3c3c3c;
+    background-color: $surface;
+    color: $text;
+    selection-background-color: $accent;
+    selection-color: $on_accent;
+    border: 1px solid $border;
 }
 QLineEdit {
-    background-color: #262626;
-    color: #ffffff;
-    border: 1px solid #444444;
-    border-radius: 4px;
-    padding: 4px 8px;
-    font-size: 12px;
+    background-color: $field;
+    color: $text;
+    border: 1px solid $border;
+    border-radius: $r_md;
+    padding: 4px $sp2;
+    font-size: $fs_md;
+    selection-background-color: $accent;
+    selection-color: $on_accent;
 }
-QLineEdit:focus {
-    border: 1px solid #0078d4;
+QLineEdit:hover {
+    border-color: $border_strong;
+}
+QLineEdit:pressed, QLineEdit:focus {
+    border-color: $focus;
+}
+QLineEdit:disabled {
+    background-color: $surface;
+    color: $text_disabled;
+    border-color: $border;
 }
 QSlider::groove:horizontal {
-    border: 1px solid #333333;
+    border: 1px solid $border;
     height: 4px;
-    background: #252526;
+    background: $field;
     border-radius: 2px;
 }
 QSlider::sub-page:horizontal {
-    background: #0078d4;
+    background: $text_muted;
     border-radius: 2px;
 }
 QSlider::handle:horizontal {
-    background: #ffffff;
-    border: 1px solid #555555;
+    background: $text;
+    border: 1px solid $border_strong;
     width: 14px;
     margin-top: -5px;
     margin-bottom: -5px;
     border-radius: 7px;
 }
 QSlider::handle:horizontal:hover {
-    background: #0078d4;
-    border-color: #0086f0;
+    background: $on_accent;
+}
+QSlider::handle:horizontal:focus {
+    border-color: $focus;
 }
 QProgressBar {
-    border: 1px solid #333333;
-    border-radius: 3px;
+    border: 1px solid $border;
+    border-radius: $r_sm;
     text-align: center;
-    color: #ffffff;
-    background-color: #1a1a1a;
+    color: $text;
+    background-color: $field;
     height: 16px;
     font-size: 10px;
 }
 QProgressBar::chunk {
-    background-color: #0078d4;
+    background-color: $text_muted;
     border-radius: 2px;
 }
 QCheckBox {
-    color: #cccccc;
-    font-size: 12px;
+    color: $text;
+    font-size: $fs_md;
     spacing: 6px;
+}
+QCheckBox:disabled {
+    color: $text_disabled;
 }
 QCheckBox::indicator {
     width: 16px;
     height: 16px;
-    border: 1px solid #444444;
-    border-radius: 3px;
-    background-color: #262626;
+    border: 1px solid $border_strong;
+    border-radius: $r_sm;
+    background-color: $field;
 }
 QCheckBox::indicator:hover {
-    border-color: #0078d4;
-    background-color: #2f2f2f;
+    border-color: $text_muted;
+    background-color: $control;
+}
+QCheckBox::indicator:pressed {
+    background-color: $control_pressed;
+}
+QCheckBox::indicator:focus {
+    border-color: $focus;
 }
 QCheckBox::indicator:checked {
-    background-color: #0078d4;
-    border-color: #0086f0;
+    background-color: $accent;
+    border-color: $accent;
     image: url("__CHECKMARK_URL__");
 }
 QCheckBox::indicator:checked:hover {
-    background-color: #1084d8;
-    border-color: #1a94e8;
+    background-color: $accent_hover;
+    border-color: $accent_hover;
     image: url("__CHECKMARK_URL__");
 }
+QCheckBox::indicator:checked:focus {
+    border-color: $focus;
+}
 QCheckBox::indicator:disabled {
-    border-color: #383838;
-    background-color: #1a1a1a;
+    border-color: $border;
+    background-color: $surface;
 }
 QLabel {
-    color: #cccccc;
-    font-size: 12px;
+    color: $text_muted;
+    font-size: $fs_md;
 }
-""".replace("__CHECKMARK_URL__", _CHECKMARK_PATH)
+QToolTip {
+    background-color: $surface;
+    color: $text;
+    border: 1px solid $border_strong;
+}
+""").replace("__CHECKMARK_URL__", _CHECKMARK_PATH)
 
 
 # -----------------------------------------------------------------------------
