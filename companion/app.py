@@ -38,7 +38,7 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSize, QTimer, qInstallMessageHandler, QtMsgType, QUrl, QSettings
-from PyQt6.QtGui import QIcon, QFont, QColor, QKeySequence, QAction, QShortcut, QPixmap, QDesktopServices
+from PyQt6.QtGui import QIcon, QFont, QBrush, QColor, QKeySequence, QAction, QShortcut, QPixmap, QDesktopServices
 from PyQt6.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -71,13 +71,16 @@ from companion.ui import (
     _CHECKMARK_PATH,
     _LOGO_PATH,
     _LOGO_ICO_PATH,
-    APP_STYLE,
+    APP_STYLE_TEMPLATE,
     TOKENS,
     FlowLayout,
     HelpGuideDialog,
     LoadingSpinnerOverlay,
+    apply_theme,
     qss,
+    styled,
 )
+import companion.ui as ui
 from companion.canvas import ImageCanvas, pil_to_qimage, set_source_icc
 from companion.device import (
     DeviceType,
@@ -148,6 +151,13 @@ qInstallMessageHandler(qt_message_handler)
 MODEL_SETTINGS_KEY = "model/name"
 WINDOW_GEOMETRY_KEY = "window/geometry"
 WINDOW_SPLITTER_KEY = "window/splitter"
+THEME_SETTINGS_KEY = "view/theme"
+
+
+def restore_theme(settings: QSettings) -> str:
+    """Saved theme name; a missing or unknown value is light."""
+    name = settings.value(THEME_SETTINGS_KEY, ui.DEFAULT_THEME, type=str)
+    return name if name in ui.PALETTES else ui.DEFAULT_THEME
 
 
 def _open_settings() -> QSettings:
@@ -205,9 +215,8 @@ class ImageLoaderWorker(QThread):
 # Main Application Window
 # -----------------------------------------------------------------------------
 
-
-# Layer card and visibility-toggle styles, keyed by active / visible
-_LAYER_CARD_STYLE = {active: qss(f"""
+# Layer card and visibility-toggle style templates (for styled()), keyed by active / visible
+_LAYER_CARD_STYLE = {active: f"""
     QFrame {{
         background-color: {bg};
         border: {width}px solid {border};
@@ -217,15 +226,17 @@ _LAYER_CARD_STYLE = {active: qss(f"""
         background-color: $control_hover;
         border-color: $accent;
     }}
-""") for active, bg, width, border in ((True, "$accent_tint", 2, "$accent"), (False, "$surface", 1, "$border"))}
+""" for active, bg, width, border in ((True, "$accent_tint", 2, "$accent"), (False, "$surface", 1, "$border"))}
+
+_BASE_CARD_TEXT = "<b>Base Photo</b><br><span style='color: $text_muted; font-size: 10px;'>Original input</span>"
 
 _LAYER_TOGGLE_STYLE = {
-    True: qss("""
+    True: """
         QPushButton {
             background-color: $accent_tint;
             border: 2px solid $accent;
             border-radius: 5px;
-            color: $accent;
+            color: $accent_text;
             font-size: 14px;
             font-weight: bold;
             padding: 0px;
@@ -235,8 +246,8 @@ _LAYER_TOGGLE_STYLE = {
             border-color: $accent_pressed;
             color: $on_accent;
         }
-    """),
-    False: qss("""
+    """,
+    False: """
         QPushButton {
             background-color: $field;
             border: 1.5px solid $border_strong;
@@ -251,7 +262,7 @@ _LAYER_TOGGLE_STYLE = {
             border-color: $text_muted;
             color: $text;
         }
-    """),
+    """,
 }
 
 
@@ -332,7 +343,9 @@ class MainWindow(QMainWindow):
         if os.path.isfile(_LOGO_PATH):
             self.setWindowIcon(QIcon(_LOGO_PATH))
         self.resize(1400, 920)
-        self.setStyleSheet(APP_STYLE)
+        self._settings = _open_settings()
+        apply_theme(restore_theme(self._settings))  # before any widget renders a style
+        styled(self, APP_STYLE_TEMPLATE)
 
         # Inpainting Engine instance & Hardware Detection
         device = get_optimal_device()
@@ -340,7 +353,6 @@ class MainWindow(QMainWindow):
         self.engine = InpaintingEngine(device=device, mode=EngineMode.FIREFLY)
         self.worker: Optional[InpaintingWorker] = None
         # Restore the model before the warm-up thread starts so it loads the right one
-        self._settings = _open_settings()
         self.engine.set_model(restore_model_name(self._settings))
 
         self._pending_model: Optional[str] = None  # model picked while warm-up held the load lock
@@ -399,7 +411,7 @@ class MainWindow(QMainWindow):
         self._preview_timer = QTimer(self)
         self._preview_timer.setSingleShot(True)
         self._preview_timer.setInterval(CONFIG.PREVIEW_TIMEOUT_MS)
-        self._preview_timer.timeout.connect(lambda: self._leave_preview("timed out"))
+        self._preview_timer.timeout.connect(self._on_preview_timeout)  # a bound method, not a lambda: see below
 
         # Asynchronously pre-warm inpainting models in background daemon thread (after the UI exists)
         import threading
@@ -415,6 +427,7 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("Y"), self, lambda: self.btn_split.setChecked(not self.btn_split.isChecked()))
         QShortcut(QKeySequence("Ctrl+L"), self, lambda: self.btn_layers_toggle.setChecked(not self.btn_layers_toggle.isChecked()))
         QShortcut(QKeySequence("L"), self, lambda: self.btn_layers_toggle.setChecked(not self.btn_layers_toggle.isChecked()))
+        self.shortcut_theme = QShortcut(QKeySequence("Ctrl+Shift+D"), self, self.btn_theme.toggle)
 
         self.setMinimumSize(960, 540)
         self._restore_window_layout()
@@ -499,19 +512,19 @@ class MainWindow(QMainWindow):
     def _create_carousel_panel(self) -> QFrame:
         """Create the bottom carousel panel for LaMa candidate variations."""
         panel = QFrame(self)
-        panel.setStyleSheet(qss("""
+        styled(panel, """
             QFrame {
                 background-color: $surface;
                 border-top: 1px solid $border;
                 padding: 4px 10px;
             }
-        """))
+        """)
         layout = QHBoxLayout(panel)
         layout.setContentsMargins(12, 6, 12, 6)
         layout.setSpacing(12)
 
         lbl = QLabel("<b>LaMa Variations:</b>")
-        lbl.setStyleSheet(qss("color: $accent; font-size: 12px; font-weight: bold;"))
+        styled(lbl, "color: $accent_text; font-size: 12px; font-weight: bold;")
         layout.addWidget(lbl)
 
         self.var_card_layout = QHBoxLayout()
@@ -540,12 +553,12 @@ class MainWindow(QMainWindow):
         """Create the right-side Modifications (Layers) sidebar panel."""
         panel = QFrame(self)
         panel.setObjectName("layersPanel")
-        panel.setStyleSheet(qss("""
+        styled(panel, """
             QFrame#layersPanel {
                 background-color: $bg;
                 border-left: 1px solid $border;
             }
-        """))
+        """)
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(6)
@@ -553,18 +566,18 @@ class MainWindow(QMainWindow):
         # Header with Title, Count, and Controls
         header_layout = QHBoxLayout()
         header_title = QLabel("<b>📋 Modifications</b>")
-        header_title.setStyleSheet(qss("color: $text; font-size: 12px;"))
+        styled(header_title, "color: $text; font-size: 12px;")
         header_layout.addWidget(header_title)
 
         self.lbl_layer_count = QLabel("(0)")
-        self.lbl_layer_count.setStyleSheet(qss("color: $text_muted; font-size: 11px;"))
+        styled(self.lbl_layer_count, "color: $text_muted; font-size: 11px;")
         header_layout.addWidget(self.lbl_layer_count)
         header_layout.addStretch(1)
 
         # "+ New" button: deselects active layer so user can draw a fresh modification
         self.btn_new_layer = QPushButton("+ New")
         self.btn_new_layer.setToolTip("Start a new modification on the current image")
-        header_btn_style = qss("""
+        header_btn_style = """
             QPushButton {
                 background-color: $control;
                 border: 1px solid $border;
@@ -582,7 +595,7 @@ class MainWindow(QMainWindow):
                 color: $text_disabled;
                 border-color: $border;
             }
-        """)
+        """
         self.btn_new_layer.clicked.connect(self._on_new_layer_clicked)
 
         self.btn_layer_undo = QPushButton("Undo")
@@ -593,7 +606,7 @@ class MainWindow(QMainWindow):
         self.btn_layer_redo.clicked.connect(self._redo_layer_op)
         for btn in (self.btn_layer_undo, self.btn_layer_redo, self.btn_new_layer):
             btn.setFixedHeight(24)
-            btn.setStyleSheet(header_btn_style)
+            styled(btn, header_btn_style)
             header_layout.addWidget(btn)
 
         # Delete layer button (retained on window instance for compatibility, hidden from UI)
@@ -606,36 +619,36 @@ class MainWindow(QMainWindow):
 
         # Active layer notification / editing banner
         self.layer_active_banner = QFrame()
-        self.layer_active_banner.setStyleSheet(qss("""
+        styled(self.layer_active_banner, """
             QFrame {
                 background-color: $accent_tint;
                 border: 1px solid $accent;
                 border-radius: 4px;
                 padding: 4px 6px;
             }
-        """))
+        """)
         banner_layout = QHBoxLayout(self.layer_active_banner)
         banner_layout.setContentsMargins(4, 2, 4, 2)
         self.lbl_banner_text = QLabel("✏️ Editing: Mod 1")
-        self.lbl_banner_text.setStyleSheet(qss("color: $accent; font-size: 11px; font-weight: bold;"))
+        styled(self.lbl_banner_text, "color: $accent_text; font-size: 11px; font-weight: bold;")
         banner_layout.addWidget(self.lbl_banner_text)
         banner_layout.addStretch(1)
 
         btn_done_editing = QPushButton("Done")
         btn_done_editing.setFixedHeight(20)
-        btn_done_editing.setStyleSheet(qss("""
+        styled(btn_done_editing, """
             QPushButton {
                 background-color: $bg;
                 border: 1px solid $accent;
                 border-radius: 3px;
-                color: $accent;
+                color: $accent_text;
                 font-size: 10px;
                 padding: 1px 6px;
             }
             QPushButton:hover {
                 background-color: $control_hover;
             }
-        """))
+        """)
         btn_done_editing.clicked.connect(self._on_done_editing_layer)
         banner_layout.addWidget(btn_done_editing)
         self.layer_active_banner.setVisible(False)
@@ -664,7 +677,7 @@ class MainWindow(QMainWindow):
     def _create_base_layer_card(self) -> QFrame:
         """Create the bottom card representing the unedited original photo."""
         card = QFrame()
-        card.setStyleSheet(qss("""
+        styled(card, """
             QFrame {
                 background-color: $surface;
                 border: 1px solid $border;
@@ -675,7 +688,7 @@ class MainWindow(QMainWindow):
                 background-color: $control;
                 border-color: $border_strong;
             }
-        """))
+        """)
         layout = QHBoxLayout(card)
         layout.setContentsMargins(6, 4, 6, 4)
         layout.setSpacing(8)
@@ -684,14 +697,14 @@ class MainWindow(QMainWindow):
         lbl_icon.setStyleSheet("font-size: 14px;")
         layout.addWidget(lbl_icon)
 
-        lbl_text = QLabel(qss("<b>Base Photo</b><br><span style='color: $text_muted; font-size: 10px;'>Original input</span>"))
-        lbl_text.setStyleSheet(qss("color: $text; font-size: 11px;"))
+        self.lbl_base_text = lbl_text = QLabel(qss(_BASE_CARD_TEXT))
+        styled(lbl_text, "color: $text; font-size: 11px;")
         layout.addWidget(lbl_text, stretch=1)
 
         btn_view_base = QPushButton("View")
         btn_view_base.setToolTip("Preview original unedited photo on canvas")
         btn_view_base.setFixedHeight(22)
-        btn_view_base.setStyleSheet(qss("""
+        styled(btn_view_base, """
             QPushButton {
                 background-color: $control;
                 border: 1px solid $border;
@@ -704,7 +717,7 @@ class MainWindow(QMainWindow):
                 background-color: $control_hover;
                 border-color: $border_strong;
             }
-        """))
+        """)
         btn_view_base.clicked.connect(self._on_view_base_photo)
         layout.addWidget(btn_view_base)
 
@@ -731,7 +744,7 @@ class MainWindow(QMainWindow):
         card = QFrame()
         card.setCursor(Qt.CursorShape.PointingHandCursor)
 
-        card.setStyleSheet(_LAYER_CARD_STYLE[is_active])
+        styled(card, _LAYER_CARD_STYLE[is_active])
 
         layout = QHBoxLayout(card)
         layout.setContentsMargins(6, 4, 6, 4)
@@ -745,7 +758,7 @@ class MainWindow(QMainWindow):
             btn_toggle.setToolTip(f"{layer.name} is visible (click to hide)")
         else:
             btn_toggle.setToolTip(f"{layer.name} is hidden (click to show)")
-        btn_toggle.setStyleSheet(_LAYER_TOGGLE_STYLE[layer.visible])
+        styled(btn_toggle, _LAYER_TOGGLE_STYLE[layer.visible])
         btn_toggle.clicked.connect(lambda _, i=idx: self._toggle_layer_visibility(i))
         layout.addWidget(btn_toggle)
         card.btn_toggle = btn_toggle
@@ -769,12 +782,12 @@ class MainWindow(QMainWindow):
         info_layout.setSpacing(1)
 
         name_lbl = QLabel(f"<b>{layer.name}</b>")
-        name_lbl.setStyleSheet(qss(f"color: {'$accent' if is_active else '$text'}; font-size: 11px;"))
+        styled(name_lbl, f"color: {'$accent_text' if is_active else '$text'}; font-size: 11px;")
         info_layout.addWidget(name_lbl)
 
         mode_str = "Fast Spot" if layer.engine_mode == EngineMode.FAST else "LaMa Variations"
         detail_lbl = QLabel(f"{mode_str}")
-        detail_lbl.setStyleSheet(qss("color: $text_muted; font-size: 10px;"))
+        styled(detail_lbl, "color: $text_muted; font-size: 10px;")
         info_layout.addWidget(detail_lbl)
 
         layout.addLayout(info_layout, stretch=1)
@@ -784,7 +797,7 @@ class MainWindow(QMainWindow):
         btn_delete.setFixedSize(24, 24)
         btn_delete.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_delete.setToolTip(f"Delete {layer.name}")
-        btn_delete.setStyleSheet(qss("""
+        styled(btn_delete, """
             QPushButton {
                 background-color: transparent;
                 border: 1px solid $border;
@@ -799,7 +812,7 @@ class MainWindow(QMainWindow):
                 border-color: $danger;
                 color: $on_accent;
             }
-        """))
+        """)
         btn_delete.clicked.connect(lambda _, i=idx: self._delete_layer(i))
         layout.addWidget(btn_delete)
         card.btn_delete = btn_delete
@@ -819,7 +832,7 @@ class MainWindow(QMainWindow):
         for idx, card in list(self.layer_card_widgets.items()):
             try:
                 is_active = (idx == self.active_layer_index)
-                card.setStyleSheet(_LAYER_CARD_STYLE[is_active])
+                styled(card, _LAYER_CARD_STYLE[is_active])
             except RuntimeError:
                 pass
 
@@ -836,7 +849,24 @@ class MainWindow(QMainWindow):
                 else:
                     btn.setText("")
                     btn.setToolTip(f"{layer.name} is hidden (click to show)")
-                btn.setStyleSheet(_LAYER_TOGGLE_STYLE[layer.visible])
+                styled(btn, _LAYER_TOGGLE_STYLE[layer.visible])
+
+    def _on_theme_toggled(self, dark: bool):
+        name = apply_theme("dark" if dark else "light")
+        self._settings.setValue(THEME_SETTINGS_KEY, name)
+
+    def on_theme_applied(self):
+        """Called by ui.apply_theme(): re-set what is painted from TOKENS rather than styled()."""
+        if not hasattr(self, "carousel_panel"):  # __init__ applies the saved theme before the UI exists
+            return
+        self.canvas.setBackgroundBrush(QBrush(QColor(TOKENS["canvas"])))
+        self.lbl_base_text.setText(qss(_BASE_CARD_TEXT))
+        if self.base_image is not None:
+            for layer in self.modification_layers:  # cached thumbnails have a TOKENS["control"] margin
+                layer.update_thumbnail(self.base_image)
+        self._refresh_layers_ui()  # keeps the active layer and visibility flags; only the cards are rebuilt
+        if self.carousel_panel.isVisible():
+            self._render_carousel_thumbnails()
 
     def _refresh_layers_ui(self):
         """Re-render all modification layer cards in the sidebar panel."""
@@ -1400,18 +1430,18 @@ class MainWindow(QMainWindow):
         for i in range(3):
             card = QFrame()
             card.setFixedSize(140, 72)
-            card.setStyleSheet(qss("""
+            styled(card, """
                 QFrame {
                     background-color: $surface;
                     border: 1px dashed $border_strong;
                     border-radius: 6px;
                 }
-            """))
+            """)
             c_layout = QVBoxLayout(card)
             c_layout.setContentsMargins(4, 4, 4, 4)
             c_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
             lbl = QLabel(f"⏳ Generating {i + 1}...")
-            lbl.setStyleSheet(qss("color: $accent; font-size: 11px; font-weight: 500;"))
+            styled(lbl, "color: $accent_text; font-size: 11px; font-weight: 500;")
             lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             c_layout.addWidget(lbl)
             self.var_card_layout.addWidget(card)
@@ -1420,7 +1450,7 @@ class MainWindow(QMainWindow):
         """Create the Lightroom-style top control bar."""
         bar = QFrame(self)
         bar.setObjectName("topBar")
-        bar.setStyleSheet(qss("""
+        styled(bar, """
             QFrame#topBar {
                 background-color: $surface;
                 border-bottom: 1px solid $border;
@@ -1434,7 +1464,7 @@ class MainWindow(QMainWindow):
                 border-style: solid;
                 border-color: $border;
             }
-        """))
+        """)
         # Groups wrap onto extra rows in a FlowLayout; Erase / Save stay pinned on the right
         bar_layout = QHBoxLayout(bar)
         bar_layout.setContentsMargins(10, 6, 10, 6)
@@ -1557,6 +1587,14 @@ class MainWindow(QMainWindow):
         self.btn_split.toggled.connect(self.canvas.set_split_compare_mode)
         layout.addWidget(self.btn_split)
 
+        # Light / Dark theme (a checked grey toggle, never an accent fill)
+        self.btn_theme = QPushButton("Dark")
+        self.btn_theme.setCheckable(True)
+        self.btn_theme.setChecked(TOKENS["bg"] == ui.PALETTES["dark"]["bg"])
+        self.btn_theme.setToolTip("Dark mode on/off; the choice is remembered (Ctrl+Shift+D)")
+        self.btn_theme.toggled.connect(self._on_theme_toggled)
+        layout.addWidget(self.btn_theme)
+
         layout = new_group()  # history
 
         # Undo / Redo
@@ -1587,7 +1625,7 @@ class MainWindow(QMainWindow):
 
         # Live Status Badge
         self.live_badge = QLabel("Live Synced" if self.is_live_mode else "Live Ready")
-        self.live_badge.setStyleSheet(qss("""
+        styled(self.live_badge, """
             QLabel {
                 background-color: transparent;
                 color: $success;
@@ -1597,7 +1635,7 @@ class MainWindow(QMainWindow):
                 font-size: $fs_sm;
                 padding: 2px 6px;
             }
-        """))
+        """)
         self.live_badge.setToolTip("Lightroom Classic Live IPC Bridge status")
         layout.addWidget(self.live_badge)
 
@@ -1644,7 +1682,7 @@ class MainWindow(QMainWindow):
         """Assistant strip under the top bar: ask field + Ask, quieter provider/model settings, inline answer."""
         bar = QFrame(self)
         bar.setObjectName("assistantBar")
-        bar.setStyleSheet(qss("""
+        styled(bar, """
             QFrame#assistantBar {
                 background-color: $surface;
                 border-bottom: 1px solid $border;
@@ -1671,7 +1709,7 @@ class MainWindow(QMainWindow):
                 font-size: $fs_sm;
                 color: $warning;
             }
-        """))
+        """)
         outer = QVBoxLayout(bar)
         outer.setContentsMargins(10, 6, 10, 6)
         outer.setSpacing(6)
@@ -1845,7 +1883,7 @@ class MainWindow(QMainWindow):
 
         # Dimensions & Megapixels
         self.dim_label = QLabel(" 0 × 0 px ")
-        self.dim_label.setStyleSheet(qss("color: $text_muted; font-size: $fs_sm; margin-right: $sp3;"))
+        styled(self.dim_label, "color: $text_muted; font-size: $fs_sm; margin-right: $sp3;")
         statusbar.addPermanentWidget(self.dim_label)
 
         # Progress bar
@@ -1856,17 +1894,17 @@ class MainWindow(QMainWindow):
 
         # Generation Elapsed Time Badge
         self.timer_label = QLabel("")
-        self.timer_label.setStyleSheet(qss("color: $success; font-weight: bold; font-size: $fs_sm; margin-right: $sp3;"))
+        styled(self.timer_label, "color: $success; font-weight: bold; font-size: $fs_sm; margin-right: $sp3;")
         statusbar.addPermanentWidget(self.timer_label)
 
         # Device & Hardware Acceleration Indicator
         self.dev_label = QLabel(f" {get_device_telemetry(self.engine.device)} ")
-        self.dev_label.setStyleSheet(qss("color: $text_muted; font-weight: bold; font-size: $fs_sm;"))
+        styled(self.dev_label, "color: $text_muted; font-weight: bold; font-size: $fs_sm;")
         statusbar.addPermanentWidget(self.dev_label)
 
         # Persistent LaMa load-failure warning (hidden unless the prewarm fails)
         self.model_warning_label = QLabel("")
-        self.model_warning_label.setStyleSheet(qss("color: $warning; font-weight: bold; font-size: $fs_sm; margin-left: $sp2;"))
+        styled(self.model_warning_label, "color: $warning; font-weight: bold; font-size: $fs_sm; margin-left: $sp2;")
         self.model_warning_label.setVisible(False)
         statusbar.addPermanentWidget(self.model_warning_label)
 
@@ -2596,7 +2634,7 @@ class MainWindow(QMainWindow):
             btn.setText(f" Variation {idx + 1}")
             btn.setFixedHeight(72)
             btn.setFixedWidth(160)
-            btn.setStyleSheet(qss("""
+            styled(btn, """
                 QPushButton {
                     background-color: $bg;
                     border: 2px solid $border;
@@ -2616,7 +2654,7 @@ class MainWindow(QMainWindow):
                     color: $text;
                     font-weight: bold;
                 }
-            """))
+            """)
             btn.clicked.connect(lambda checked, i=idx: self._on_select_variation(i))
             self.var_card_layout.addWidget(btn)
             self.var_buttons.append(btn)
@@ -2774,6 +2812,10 @@ class MainWindow(QMainWindow):
         if hasattr(self, "live_badge"):
             self.live_badge.setText("Live Synced" if self.is_live_mode else "Live Ready")
         return True
+
+    def _on_preview_timeout(self):
+        # A lambda capturing self made a window<->slot cycle; collecting it mid-test crashed (access violation)
+        self._leave_preview("timed out")
 
     def _leave_preview(self, why: str):
         """No full file will follow the preview (export failed / timed out): back to the previously loaded photo."""
@@ -3104,9 +3146,8 @@ def main():
 
     app = QApplication(sys.argv)
     app.setApplicationName("Efface Magique LR")
-    if hasattr(app.styleHints(), "setColorScheme"):  # Qt 6.8+: keep native widgets light when the OS is dark
-        app.styleHints().setColorScheme(Qt.ColorScheme.Light)
-    app.setStyleSheet(APP_STYLE)  # also reaches message boxes opened without a parent
+    apply_theme(restore_theme(_open_settings()))  # also sets Qt's colour scheme (6.8+) so native dialogs match
+    app.setStyleSheet(ui.APP_STYLE)  # also reaches message boxes opened without a parent
     if os.path.isfile(_LOGO_ICO_PATH):
         app.setWindowIcon(QIcon(_LOGO_ICO_PATH))
     elif os.path.isfile(_LOGO_PATH):

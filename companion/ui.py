@@ -3,7 +3,7 @@ ui.py
 Efface Magique LR - User Interface Components, Styling, and Overlays
 
 Provides:
-- Light theme stylesheet (APP_STYLE) and application brand assets
+- Light/dark palettes, app stylesheet (APP_STYLE) and apply_theme() and application brand assets
 - LoadingSpinnerOverlay: Smooth hardware-rendered loading spinner overlay for async tasks
 - HelpGuideDialog: Rich interactive User Guide, Installation, Shortcuts, and Packaging dialog
 - FlowLayout: left-to-right layout that wraps whole items onto new rows (responsive top bar)
@@ -57,33 +57,69 @@ _LOGO_ICO_PATH = os.path.join(_ASSETS_DIR, "logo.ico").replace("\\", "/")
 # Design tokens: the one place for chrome colours, spacing, radii and type sizes.
 # Greys are neutral (R=G=B) so the chrome never tints how the photo's colours are judged;
 # the accent is kept for the primary action, checked toggles, focus and selection.
+PALETTES = {
+    "light": {
+        "bg": "#ffffff",              # window ground, dialogs, layer panel
+        "surface": "#f7f7f7",         # top bar, assistant bar, popups, tooltips
+        "control": "#ececec",         # secondary button / combo face
+        "control_hover": "#e0e0e0",
+        "control_pressed": "#d4d4d4",
+        "control_checked": "#dadada",  # checked toggle: a darker grey plus an accent edge
+        "field": "#ffffff",           # text fields
+        "border": "#c8c8c8",
+        "border_strong": "#a0a0a0",
+        "status": "#f0f0f0",          # status bar
+        "canvas": "#d4d4d4",          # photo surround: grey, not white, so a high-key photo's edge stays visible
+        "text": "#1f1f1f",
+        "text_muted": "#595959",
+        "text_disabled": "#a0a0a0",   # exempt from WCAG contrast
+        "on_accent": "#ffffff",
+        "accent": "#0a64c0",          # fills and borders
+        "accent_text": "#0a64c0",     # accent used as a text colour
+        "accent_hover": "#1570cc",
+        "accent_pressed": "#0b5aa8",
+        "accent_disabled": "#c5d8ee",
+        "accent_tint": "#e6f0fa",     # active layer card / editing banner / checked variation
+        "focus": "#1a73e8",
+        "success": "#17693a",         # Save to Lightroom label / Live badge text
+        "success_border": "#3a9a62",
+        "warning": "#8f4f00",
+        "danger": "#c62828",          # delete-layer hover fill
+    },
+    "dark": {
+        "bg": "#1e1e1e",
+        "surface": "#262626",
+        "control": "#333333",
+        "control_hover": "#3d3d3d",
+        "control_pressed": "#1f1f1f",
+        "control_checked": "#474747",  # checked toggle: a lighter grey plus an accent edge
+        "field": "#1f1f1f",
+        "border": "#424242",
+        "border_strong": "#5a5a5a",
+        "status": "#181818",
+        "canvas": "#181818",
+        "text": "#e8e8e8",
+        "text_muted": "#a8a8a8",
+        "text_disabled": "#666666",
+        "on_accent": "#ffffff",
+        "accent": "#0a64c0",
+        "accent_text": "#5ab0ff",     # #0a64c0 is under 3:1 as text on the dark greys
+        "accent_hover": "#1570cc",
+        "accent_pressed": "#0b5aa8",
+        "accent_disabled": "#2a3440",
+        "accent_tint": "#15283c",
+        "focus": "#5ab0ff",
+        "success": "#6fcf97",
+        "success_border": "#2f8f5b",
+        "warning": "#f0a030",
+        "danger": "#d32f2f",
+    },
+}
+THEMES = tuple(PALETTES)
+DEFAULT_THEME = "light"
+
 TOKENS = {
-    # Colours (light theme)
-    "bg": "#ffffff",              # window ground, dialogs, layer panel
-    "surface": "#f7f7f7",         # top bar, assistant bar, popups, tooltips
-    "control": "#ececec",         # secondary button / combo face
-    "control_hover": "#e0e0e0",
-    "control_pressed": "#d4d4d4",
-    "control_checked": "#dadada",  # checked toggle: a darker grey plus an accent edge
-    "field": "#ffffff",           # text fields
-    "border": "#c8c8c8",
-    "border_strong": "#a0a0a0",
-    "status": "#f0f0f0",          # status bar
-    "canvas": "#d4d4d4",          # photo surround: grey, not white, so a high-key photo's edge stays visible
-    "text": "#1f1f1f",
-    "text_muted": "#595959",
-    "text_disabled": "#a0a0a0",   # exempt from WCAG contrast
-    "on_accent": "#ffffff",
-    "accent": "#0a64c0",
-    "accent_hover": "#1570cc",
-    "accent_pressed": "#0b5aa8",
-    "accent_disabled": "#c5d8ee",
-    "accent_tint": "#e6f0fa",     # active layer card / editing banner / checked variation
-    "focus": "#1a73e8",
-    "success": "#17693a",         # Save to Lightroom label / Live badge text
-    "success_border": "#3a9a62",
-    "warning": "#8f4f00",
-    "danger": "#c62828",          # delete-layer hover fill
+    **PALETTES[DEFAULT_THEME],
     # Spacing scale (px, 4-pt steps)
     "sp1": "4px", "sp2": "8px", "sp3": "12px", "sp4": "16px",
     # Radii
@@ -97,7 +133,7 @@ def qss(text: str) -> str:
     return Template(text).substitute(TOKENS)
 
 
-APP_STYLE = qss("""
+APP_STYLE_TEMPLATE = """
 QMainWindow, QDialog {
     background-color: $bg;
     color: $text;
@@ -380,9 +416,45 @@ QScrollBar::add-line, QScrollBar::sub-line {
 QScrollBar::add-page, QScrollBar::sub-page {
     background: none;
 }
-""").replace("__CHECKMARK_URL__", _CHECKMARK_PATH)
+""".replace("__CHECKMARK_URL__", _CHECKMARK_PATH)
+APP_STYLE = qss(APP_STYLE_TEMPLATE)  # the active palette's app stylesheet; apply_theme() rebuilds it
 
-_HELP_PAGE_STYLE = qss("background-color: $bg; color: $text; border: none; padding: 12px; font-size: 12px;")
+_HELP_PAGE_STYLE = "background-color: $bg; color: $text; border: none; padding: 12px; font-size: 12px;"
+
+_TEMPLATE_PROP = "_qss_template"
+
+
+def styled(widget: QWidget, template: str) -> None:
+    """Set a $token stylesheet on a widget and remember the template so apply_theme() can re-render it."""
+    widget.setProperty(_TEMPLATE_PROP, template)
+    widget.setStyleSheet(qss(template))
+
+
+def apply_theme(name: str) -> str:
+    """Switch every token-built style to PALETTES[name] (unknown names fall back to light); returns the name used."""
+    global APP_STYLE
+    if name not in PALETTES:
+        name = DEFAULT_THEME
+    TOKENS.update(PALETTES[name])
+    APP_STYLE = qss(APP_STYLE_TEMPLATE)
+    app = QApplication.instance()
+    if app is None:
+        return name
+    if hasattr(app.styleHints(), "setColorScheme"):  # Qt 6.8+: native dialogs and message boxes follow the theme
+        app.styleHints().setColorScheme(Qt.ColorScheme.Dark if name == "dark" else Qt.ColorScheme.Light)
+    if app.styleSheet():  # main() sets it; tests leave it empty
+        app.setStyleSheet(APP_STYLE)
+    for w in app.allWidgets():
+        template = w.property(_TEMPLATE_PROP)
+        if template:
+            w.setStyleSheet(qss(template))
+    for w in app.topLevelWidgets():
+        hook = getattr(w, "on_theme_applied", None)  # painted surfaces and rebuilt cards (MainWindow)
+        if callable(hook):
+            hook()
+    for w in app.allWidgets():
+        w.update()  # canvas viewport, spinner, HUD and toast read TOKENS when they paint
+    return name
 
 
 # -----------------------------------------------------------------------------
@@ -620,13 +692,13 @@ class HelpGuideDialog(QDialog):
 
         header_text = QVBoxLayout()
         title = QLabel("Efface Magique LR (LaMa Variations Eraser)")
-        title.setStyleSheet(qss("font-size: 18px; font-weight: bold; color: $text;"))
+        styled(title, "font-size: 18px; font-weight: bold; color: $text;")
         subtitle = QLabel("Local, private AI inpainting companion for Adobe Lightroom Classic")
-        subtitle.setStyleSheet(qss("font-size: 12px; color: $accent; font-weight: 500;"))
+        styled(subtitle, "font-size: 12px; color: $accent_text; font-weight: 500;")
         header_text.addWidget(title)
         header_text.addWidget(subtitle)
         self.version_label = QLabel(f"Version {__version__}")
-        self.version_label.setStyleSheet(qss("font-size: 11px; color: $text_muted;"))
+        styled(self.version_label, "font-size: 11px; color: $text_muted;")
         header_text.addWidget(self.version_label)
         header.addLayout(header_text)
         header.addStretch(1)
@@ -634,7 +706,7 @@ class HelpGuideDialog(QDialog):
 
         # Tabs
         self.tabs = QTabWidget(self)
-        self.tabs.setStyleSheet(qss("""
+        styled(self.tabs, """
             QTabWidget::pane {
                 border: 1px solid $border;
                 background-color: $bg;
@@ -657,24 +729,24 @@ class HelpGuideDialog(QDialog):
             QTabBar::tab:hover {
                 color: $text;
             }
-        """))
+        """)
 
         # Tab 1: Installation
         tab_install = QTextBrowser()
         tab_install.setOpenExternalLinks(True)
-        tab_install.setStyleSheet(_HELP_PAGE_STYLE)
+        styled(tab_install, _HELP_PAGE_STYLE)
         tab_install.setHtml(qss("""
             <h2 style="color: $success; margin-top: 0;">🚀 Installation &amp; Setup Guide</h2>
             <p>Efface Magique LR runs 100% locally and privately on your machine, integrating natively with Adobe Lightroom Classic.</p>
             
-            <h3 style="color: $accent;">Step 1: Install Dependencies (1-Click)</h3>
+            <h3 style="color: $accent_text;">Step 1: Install Dependencies (1-Click)</h3>
             <ul>
                 <li><b>Windows:</b> Double-click <code>install.bat</code> in the app directory, or run it in Command Prompt / PowerShell.</li>
                 <li><b>macOS / Linux:</b> Open Terminal in the app folder and run <code>chmod +x install.sh && ./install.sh</code>.</li>
             </ul>
             <p style="color: $text_muted;"><i>The installer automatically configures a local Python virtual environment (<code>.venv</code>) with all AI PyTorch and Simple-LaMa dependencies.</i></p>
 
-            <h3 style="color: $accent;">Step 2: Add the Plugin to Adobe Lightroom Classic</h3>
+            <h3 style="color: $accent_text;">Step 2: Add the Plugin to Adobe Lightroom Classic</h3>
             <ol>
                 <li>Open <b>Adobe Lightroom Classic</b>.</li>
                 <li>Open the Plug-in Manager by going to: <b>File &gt; Plug-in Manager...</b> (or press <code>Ctrl + Alt + Shift + ,</code> on Windows / <code>Cmd + Opt + Shift + ,</code> on Mac).</li>
@@ -689,11 +761,11 @@ class HelpGuideDialog(QDialog):
         # Tab 2: How to Use
         tab_usage = QTextBrowser()
         tab_usage.setOpenExternalLinks(True)
-        tab_usage.setStyleSheet(_HELP_PAGE_STYLE)
+        styled(tab_usage, _HELP_PAGE_STYLE)
         tab_usage.setHtml(qss("""
             <h2 style="color: $success; margin-top: 0;">✨ How to Use Efface Magique LR</h2>
 
-            <h3 style="color: $accent;">⚡ Quick Start Guide</h3>
+            <h3 style="color: $accent_text;">⚡ Quick Start Guide</h3>
             <ol>
                 <li>In Lightroom Classic, select: <b>File &gt; Plug-in Extras &gt; ⚡ AI Generative Eraser (Live Window)...</b></li>
                 <li>The companion window appears displaying your active photo.</li>
@@ -706,7 +778,7 @@ class HelpGuideDialog(QDialog):
                 <li>Click <b>📌 Pin</b> (<code>Ctrl + T</code>) to keep the companion floating on top of Lightroom while you work.</li>
             </ol>
 
-            <h3 style="color: $accent;">Assistant (optional)</h3>
+            <h3 style="color: $accent_text;">Assistant (optional)</h3>
             <p>Install <code>requirements-agent.txt</code>, pick a provider (ollama, anthropic, openai, gemini) and a model
             name, then type a request such as <i>remove the person on the left</i> and press <b>Ask</b>.
             The assistant detects objects, proposes an erase and shows a preview; nothing is added to your layers
@@ -723,7 +795,7 @@ class HelpGuideDialog(QDialog):
 
         # Tab 3: Shortcuts
         tab_shortcuts = QTextBrowser()
-        tab_shortcuts.setStyleSheet(_HELP_PAGE_STYLE)
+        styled(tab_shortcuts, _HELP_PAGE_STYLE)
         tab_shortcuts.setHtml(qss("""
             <h2 style="color: $success; margin-top: 0;">⌨ Keyboard Shortcuts Reference</h2>
             <table width="100%" cellpadding="6" cellspacing="0" style="border-collapse: collapse; border: 1px solid $border;">
@@ -776,6 +848,10 @@ class HelpGuideDialog(QDialog):
                     <td>1:1 View at 100% pixel scale</td>
                 </tr>
                 <tr style="border-bottom: 1px solid $border;">
+                    <td style="padding: 6px 10px;"><code>Ctrl + Shift + D</code></td>
+                    <td>Switch between light and dark mode (remembered)</td>
+                </tr>
+                <tr style="border-bottom: 1px solid $border;">
                     <td style="padding: 6px 10px;"><code>F1</code></td>
                     <td>💡 Open this User Guide &amp; Setup Dialog</td>
                 </tr>
@@ -791,7 +867,7 @@ class HelpGuideDialog(QDialog):
 
         share_text = QTextBrowser()
         share_text.setOpenExternalLinks(True)
-        share_text.setStyleSheet(qss("background-color: transparent; color: $text; border: none; font-size: 12px;"))
+        styled(share_text, "background-color: transparent; color: $text; border: none; font-size: 12px;")
         share_text.setHtml(qss("""
             <h2 style="color: $success; margin-top: 0;">📥 Easy Download &amp; Share for Other Users</h2>
             <p>You can easily distribute Efface Magique LR to other photographers or friends without requiring Git:</p>
@@ -805,7 +881,7 @@ class HelpGuideDialog(QDialog):
         share_vbox.addWidget(share_text)
 
         btn_package = QPushButton("📦 Package Distribution ZIP for Other Users")
-        btn_package.setStyleSheet(qss("""
+        styled(btn_package, """
             QPushButton {
                 background-color: $accent;
                 color: $on_accent;
@@ -817,7 +893,7 @@ class HelpGuideDialog(QDialog):
             QPushButton:hover {
                 background-color: $accent_hover;
             }
-        """))
+        """)
         btn_package.clicked.connect(self._on_package_distribution)
         share_vbox.addWidget(btn_package)
         share_vbox.addStretch(1)

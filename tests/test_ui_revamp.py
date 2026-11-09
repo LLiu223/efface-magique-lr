@@ -14,7 +14,7 @@ if _PROJECT_ROOT not in sys.path:
 import companion.app as app  # noqa: E402
 from companion.agent import llm  # noqa: E402
 from companion.agent.harness import AgentResult  # noqa: E402
-from companion.ui import APP_STYLE, TOKENS  # noqa: E402
+from companion.ui import APP_STYLE, PALETTES, TOKENS, qss  # noqa: E402
 
 
 def _luminance(hex_colour):
@@ -23,8 +23,8 @@ def _luminance(hex_colour):
     return 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2]
 
 
-def contrast(fg, bg):
-    hi, lo = sorted((_luminance(TOKENS[fg]), _luminance(TOKENS[bg])), reverse=True)
+def contrast(fg, bg, palette=TOKENS):
+    hi, lo = sorted((_luminance(palette[fg]), _luminance(palette[bg])), reverse=True)
     return (hi + 0.05) / (lo + 0.05)
 
 
@@ -36,29 +36,42 @@ TEXT_PAIRS = [
     ("text_muted", "bg"), ("text_muted", "surface"), ("text_muted", "control"), ("text_muted", "control_hover"),
     ("text_muted", "field"), ("text_muted", "status"),
     ("on_accent", "accent"), ("on_accent", "accent_hover"), ("on_accent", "accent_pressed"), ("on_accent", "danger"),
-    ("accent", "bg"), ("accent", "surface"), ("accent", "accent_tint"),
+    ("accent_text", "bg"), ("accent_text", "surface"), ("accent_text", "accent_tint"),
     ("success", "bg"), ("success", "surface"), ("success", "control"), ("success", "control_hover"),
     ("success", "status"),
     ("warning", "bg"), ("warning", "status"), ("warning", "surface"), ("warning", "control"),
 ]
 
 
+@pytest.mark.parametrize("theme", PALETTES)
 @pytest.mark.parametrize("fg,bg", TEXT_PAIRS)
-def test_text_tokens_meet_wcag_aa(fg, bg):
-    assert contrast(fg, bg) >= 4.5, (fg, bg, round(contrast(fg, bg), 2))
+def test_text_tokens_meet_wcag_aa(fg, bg, theme):
+    ratio = contrast(fg, bg, PALETTES[theme])
+    assert ratio >= 4.5, (theme, fg, bg, round(ratio, 2))
 
 
-def test_focus_ring_is_visible_against_the_chrome():
+@pytest.mark.parametrize("theme", PALETTES)
+def test_focus_ring_is_visible_against_the_chrome(theme):
     for bg in ("bg", "surface", "control", "field"):
-        assert contrast("focus", bg) >= 3.0  # non-text UI component contrast
+        assert contrast("focus", bg, PALETTES[theme]) >= 3.0, (theme, bg)  # non-text UI component contrast
 
 
-def test_chrome_greys_are_neutral_and_stylesheet_is_built_from_tokens():
-    coloured = {"accent", "accent_hover", "accent_pressed", "accent_disabled", "accent_tint", "focus", "success",
-                "success_border", "warning", "danger"}
-    for name, value in TOKENS.items():
-        if value.startswith("#") and name not in coloured:
-            assert value[1:3] == value[3:5] == value[5:7], (name, value)
+def test_palettes_hold_the_same_colour_tokens_only():
+    assert PALETTES["light"].keys() == PALETTES["dark"].keys()
+    assert all(v.startswith("#") for p in PALETTES.values() for v in p.values())
+    assert PALETTES["dark"]["accent"] == PALETTES["light"]["accent"]  # stays dark enough under white on_accent
+
+
+@pytest.mark.parametrize("theme", PALETTES)
+def test_chrome_greys_are_neutral(theme):
+    coloured = {"accent", "accent_text", "accent_hover", "accent_pressed", "accent_disabled", "accent_tint", "focus",
+                "success", "success_border", "warning", "danger"}
+    for name, value in PALETTES[theme].items():
+        if name not in coloured:
+            assert value[1:3] == value[3:5] == value[5:7], (theme, name, value)
+
+
+def test_stylesheet_is_built_from_tokens():
     assert "$" not in APP_STYLE
     for state in ("hover", "pressed", "disabled", "focus"):
         for widget in ("QPushButton", "QComboBox", "QLineEdit"):
@@ -69,7 +82,8 @@ def test_chrome_greys_are_neutral_and_stylesheet_is_built_from_tokens():
         assert rule in APP_STYLE, rule
 
 
-def test_theme_is_light():
+def test_default_palette_is_light():
+    assert {k: TOKENS[k] for k in PALETTES["light"]} == PALETTES["light"]
     for name in ("bg", "surface", "field", "status"):
         assert _luminance(TOKENS[name]) > 0.8, name
     assert _luminance(TOKENS["text"]) < 0.05
@@ -233,12 +247,12 @@ def test_no_unfilled_token_left_in_any_rendered_style(qtbot):
     """A leftover $ (e.g. $$token in an f-string fed to qss()) is an invalid rule Qt silently drops."""
     from PyQt6.QtWidgets import QWidget
     from companion.ui import _HELP_PAGE_STYLE, HelpGuideDialog
-    styles = {"APP_STYLE": APP_STYLE, "_HELP_PAGE_STYLE": _HELP_PAGE_STYLE}
+    styles = {"APP_STYLE": APP_STYLE, "_HELP_PAGE_STYLE": _HELP_PAGE_STYLE}  # the module-level ones are templates
     styles.update({f"_LAYER_CARD_STYLE[{k}]": v for k, v in app._LAYER_CARD_STYLE.items()})
     styles.update({f"_LAYER_TOGGLE_STYLE[{k}]": v for k, v in app._LAYER_TOGGLE_STYLE.items()})
     assert len(styles) == 6
     for name, sheet in styles.items():
-        assert "$" not in sheet, name
+        assert "$" not in qss(sheet), name
     w = app.MainWindow()
     qtbot.addWidget(w)
     h = HelpGuideDialog(w)
