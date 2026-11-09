@@ -339,3 +339,43 @@ def test_install_bat_offers_ollama_pull_only_when_ollama_exists():
     i = text.index("where ollama")
     assert "ollama pull qwen3:8b" in text[i:] and text.count("where ollama") == 1
     assert "ollama.com/download" not in text and "OllamaSetup" not in text  # never installs Ollama
+
+
+# --- a stage that raises (e.g. CUDA out of memory) falls back -----------------------------------------
+
+class _Boom:
+    def __init__(self):
+        self.calls = 0
+
+    def __call__(self, *a, **k):
+        self.calls += 1
+        raise RuntimeError("CUDA out of memory")
+
+
+def test_sam_error_on_voc_regions_falls_back_to_refine_with_one_warning(monkeypatch, no_clipseg, caplog):
+    net = FakeSegNet([(PERSON, 0.05, 0.35), (PERSON, 0.65, 0.95)])
+    monkeypatch.setattr(agent_tools, "get_segmentation_model", lambda *a, **k: net)
+    _install(monkeypatch, sam=(_Boom(), FakeSamModel()))
+    refined = []
+    real = agent_tools.refine_region
+    monkeypatch.setattr(agent_tools, "refine_region", lambda *a: refined.append(1) or real(*a))
+    s = AgentSession(engine=FakeEngine(), image=_people())
+    out = json.loads(s.detect_regions())
+    assert len(out["regions"]) == 2 and refined == [1, 1]
+    assert sum("SAM 2 failed, falling back" in r.message for r in caplog.records) == 1
+
+
+def test_gdino_stage_error_falls_back_to_clipseg(monkeypatch, clipseg, caplog):
+    model, _ = clipseg
+    model.heat = np.full((352, 352), 0.9)
+    _install(monkeypatch, gdino=(FakeGdinoProcessor(TWO_PEOPLE), FakeGdinoModel()), sam=(_Boom(), FakeSamModel()))
+    s = AgentSession(engine=FakeEngine(), image=_people())
+    out = json.loads(s.detect_regions("person"))
+    assert s.detector == "clipseg" and out["regions"][0]["label"] == "person"
+    assert sum("Grounding DINO / SAM 2 failed" in r.message for r in caplog.records) == 1
+
+
+def test_matte_error_keeps_the_outline_without_soft_edges(monkeypatch, no_clipseg, caplog):
+    m = _left_person(monkeypatch, (_Boom(), FakeVitMatteModel()))
+    assert m[220, 120] and not m[76, 120]  # the SAM outline, no strand
+    assert sum("ViTMatte failed, falling back" in r.message for r in caplog.records) == 1

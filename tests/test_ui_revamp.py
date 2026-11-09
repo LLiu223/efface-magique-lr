@@ -35,7 +35,7 @@ TEXT_PAIRS = [
     ("text_muted", "surface"), ("text_muted", "control"), ("text_muted", "field"), ("text_muted", "status"),
     ("on_accent", "accent"), ("on_accent", "accent_hover"), ("on_accent", "accent_pressed"),
     ("success", "surface"), ("success", "control"), ("success", "control_hover"), ("success", "status"),
-    ("warning", "status"),
+    ("warning", "status"), ("warning", "surface"),
 ]
 
 

@@ -7,6 +7,7 @@ goes through `sanitize_text` first.
 """
 
 import json
+import logging
 import re
 import threading
 from dataclasses import dataclass, field
@@ -20,6 +21,8 @@ from companion.models import registry
 from companion.utils import clipseg_detector
 from companion.utils import precise_models as precise
 from companion.utils.subject_detector import get_segmentation_model
+
+logger = logging.getLogger("EffaceMagiqueAgent")
 
 TOOL_NAMES = ("list_models", "select_model", "set_prompt", "detect_regions", "select_regions")
 MIN_REGION_SHARE = 0.002   # ignore specks below 0.2 % of the frame
@@ -107,6 +110,12 @@ def voc_categories() -> List[str]:
     return list(seg.LRASPP_MobileNet_V3_Large_Weights.DEFAULT.meta["categories"])
 
 
+def _free_cuda():
+    import torch
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
 def _to(inputs, param) -> dict:
     """Processor outputs on the model's device; float tensors in its dtype (fp16 on CUDA for SAM 2)."""
     return {k: v.to(param.device, param.dtype) if v.is_floating_point() else v.to(param.device)
@@ -190,20 +199,34 @@ class AgentSession:
         small = img.resize((max(32, int(w * scale)), max(32, int(h * scale))), Image.Resampling.BILINEAR)
         notes = []
         outlined = []  # (share, label, full-size uint8 0/255 mask, position)
+        warned = set()
+
+        def stage_failed(stage: str, e: Exception):
+            """A stage that raises (e.g. CUDA out of memory next to Stable Diffusion) falls back; one warning per call."""
+            if stage not in warned:
+                warned.add(stage)
+                logger.warning(f"{stage} failed, falling back: {type(e).__name__}: {str(e)[:200]}")
+            _free_cuda()
+
         # Grounding DINO only gives boxes, so it is used when SAM 2 can outline them
         gdino = precise.GROUNDING_DINO.get() if query and precise.SAM2.get() is not None else None
         if gdino is not None:
             detector = "grounding_dino"
             self.progress("Finding objects...")
-            for label, box in self._gdino_boxes(gdino, small, query)[:MAX_REGIONS]:
-                box = box * (w / small.width)
-                self.progress("Outlining...")
-                mask = self._sam_outline(img, box)
-                share = np.count_nonzero(mask) / mask.size
-                if share >= MIN_REGION_SHARE:
-                    outlined.append((share, label, mask, _position((box[0] + box[2]) / 2, (box[1] + box[3]) / 2, w, h)))
+            try:
+                for label, box in self._gdino_boxes(gdino, small, query)[:MAX_REGIONS]:
+                    box = box * (w / small.width)
+                    self.progress("Outlining...")
+                    mask = self._sam_outline(img, box)
+                    share = np.count_nonzero(mask) / mask.size
+                    if share >= MIN_REGION_SHARE:
+                        outlined.append((share, label, mask,
+                                         _position((box[0] + box[2]) / 2, (box[1] + box[3]) / 2, w, h)))
+            except Exception as e:
+                stage_failed("Grounding DINO / SAM 2", e)
+                gdino, outlined = None, []  # run the CLIPSeg/VOC path instead
             outlined.sort(key=lambda f: -f[0])
-        else:
+        if gdino is None:
             clipseg = clipseg_detector.get_clipseg() if query else None
             if clipseg is not None:
                 found, (sh, sw) = self._clipseg_regions(clipseg, small, query), small.size[::-1]
@@ -223,7 +246,11 @@ class AgentSession:
             for share, label, comp, (cx, cy) in found[:MAX_REGIONS]:
                 coarse = cv2.resize(comp.astype(np.uint8) * 255, (w, h), interpolation=cv2.INTER_NEAREST)
                 self.progress("Outlining...")
-                full = self._sam_refine(img, coarse)
+                try:
+                    full = self._sam_refine(img, coarse)
+                except Exception as e:
+                    stage_failed("SAM 2", e)
+                    full = None
                 if full is None:
                     full = refine_region(img, coarse, segmenters[label], max(w, h) / max(sw, sh))
                 outlined.append((share, label, full, _position(cx, cy, sw, sh)))
@@ -237,7 +264,10 @@ class AgentSession:
             rid = f"r{idx}"
             if wants_matte(label) and precise.VITMATTE.get() is not None:
                 self.progress("Refining hair and fur edges...")
-                full = self._matte(img, full)
+                try:
+                    full = self._matte(img, full)
+                except Exception as e:
+                    stage_failed("ViTMatte", e)  # keep the outline without soft edges
             self.region_masks[rid] = cv2.dilate(full, kernel)
             self.regions[rid] = {"id": rid, "label": label, "area_share": round(float(share), 4), "position": position}
         out = {"regions": list(self.regions.values())}

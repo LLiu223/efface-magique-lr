@@ -1708,6 +1708,10 @@ class MainWindow(QMainWindow):
                 color: $text;
                 font-size: $fs_md;
             }
+            QLabel#agentModelHint {
+                font-size: $fs_sm;
+                color: $warning;
+            }
         """))
         outer = QVBoxLayout(bar)
         outer.setContentsMargins(10, 6, 10, 6)
@@ -1745,12 +1749,16 @@ class MainWindow(QMainWindow):
         self.agent_model_hint = QLabel()
         self.agent_model_hint.setObjectName("agentModelHint")
         self.agent_model_hint.setTextFormat(Qt.TextFormat.PlainText)  # the model name is user text
+        self.agent_model_hint.setAccessibleName("Assistant model hint")
+        self.agent_model_hint.setWordWrap(True)
         self.agent_model_hint.setVisible(False)
         self.ed_agent_model.setCurrentText(self._settings.value(agent_pkg.KEY_MODEL, agent_pkg.DEFAULT_AGENT_MODEL, type=str))
         self._agent_model_tip = "Assistant LLM model: pick one or type a name (e.g. qwen3:8b, claude-sonnet-4-5, gpt-4o-mini)"
         self.ed_agent_model.setToolTip(self._agent_model_tip)
         self.ed_agent_model.currentTextChanged.connect(lambda t: self._settings.setValue(agent_pkg.KEY_MODEL, t.strip()))
-        self.ed_agent_model.currentTextChanged.connect(lambda _: self._update_agent_model_hint())
+        # not on every keystroke: only once a model is picked or typing is finished
+        self.ed_agent_model.activated.connect(lambda _: self._update_agent_model_hint())
+        self.ed_agent_model.lineEdit().editingFinished.connect(self._update_agent_model_hint)
         self._agent_models_listed.connect(self._on_agent_models_listed)
         self.combo_agent_provider.currentTextChanged.connect(lambda _: self._refresh_agent_models(user=True))
         self.btn_agent_ask = QPushButton("Ask")
@@ -1770,8 +1778,10 @@ class MainWindow(QMainWindow):
         settings_label = QLabel("LLM")
         settings_label.setObjectName("assistantSettings")
         row.addWidget(settings_label)
-        for w in (self.combo_agent_provider, self.ed_agent_model, self.agent_model_hint, self.btn_agent_usage):
+        for w in (self.combo_agent_provider, self.ed_agent_model, self.btn_agent_usage):
             row.addWidget(w)
+        # its own row, so a long model name never squeezes the controls above
+        outer.addWidget(self.agent_model_hint, alignment=Qt.AlignmentFlag.AlignRight)
         self.btn_agent_cancel.setVisible(False)
         self.agent_enabled = agent_pkg.agent_available()
         if not self.agent_enabled:

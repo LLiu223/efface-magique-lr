@@ -55,9 +55,29 @@ def test_recommended_listed_first_with_a_pull_hint_when_missing(qtbot, agent_on,
     assert not w.agent_model_hint.isHidden()
     assert w.agent_model_hint.textFormat() == app.Qt.TextFormat.PlainText
     w.ed_agent_model.setCurrentIndex(1)
+    w.ed_agent_model.activated.emit(1)  # what a user pick sends
     assert w._settings.value(app.agent_pkg.KEY_MODEL) == "qwen3.5:4b" and w.agent_model_hint.isHidden()
-    w.ed_agent_model.setCurrentText("llama3.1")  # matches llama3.1:latest
+    edit = w.ed_agent_model.lineEdit()
+    edit.setText("qwen3:1")  # typing: no hint for every partial name
     assert w.agent_model_hint.isHidden()
+    edit.editingFinished.emit()
+    assert w.agent_model_hint.text() == "not installed: run ollama pull qwen3:1"
+    edit.setText("llama3.1")  # matches llama3.1:latest
+    edit.editingFinished.emit()
+    assert w.agent_model_hint.isHidden()
+
+
+def test_hint_is_styled_named_wrapped_and_on_its_own_row(qtbot, agent_on, monkeypatch):
+    w = _window(qtbot, monkeypatch, [])
+    hint = w.agent_model_hint
+    assert hint.accessibleName() == "Assistant model hint" and hint.wordWrap()
+    sheet = hint.parentWidget().styleSheet()
+    rule = sheet[sheet.index("QLabel#agentModelHint"):]
+    rule = rule[:rule.index("}")]
+    from companion.ui import TOKENS
+    assert TOKENS["warning"] in rule and "font-size" in rule and "$" not in rule
+    row = w.ed_agent_model.parentWidget().layout().itemAt(0).layout()  # the controls row
+    assert row.indexOf(w.ed_agent_model) >= 0 and row.indexOf(hint) < 0
 
 
 def test_delegate_shows_the_note_but_the_text_stays_bare(qtbot, agent_on, monkeypatch):
