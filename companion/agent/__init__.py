@@ -13,7 +13,9 @@ KEY_OLLAMA_URL = "agent/ollama_url"
 KEY_TOKEN_BUDGET = "agent/token_budget"
 KEY_STORE_PROMPTS = "agent/store_prompts"
 DEFAULT_PROVIDER = "ollama"
-DEFAULT_AGENT_MODEL = "llama3.1"
+DEFAULT_AGENT_MODEL = "qwen3:8b"
+# Listed first in the Ollama picker even before they are pulled: (name, note shown next to it)
+RECOMMENDED_OLLAMA_MODELS = (("qwen3:8b", "recommended, 5.2 GB"), ("qwen3.5:4b", "light, 3.3 to 4 GB"))
 
 
 def agent_available() -> bool:

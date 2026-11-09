@@ -44,17 +44,17 @@ SYSTEM_PROMPT = (
 
 def photo_context(session: AgentSession) -> str:
     """Facts about this request the model cannot see: photo size, active model, what can be detected."""
-    from companion.utils import clipseg_detector
+    from companion.utils import precise_models as precise
     w, h = session.image.size
     lines = [f"Photo: {w}x{h} px. Active inpainting model: {getattr(session.engine, 'model_name', '?')}."]
-    if clipseg_detector.is_available():
-        lines.append("detect_regions can find any object you name in words.")
+    if all(m.is_available() and not m.failed() for m in (precise.GROUNDING_DINO, precise.SAM2)):
+        lines.append("detect_regions can find any named object, one region per instance (Grounding DINO).")
     else:
         from companion.agent.tools import voc_categories
         names = ", ".join(voc_categories()[1:])
         lines.append(f"detect_regions can only find these classes: {names}. Map the user's words to one "
                      "(man/woman/child -> person, plane -> aeroplane, car/van -> car); if none fits, say the "
-                     "object can't be found yet and that install.bat's optional detector step adds it.")
+                     "object can't be found yet and that install.bat's optional Precise selection step adds it.")
     return "\n".join(lines)
 
 
@@ -64,7 +64,7 @@ def _fallback_select(session: AgentSession, user_text: str) -> bool:
         return False
     words = f"{user_text} {session.query}".lower()  # the model's query maps "man" to the VOC label "person"
     ids = [r for r, d in session.regions.items()
-           if session.detector == "clipseg" or d["label"].lower() in words]  # clipseg regions are the query itself
+           if session.detector == "grounding_dino" or d["label"].lower() in words]  # found for the query itself
     if not ids:
         return False
     session.select_regions(ids)

@@ -78,6 +78,8 @@ def make_llm(provider: str, model: str, *, base_url: Optional[str] = None, timeo
         raise AgentConfigError("Enter an assistant model name first.")
     if provider == "ollama":
         from langchain_ollama import ChatOllama
+        if model.lower().startswith("qwen3"):
+            opts.setdefault("reasoning", False)  # sent as Ollama think=false: no slow thinking pass; others get no think
         return ChatOllama(model=model, base_url=base_url or DEFAULT_OLLAMA_URL,
                           client_kwargs={"timeout": timeout}, **opts)
     env = KEY_ENV[provider]

@@ -15,8 +15,8 @@ pytest.importorskip("langchain.agents")
 
 import numpy as np  # noqa: E402
 
-from agent_fakes import (BOTTLE, PERSON, FakeClipSegModel, FakeClipSegProcessor, FakeEngine,  # noqa: E402
-                         FakeSegNet, call, say, scripted)
+from agent_fakes import (BOTTLE, PERSON, FakeEngine, FakeGdinoModel, FakeGdinoProcessor,  # noqa: E402
+                         FakeSamModel, FakeSamProcessor, FakeSegNet, call, say, scripted)
 from companion.agent import tools as agent_tools  # noqa: E402
 from companion.agent.harness import AgentWorker, is_transient, run_agent  # noqa: E402
 from companion.agent.tools import TOOL_NAMES, AgentSession, make_tools, sanitize_text  # noqa: E402
@@ -152,116 +152,67 @@ def test_detect_regions_labels_positions_and_cap(seg):
     assert len(s.detect_regions()) <= 60
 
 
-# --- open-vocabulary (CLIPSeg) --------------------------------------------
+# --- named objects: Grounding DINO + SAM 2, else VOC -----------------------------------------------
 
 @pytest.fixture
-def clipseg(monkeypatch):
-    """Install a fake CLIPSeg; set `.heat` (352x352 numpy, values = sigmoid output) before calling detect."""
-    proc, model = FakeClipSegProcessor(), FakeClipSegModel(np.zeros((352, 352)))
-    monkeypatch.setattr(agent_tools.clipseg_detector, "get_clipseg", lambda: (proc, model))
-    return model, proc
+def precise(monkeypatch):
+    """Fake Grounding DINO + SAM 2; set `gp.boxes` = [(label, x0, y0, x1, y1, score)] before calling detect."""
+    from companion.utils import precise_models as pm
+    gp, sp = FakeGdinoProcessor(), FakeSamProcessor(segment=lambda crop: np.ones(crop.size[::-1], bool))
+    for stage, value in ((pm.GROUNDING_DINO, (gp, FakeGdinoModel())), (pm.SAM2, (sp, FakeSamModel()))):
+        monkeypatch.setattr(stage, "get", lambda v=value: v)
+        monkeypatch.setattr(stage, "is_available", lambda: True)
+    return gp
 
 
-@pytest.fixture
-def no_clipseg(monkeypatch):
-    """The real loader with CLIPSeg not installed (nothing cached)."""
-    from companion.utils import clipseg_detector as cd
-    monkeypatch.setattr(cd, "_CLIPSEG", None)
-    monkeypatch.setattr(cd, "_LOAD_ERROR", None)
-    monkeypatch.setattr(cd, "is_available", lambda: False)
-    return cd
+def test_named_query_is_sanitised_lowercased_and_capped(precise):
+    precise.boxes = [("sign", 0.1, 0.1, 0.5, 0.5, 0.9)]
+    out = json.loads(_session().detect_regions("The\x00 Sign‮ on\n the left " + "x" * 200))
+    text = precise.texts[0]
+    assert text.startswith("the sign on the left x") and text.endswith(".") and len(text) == agent_tools.MAX_QUERY_LEN + 1
+    assert out["regions"][0]["label"] == "sign"
 
 
-def test_clipseg_thin_broken_line_survives_as_one_region(clipseg):
-    model, _ = clipseg
-    heat = np.zeros((352, 352))
-    heat[100:103, :] = 0.35          # 3 px wire, about 0.85 % of the frame, just above the threshold
-    heat[100:103, 8::16] = 0.0       # 1 px gaps every 16 px: alone each piece is far below MIN_REGION_SHARE
-    model.heat = heat
-    s = AgentSession(engine=FakeEngine(), image=Image.new("RGB", (352, 352)))
-    out = json.loads(s.detect_regions("power lines"))
-    assert len(out["regions"]) == 1 and "note" not in out
-    r = out["regions"][0]
-    assert r["label"] == "power lines" and r["position"] == "centre-top"
-    assert 0.007 < r["area_share"] < 0.012
-
-
-def test_clipseg_two_blobs_positions_sorted_and_inpaintable(clipseg):
-    model, _ = clipseg
-    heat = np.full((352, 352), 0.05)
-    heat[260:330, 270:340] = 0.9     # small, right-bottom
-    heat[20:120, 20:150] = 0.6       # large, left-top
-    model.heat, model.squeeze = heat, True  # transformers can return (H,W) for a single prompt
-    engine = FakeEngine()
-    s = AgentSession(engine=engine, image=Image.new("RGB", (300, 200)))
-    out = json.loads(s.detect_regions("trash bag"))["regions"]
-    assert [(r["id"], r["label"], r["position"]) for r in out] == [
-        ("r1", "trash bag", "left-top"), ("r2", "trash bag", "right-bottom")]
-    assert out[0]["area_share"] > out[1]["area_share"]
-    out = json.loads(s.select_regions(["r1", "r2", "r1"]))
-    assert out == {"ok": True, "selected": ["r1", "r2"], "labels": ["trash bag", "trash bag"],
-                   "note": "Selected. The user can adjust it with the brush and click Erase."}
-    assert s.selection.labels == ["trash bag", "trash bag"] and engine.generated == []
-    mask = s.selection.mask
-    assert mask.size == (300, 200) and mask.getpixel((40, 30)) == 255 and mask.getpixel((280, 180)) == 255
-    assert mask.getpixel((150, 100)) == 0
-
-
-def test_clipseg_nothing_above_threshold(clipseg):
-    model, _ = clipseg
-    model.heat = np.full((352, 352), 0.29)
+def test_named_query_nothing_found_says_do_not_guess(precise):
+    precise.boxes = [("rock", 0.1, 0.1, 0.5, 0.5, 0.2)]  # below the box threshold
     out = json.loads(_session().detect_regions("rock"))
-    assert out["regions"] == []
-    assert "nothing matching 'rock' found; do not guess a region" in out["note"]
+    assert out["regions"] == [] and "nothing matching 'rock' found; do not guess a region" in out["note"]
 
 
-def test_clipseg_query_is_sanitised_and_capped(clipseg):
-    model, proc = clipseg
-    model.heat = np.full((352, 352), 0.9)
-    out = json.loads(_session().detect_regions("the\x00 sign‮ on\n the left " + "x" * 200))
-    label = out["regions"][0]["label"]
-    assert label.startswith("the sign on the left x") and len(label) == agent_tools.MAX_QUERY_LEN == 77
-    assert proc.texts == [[label]]
-
-
-def test_blank_query_runs_voc_like_no_query(seg, clipseg):
+def test_blank_query_runs_voc_like_no_query(seg, precise):
     seg.boxes = [(PERSON, 0.0, 0.3)]
-    _, proc = clipseg
     s = _session()
     assert s.detect_regions("  \x00 ") == s.detect_regions() == s.detect_regions(None)
-    assert proc.texts == [] and json.loads(s.detect_regions())["regions"][0]["label"] == "person"
+    assert precise.texts == [] and json.loads(s.detect_regions())["regions"][0]["label"] == "person"
 
 
-def test_query_without_clipseg_falls_back_to_voc_with_note(seg, no_clipseg):
+def test_query_without_precise_selection_falls_back_to_voc_with_note(seg):
     seg.boxes = [(PERSON, 0.0, 0.3)]
     s = _session()
     plain = s.detect_regions()
     assert "note" not in json.loads(plain)
     out = json.loads(s.detect_regions("power lines"))
     assert [r["label"] for r in out["regions"]] == ["person"]
-    assert "not installed" in out["note"] and "re-run install.bat" in out["note"]
-    assert "find-any-object" in out["note"]
+    assert "install the optional Precise selection step (install.bat)" in out["note"]
     assert json.loads(plain)["regions"] == out["regions"]
 
 
-def test_query_after_clipseg_load_failure_says_failed(seg, no_clipseg, monkeypatch):
+def test_query_after_precise_load_failure_says_failed(seg, monkeypatch):
+    from companion.utils import precise_models as pm
     seg.boxes = []
-    monkeypatch.setattr(no_clipseg, "_LOAD_ERROR", "OSError: broken")
+    monkeypatch.setattr(pm.GROUNDING_DINO, "_error", "OSError: broken")
     out = json.loads(_session().detect_regions("sign"))
-    assert out["regions"] == [] and "failed to load" in out["note"] and "No VOC objects found" in out["note"]
+    assert out["regions"] == [] and "Precise selection failed" in out["note"] and "No VOC objects found" in out["note"]
 
 
-def test_conversation_passes_query_through_the_tool(store, clipseg):
-    model, proc = clipseg
-    heat = np.zeros((352, 352))
-    heat[150:250, 10:100] = 0.8
-    model.heat = heat
+def test_conversation_passes_query_through_the_tool(store, precise):
+    precise.boxes = [("sign", 0.05, 0.4, 0.3, 0.9, 0.9)]
     s = _session()
     llm = scripted(call("detect_regions", {"query": "sign"}, 1),
                    call("select_regions", {"region_ids": ["r1"]}, 2), say("Selected the sign. Click Erase."))
     r, _ = _run(llm, s, store, text="remove the sign on the left")
     assert r.ok, r.reason
-    assert proc.texts == [["sign"]] and r.selection.labels == ["sign"]
+    assert precise.texts == ["sign."] and r.selection.labels == ["sign"]
 
 
 def test_select_unknown_region_and_select_exact_match(seg):
@@ -349,7 +300,7 @@ def test_langsmith_tracing_forced_off(monkeypatch):
     assert harness.run_agent(None, None, "x", None) is False
 
 
-def test_model_that_only_describes_still_selects_the_match(store, seg, no_clipseg):
+def test_model_that_only_describes_still_selects_the_match(store, seg):
     """llama3.1 often says "one person found" and stops: the matching region is selected for it."""
     seg.boxes = [(PERSON, 0.4, 0.6), (BOTTLE, 0.8, 0.95)]
     s = _session()
@@ -359,7 +310,7 @@ def test_model_that_only_describes_still_selects_the_match(store, seg, no_clipse
     assert r.selection.labels == ["person"] and r.tool_calls[-1] == "select_regions"
 
 
-def test_fallback_never_selects_an_unrelated_voc_object(store, seg, no_clipseg):
+def test_fallback_never_selects_an_unrelated_voc_object(store, seg):
     seg.boxes = [(PERSON, 0.4, 0.6)]
     s = _session()
     llm = scripted(call("detect_regions", {"query": "power lines"}), say("No power lines found."))
@@ -367,7 +318,7 @@ def test_fallback_never_selects_an_unrelated_voc_object(store, seg, no_clipseg):
     assert r.ok and r.selection is None
 
 
-def test_prompt_gives_photo_size_model_and_detectable_classes(store, seg, no_clipseg):
+def test_prompt_gives_photo_size_model_and_detectable_classes(store, seg):
     llm = scripted(say("ok"))
     _run(llm, _session(FakeEngine("migan")), store)
     system = llm.seen[0][0]
