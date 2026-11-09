@@ -214,8 +214,8 @@ _LAYER_CARD_STYLE = {active: qss(f"""
         border-radius: 6px;
     }}
     QFrame:hover {{
-        background-color: $$control_hover;
-        border-color: $$accent;
+        background-color: $control_hover;
+        border-color: $accent;
     }}
 """) for active, bg, width, border in ((True, "$accent_tint", 2, "$accent"), (False, "$surface", 1, "$border"))}
 

@@ -227,3 +227,22 @@ def test_ollama_model_list_ignores_proxy_and_redirects(monkeypatch):
     assert urllib.request.build_opener().handlers[0].proxies  # control: the default opener would use the proxy
     redirect = next(h for h in opener.handlers if isinstance(h, urllib.request.HTTPRedirectHandler))
     assert redirect.redirect_request(None, None, 302, "Found", {}, "http://evil.example/") is None
+
+
+def test_no_unfilled_token_left_in_any_rendered_style(qtbot):
+    """A leftover $ (e.g. $$token in an f-string fed to qss()) is an invalid rule Qt silently drops."""
+    from PyQt6.QtWidgets import QWidget
+    from companion.ui import _HELP_PAGE_STYLE, HelpGuideDialog
+    styles = {"APP_STYLE": APP_STYLE, "_HELP_PAGE_STYLE": _HELP_PAGE_STYLE}
+    styles.update({f"_LAYER_CARD_STYLE[{k}]": v for k, v in app._LAYER_CARD_STYLE.items()})
+    styles.update({f"_LAYER_TOGGLE_STYLE[{k}]": v for k, v in app._LAYER_TOGGLE_STYLE.items()})
+    assert len(styles) == 6
+    for name, sheet in styles.items():
+        assert "$" not in sheet, name
+    w = app.MainWindow()
+    qtbot.addWidget(w)
+    h = HelpGuideDialog(w)
+    qtbot.addWidget(h)
+    for root in (w, h):  # every inline style the windows set at runtime
+        for widget in [root, *root.findChildren(QWidget)]:
+            assert "$" not in widget.styleSheet(), (type(widget).__name__, widget.objectName())
