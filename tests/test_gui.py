@@ -551,3 +551,58 @@ def test_telemetry_status_bar_and_timer(qtbot, sample_pil_image, tmp_path):
 
 
 
+
+
+def _right(canvas, kind, buttons):
+    event = QMouseEvent(kind, QPointF(50, 50), Qt.MouseButton.RightButton, buttons, Qt.KeyboardModifier.NoModifier)
+    if kind == QMouseEvent.Type.MouseButtonPress:
+        canvas.mousePressEvent(event)
+    else:
+        canvas.mouseReleaseEvent(event)
+
+
+def _painted_canvas(qtbot, image):
+    canvas = ImageCanvas()
+    qtbot.addWidget(canvas)
+    canvas.load_image(image)
+    canvas._paint_stroke(QPointF(40, 40), QPointF(60, 60))
+    canvas._flush_mask_pixmap()
+    assert canvas.has_mask()
+    return canvas
+
+
+def test_right_button_held_on_the_photo_requests_erase(qtbot, sample_pil_image):
+    canvas = _painted_canvas(qtbot, sample_pil_image)
+    with qtbot.waitSignal(canvas.eraseRequested, timeout=2000):
+        _right(canvas, QMouseEvent.Type.MouseButtonPress, Qt.MouseButton.RightButton)
+    _right(canvas, QMouseEvent.Type.MouseButtonRelease, Qt.MouseButton.NoButton)
+
+
+def test_short_right_click_or_no_selection_does_not_erase(qtbot, sample_pil_image):
+    from companion.canvas import ERASE_HOLD_MS
+    canvas = _painted_canvas(qtbot, sample_pil_image)
+    fired = []
+    canvas.eraseRequested.connect(lambda: fired.append(1))
+    _right(canvas, QMouseEvent.Type.MouseButtonPress, Qt.MouseButton.RightButton)
+    _right(canvas, QMouseEvent.Type.MouseButtonRelease, Qt.MouseButton.NoButton)  # released at once
+    qtbot.wait(ERASE_HOLD_MS + 200)
+    assert fired == []
+
+    empty = ImageCanvas()
+    qtbot.addWidget(empty)
+    empty.load_image(sample_pil_image)
+    empty.eraseRequested.connect(lambda: fired.append(2))
+    _right(empty, QMouseEvent.Type.MouseButtonPress, Qt.MouseButton.RightButton)  # held, but nothing selected
+    qtbot.wait(ERASE_HOLD_MS + 200)
+    assert fired == [] and not empty._is_drawing
+
+
+def test_erase_requested_runs_the_erase_button_action(qtbot, monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(MainWindow, "_on_run_inpainting", lambda self: calls.append(1))
+    path = str(tmp_path / "in.png")
+    Image.new("RGB", (64, 64), (120, 120, 120)).save(path)
+    window = MainWindow(input_path=path)
+    qtbot.addWidget(window)
+    window.canvas.eraseRequested.emit()
+    assert calls == [1]

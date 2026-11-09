@@ -39,6 +39,8 @@ from PIL import Image
 
 from companion.config import CONFIG
 
+ERASE_HOLD_MS = 500  # long enough that a stray right click never starts an erase
+
 try:
     from PyQt6.QtOpenGLWidgets import QOpenGLWidget
     HAS_OPENGL = True
@@ -140,6 +142,7 @@ class ImageCanvas(QGraphicsView):
     brushFeatherChanged = pyqtSignal(float)
     statusMessage = pyqtSignal(str)
     strokeFinished = pyqtSignal()
+    eraseRequested = pyqtSignal()  # right button held ERASE_HOLD_MS over the photo
     splitCompareChanged = pyqtSignal(bool)
 
     def __init__(self, parent: Optional[QWidget] = None):
@@ -200,6 +203,12 @@ class ImageCanvas(QGraphicsView):
         self._stroke_timer = QTimer(self)
         self._stroke_timer.setInterval(CONFIG.CANVAS_THROTTLE_MS)
         self._stroke_timer.timeout.connect(self._flush_mask_pixmap)
+
+        # Right-click and hold erases the selection; a shorter press does nothing
+        self._erase_hold_timer = QTimer(self)
+        self._erase_hold_timer.setSingleShot(True)
+        self._erase_hold_timer.setInterval(ERASE_HOLD_MS)
+        self._erase_hold_timer.timeout.connect(self.eraseRequested.emit)
 
         # Feather interactive drag adjustment (Shift + mouse drag)
         self._is_adjusting_feather: bool = False
@@ -1010,7 +1019,15 @@ class ImageCanvas(QGraphicsView):
             event.accept()
             return
 
-        # 4. Left click starts mask stroke
+        # 4. Right button held over the photo erases the selection (the app runs the normal Erase checks)
+        if event.button() == Qt.MouseButton.RightButton and not self._compare_mode and not self._split_compare_mode:
+            if self.has_mask() and self.scene.sceneRect().contains(self.mapToScene(event.pos())):
+                self._erase_hold_timer.start()
+                self.statusMessage.emit("Keep holding to erase the selection...")
+            event.accept()
+            return
+
+        # 5. Left click starts mask stroke
         if event.button() == Qt.MouseButton.LeftButton and not self._compare_mode and not self._split_compare_mode:
             scene_pos = self.mapToScene(event.pos())
             if self.scene.sceneRect().contains(scene_pos):
@@ -1074,6 +1091,11 @@ class ImageCanvas(QGraphicsView):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent):
+        if event.button() == Qt.MouseButton.RightButton:
+            self._erase_hold_timer.stop()  # released too early: nothing happens
+            event.accept()
+            return
+
         if self._is_dragging_split and event.button() == Qt.MouseButton.LeftButton:
             self._is_dragging_split = False
             self._update_cursor()

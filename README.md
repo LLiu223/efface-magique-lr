@@ -143,6 +143,7 @@ You can also use Efface Magique as a standalone desktop photo eraser:
 | :--- | :--- | :--- |
 | **`Ctrl + S`** / **`Ctrl + Shift + S`** | **⚡ Save & Sync to Lightroom** | Saves TIFF (16-bit for a 16-bit input), auto-stacks into Lightroom catalog, and stays open |
 | **`Enter`** / **`Return`** | **✨ Erase Object** | Runs local AI inpainting on painted mask |
+| **`Right Mouse` (Hold)** | **✨ Erase Object** | Hold half a second on the photo; a shorter press does nothing |
 | **`Ctrl + T`** | **📌 Toggle Pin** | Keeps window floating always on top of Lightroom Classic |
 | **`[` / `]`** | **Brush Size** | Decrease / Increase brush radius |
 | **`Ctrl + Z`** | **↶ Undo** | Undo stroke or inpainting action |
